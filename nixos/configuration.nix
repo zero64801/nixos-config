@@ -136,6 +136,7 @@
     neofetch
     htop
     ranger
+    xwayland
     wl-clipboard
     emacs
     zip
