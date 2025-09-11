@@ -34,20 +34,23 @@ in {
 
     impermanence = {
       enable = true;
-      persistence."/persist/local" = {
+      mainPersistRoot = "/persist/local";
+      
+      roots."/persist/local" = {
         hideMounts = true;
 
         directories = [
+        {
+          directory = "/etc/ssh";
+          user = "root";
+          group = "root";
+          mode = "0755";
+        }
+
           "/var/log"
           "/var/lib/nixos"
           "/var/lib/NetworkManager"
           "/etc/NetworkManager/system-connections"
-          "/var/lib/forgejo"
-          "/home/multimedia"
-          "/var/lib/jellyfin"
-          "/var/lib/sonarr"
-          "/var/lib/radarr"
-          "/var/lib/transmission"
         ];
 
         files = [
@@ -62,7 +65,6 @@ in {
             ".local/share/direnv"
             ".local/share/fish"
             "Downloads"
-            "Videos/Jellyfin"
             "Pictures/Wallpapers"
           ];
 
@@ -89,6 +91,8 @@ in {
       caddy.enable = true;
       jellyfin.enable = true;
       forgejo.enable = true;
+      nextcloud.enable = true;
+      redlib.enable = true;
     };
   };
 

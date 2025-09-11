@@ -3,9 +3,9 @@
   pkgs,
   config,
   ...
-}: let
+}:
+let
   multimediaDir = "/home/multimedia";
-  caddyCfg = config.nyx.services.caddy;
 
   inherit (lib) mkIf mkEnableOption;
   inherit (builtins) toString;
@@ -117,6 +117,24 @@ in {
       name = "settings.json";
       owner = "transmission";
       group = "users";
+    };
+
+    nyx.impermanence = mkIf config.nyx.impermanence.enable {
+      roots.${config.nyx.impermanence.mainPersistRoot} = {
+        directories = [
+          {
+            directory = "/home/multimedia";
+            user = "transmission"; # The primary user
+            group = "multimedia";  # The shared group
+            mode = "2770";         # CRITICAL: '2' is the setgid bit for sharing
+          }
+          
+          "/var/lib/jellyfin"
+          "/var/lib/sonarr"
+          "/var/lib/radarr"
+          "/var/lib/transmission"
+        ];
+      };
     };
   };
 }

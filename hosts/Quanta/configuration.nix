@@ -50,7 +50,9 @@ in {
 
     impermanence = {
       enable = true;
-      persistence."/persist/local" = {
+      mainPersistRoot = "/persist/local";
+
+      roots."/persist/local" = {
         hideMounts = true;
 
         directories = [

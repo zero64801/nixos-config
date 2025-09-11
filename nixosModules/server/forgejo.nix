@@ -53,5 +53,17 @@ in
         };
       };
     };
+
+    nyx.impermanence = mkIf config.nyx.impermanence.enable {
+      roots.${config.nyx.impermanence.mainPersistRoot} = {
+        directories = [
+          "/var/lib/forgejo"
+        ];
+
+        neededFor = [
+          "forgejo.service"
+        ];
+      };
+    };
   };
 }
