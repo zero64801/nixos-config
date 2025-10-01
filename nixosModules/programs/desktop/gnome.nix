@@ -12,6 +12,7 @@
     };
 
     environment.systemPackages = with pkgs; [
+      wl-clipboard
       gnome-terminal
       gnome-tweaks
       gnome-extension-manager

@@ -9,6 +9,8 @@
 in {
   imports = [
     (sources.impermanence + "/nixos.nix")
+    (sources.disko + "/nixos.nix")
+    ./disko-config.nix
     ./hardware-configuration.nix
     ./user-configuration.nix
     ../../users/dx.nix
@@ -18,11 +20,6 @@ in {
   networking.hostName = "Quanta";
   time.timeZone = "America/Sao_Paulo";
 
-  nix.settings = {
-    extra-substituters = [ "https://chaotic-nyx.cachix.org" ];
-    extra-trusted-public-keys = [ "chaotic-nyx.cachix.org-1:HfnXSw4pj95iI/n17rIDy40agHj12WfF+Gqk6SonIT8=" ];
-  };
-
   nyx = {
     graphics = {
       enable = true;
@@ -30,14 +27,12 @@ in {
     };
 
     desktop.gnome.enable = true;
-    virtualisation.enable = true;
     security.yubikey.enable = true;
 
     programs = {
       helix.enable = true;
       obs-studio.enable = false;
       keyd.enable = false;
-      firefox.enable = true;
       flatpak.enable = true;
       privoxy = {
         enable = false;
@@ -60,12 +55,10 @@ in {
           "/var/lib/nixos"
           "/var/lib/flatpak"
           "/var/lib/NetworkManager"
-          "/var/lib/libvirt"
           "/etc/NetworkManager/system-connections"
         ];
 
         files = [
-          "/etc/u2f_keys"
           "/etc/machine-id"
           "/etc/adjtime"
         ];
@@ -97,47 +90,72 @@ in {
       openssh.enable = false;
     };
 
-    /*
-    utils.btrfs-snapshots.dx = [
-      {
-        subvolume = "Documents";
-        calendar = "daily";
-        expiry = "5d";
-      }
-      {
-        subvolume = "Music";
-        calendar = "weekly";
-        expiry = "3w";
-      }
-      {
-        subvolume = "Pictures";
-        calendar = "weekly";
-        expiry = "3w";
-      }
-    ];
-    */
+    virtualisation = {
+      base.enable = true;
+
+      desktop = {
+        vfio = {
+          enable = true;
+          ids = [ "10de:2489" "10de:228b" "1912:0014" ];
+        };
+
+        looking-glass = {
+          enable = true;
+          staticSizeMb = 32;
+        };
+
+        hooks.win11 = pkgs.writeShellScript "win11-vfio-hook.sh" ''
+          #!${pkgs.bash}/bin/bash
+          set -e
+          set -x
+
+          HOST_CORES="0-3,8-11"
+          ALL_CORES="0-15"
+
+          VM_NAME="$1"
+          OPERATION="$2"
+          SUB_OPERATION="$3"
+
+          SYSTEMCTL="${pkgs.systemd}/bin/systemctl"
+
+          case "$OPERATION/$SUB_OPERATION" in
+          "prepare/begin")
+              echo "VFIO-HOOK: Starting for $VM_NAME"
+              echo "VFIO-HOOK: Isolating CPUs. Host will use cores: $HOST_CORES"
+              $SYSTEMCTL set-property --runtime -- user.slice AllowedCPUs=$HOST_CORES
+              $SYSTEMCTL set-property --runtime -- system.slice AllowedCPUs=$HOST_CORES
+              $SYSTEMCTL set-property --runtime -- init.scope AllowedCPUs=$HOST_CORES
+          ;;
+
+          "release/end")
+              echo "VFIO-HOOK: Stopping for $VM_NAME"
+              echo "VFIO-HOOK: Restoring all CPU cores ($ALL_CORES) to host"
+              $SYSTEMCTL set-property --runtime -- user.slice AllowedCPUs=$ALL_CORES
+              $SYSTEMCTL set-property --runtime -- system.slice AllowedCPUs=$ALL_CORES
+              $SYSTEMCTL set-property --runtime -- init.scope AllowedCPUs=$ALL_CORES
+          ;;
+          esac
+        '';
+      };
+    };
   };
 
   # forward dns onto the tailnet
   networking.firewall.allowedTCPPorts = [ 8080 5001 ];
   networking.firewall.allowedUDPPorts = [ 5353 ];
-  /*
-  services.dnscrypt-proxy2.settings = {
-    listen_addresses = [
-      "100.110.70.18:53"
-      "[fd7a:115c:a1e0::6a01:4614]:53"
-      "127.0.0.1:53"
-      "[::1]:53"
-    ];
-  };
-  */
 
   # generic
   programs = {
   };
 
+  # This is for the monitor input switching feature unique to this machine.
+  boot.kernelModules = [ "i2c-dev" ];
+  users.groups.i2c = {};
+  nyx.security.serviceAdminGroups = [ "i2c" ];
+
   services.udev.extraRules = ''
     ACTION=="add", SUBSYSTEM=="pci", DRIVER=="pcieport", ATTR{power/wakeup}="disabled"
+    KERNEL=="i2c-[0-9]*", GROUP="i2c", MODE="0660"
   '';
 
   services.displayManager.autoLogin = {

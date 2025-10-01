@@ -20,7 +20,6 @@
     # auto enables fish and overwrites bash
     ./fish.nix
 
-    ./virtualization.nix
     ./flatpak.nix
   ];
 
@@ -43,7 +42,7 @@
     execWheelOnly = true;
     extraRules = [
       {
-        users = [ "dx" "haxxor" ];
+        users = [ "dx" ];
         # lets me rebuild without having to enter the password
         commands = [
           {

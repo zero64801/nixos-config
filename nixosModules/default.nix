@@ -6,7 +6,6 @@ in {
     ./system
     ./graphics
     ./programs
-    ./server
     ./utils
     ./external
   ];

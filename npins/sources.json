@@ -26,20 +26,6 @@
       "url": "https://github.com/EbodShojaei/bake/archive/8891b7429f61c6482a8947e389de3811fd37c2fa.tar.gz",
       "hash": "sha256-L3Gpl3olNAux3IzQT7VlKLALpepJPMO5XdTgLasT90k="
     },
-    "chaotic": {
-      "type": "Git",
-      "repository": {
-        "type": "GitHub",
-        "owner": "chaotic-cx",
-        "repo": "nyx"
-      },
-      "branch": "nyxpkgs-unstable",
-      "submodules": false,
-      "revision": "f0f6da3f90d21263789656a0804cf4e8d536a638",
-      "url": "https://github.com/chaotic-cx/nyx/archive/f0f6da3f90d21263789656a0804cf4e8d536a638.tar.gz",
-      "hash": "sha256-XPhfr1tQf2n3R5PBvkQjLMaEChLC38nVn9PPkRF8lho=",
-      "frozen": true
-    },
     "crane": {
       "type": "Git",
       "repository": {
@@ -52,6 +38,22 @@
       "revision": "444e81206df3f7d92780680e45858e31d2f07a08",
       "url": "https://github.com/ipetkov/crane/archive/444e81206df3f7d92780680e45858e31d2f07a08.tar.gz",
       "hash": "sha256-0tcS8FHd4QjbCVoxN9jI+PjHgA4vc/IjkUSp+N3zy0U="
+    },
+    "disko": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "nix-community",
+        "repo": "disko"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v1.12.0",
+      "revision": "7121f74b976481bc36877abaf52adab2a178fcbe",
+      "url": "https://api.github.com/repos/nix-community/disko/tarball/refs/tags/v1.12.0",
+      "hash": "sha256-eDoSOhxGEm2PykZFa/x9QG5eTH0MJdiJ9aR00VAofXE="
     },
     "home-manager": {
       "type": "Git",
@@ -95,24 +97,11 @@
       "url": "https://api.github.com/repos/nix-community/lanzaboote/tarball/refs/tags/v0.4.2",
       "hash": "sha256-AEEDktApTEZ5PZXNDkry2YV2k6t0dTgLPEmAZbnigXU="
     },
-    "mnw": {
-      "type": "Git",
-      "repository": {
-        "type": "GitHub",
-        "owner": "Gerg-L",
-        "repo": "mnw"
-      },
-      "branch": "master",
-      "submodules": false,
-      "revision": "93edfdc3015f2c6aaddba074ed8ae0e78569fff7",
-      "url": "https://github.com/Gerg-L/mnw/archive/93edfdc3015f2c6aaddba074ed8ae0e78569fff7.tar.gz",
-      "hash": "sha256-v3ECXf6adCp3kCgZpbMAK244oXR50ghtFR2+0ekptMg="
-    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixos-unstable",
-      "url": "https://releases.nixos.org/nixos/unstable/nixos-25.11pre844474.fbcf476f790d/nixexprs.tar.xz",
-      "hash": "sha256-ZFkjmihDaMJRhh7ztPNKdjiXkfWSa0GaiSvf8X0/LZI="
+      "url": "https://releases.nixos.org/nixos/unstable/nixos-25.11pre864002.8eaee1103447/nixexprs.tar.xz",
+      "hash": "sha256-XDY3A83bclygHDtesRoaRTafUd80Q30D/Daf9KSG6bs="
     },
     "nixpkgs-frozen": {
       "type": "Channel",
@@ -134,19 +123,17 @@
       "url": "https://github.com/andir/npins/archive/afa9fe50cb0bff9ba7e9f7796892f71722b2180d.tar.gz",
       "hash": "sha256-D6dYAMk9eYpBriE07s8Q7M3WBT7uM9pz3RKIoNk+h7I="
     },
-    "nur": {
+    "nur-expressions": {
       "type": "Git",
       "repository": {
-        "type": "GitHub",
-        "owner": "nix-community",
-        "repo": "NUR"
+        "type": "Git",
+        "url": "https://gitlab.com/rycee/nur-expressions.git"
       },
       "branch": "master",
       "submodules": false,
-      "revision": "d81438d52a643b84a8bdd7ed0ba39a8e3b97f628",
-      "url": "https://github.com/nix-community/NUR/archive/d81438d52a643b84a8bdd7ed0ba39a8e3b97f628.tar.gz",
-      "hash": "sha256-XKHIJ24aRmlQjqiv56OTvV70/IuK5CFmIP9v+NaBFOM=",
-      "frozen": true
+      "revision": "f9c2e6b2eebdbe0e87236a63ea323c86da79b6c5",
+      "url": null,
+      "hash": "sha256-eAzmD4ijeWCFy4YqArNmVu8901nLQLHr6dCv94yRrFk="
     },
     "rosep-fish": {
       "type": "Git",

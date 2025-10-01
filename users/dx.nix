@@ -14,7 +14,10 @@ in {
 
     shell = pkgs.fish;
     isNormalUser = true;
-    extraGroups = [ "networkmanager" "wheel" ];
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+    ] ++ config.nyx.security.serviceAdminGroups;
     hashedPasswordFile = "/persist/local/secrets/passwd/dx";
 
     # only declare common packages here

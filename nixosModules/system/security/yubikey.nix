@@ -19,5 +19,13 @@
       };
       u2f.settings.authfile = "/etc/u2f_keys";
     };
+
+    nyx.impermanence = lib.mkIf config.nyx.impermanence.enable {
+      roots.${config.nyx.impermanence.mainPersistRoot} = {
+        files = [
+          "/etc/u2f_keys"
+        ];
+      };
+    };
   };
 }

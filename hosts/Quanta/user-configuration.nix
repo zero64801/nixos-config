@@ -6,14 +6,14 @@
   ...
 }: let
   packages = lib.attrValues {
-    inherit (pkgs) foot looking-glass-client;
+    inherit (pkgs) foot;
     # from internal overlay
     inherit (pkgs) mpv-wrapped;
   };
 in {
   users.users."dx" = {
     inherit packages;
-    extraGroups = ["libvirtd" "kvm" "i2c"];
+    extraGroups = [];
   };
 
   services.pcscd.enable = true;
@@ -66,7 +66,7 @@ in {
         ];
 
         favorite-apps = [
-          "librewolf.desktop"
+          "firefox.desktop"
           "org.gnome.Terminal.desktop"
           "org.gnome.Nautilus.desktop"
         ];

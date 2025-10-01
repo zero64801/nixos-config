@@ -13,7 +13,7 @@
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
 
   boot = {
-    kernelPackages = pkgs.linuxPackages_cachyos;
+    kernelPackages = pkgs.linuxPackages_latest;
     kernelModules = [ "kvm-amd" "nvidia" ];
     kernelParams = [
       "amd_pstate=active"
@@ -103,7 +103,7 @@
       };
     };
 
-    extraModulePackages = [ ];
+    extraModulePackages = [];
   };
 
   fileSystems = {

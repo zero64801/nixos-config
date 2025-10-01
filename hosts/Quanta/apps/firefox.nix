@@ -4,7 +4,7 @@
   ...
 }:
 {
-  programs.librewolf = {
+  programs.firefox = {
     enable = true;
     policies = {
       DisableFirefoxStudies = true;
@@ -38,6 +38,8 @@
           "browser.ctrlTab.sortByRecentlyUsed" = lock true;
           "browser.contentblocking.category" = lock "strict";
           "dom.private-attribution.submission.enabled" = lock false;
+
+          "browser.ml.chat.enabled" = lock false;
 
           # ui layout
           "browser.uiCustomization.state" = lock (
