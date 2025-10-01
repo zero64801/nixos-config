@@ -1,63 +1,60 @@
 {
   disko.devices = {
     disk = {
-      main = {
+      nvme0n1 = {
         type = "disk";
         device = "/dev/nvme0n1";
         content = {
           type = "gpt";
           partitions = {
-            # EFI System Partition (ESP)
-            boot = {
+            ESP = {
+	      label = "boot";
+              name = "ESP";
               size = "1G";
               type = "EF00";
-              label = "ESP";
               content = {
                 type = "filesystem";
                 format = "vfat";
                 mountpoint = "/boot";
                 mountOptions = [
-                  "fmask=0022"
-                  "dmask=0022"
+                  "defaults"
                 ];
               };
             };
-
-            # LUKS-encrypted root partition
             luks = {
               size = "100%";
-              label = "cryptroot";
+              label = "luks";
               content = {
                 type = "luks";
                 name = "cryptroot";
+                extraFormatArgs = [ "--type luks2" ];
                 settings = {
                   allowDiscards = true;
                   crypttabExtraOpts = [ "fido2-device=auto" ];
                 };
                 content = {
-                  # The content of the LUKS container is the BTRFS filesystem
                   type = "btrfs";
-                  extraArgs = [ "-L nixos" ]; # Label the filesystem
+                  extraArgs = [ "-L nixos" "-f" ];
                   subvolumes = {
                     "/root" = {
                       mountpoint = "/";
-                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                      mountOptions = [ "subvol=root" "noatime" "nodiratime" "ssd" ];
                     };
                     "/nix" = {
                       mountpoint = "/nix";
-                      mountOptions = [ "noatime" "nodiratime" "ssd" "compress=zstd" ];
+                      mountOptions = [ "subvol=nix" "noatime" "nodiratime" "ssd" "compress=zstd" ];
                     };
                     "/snapshots" = {
                       mountpoint = "/snapshots";
-                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                      mountOptions = [ "subvol=snapshots" "noatime" "nodiratime" "ssd" ];
                     };
                     "/persist_local" = {
                       mountpoint = "/persist/local";
-                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                      mountOptions = [ "subvol=persist_local" "noatime" "nodiratime" "ssd" ];
                     };
                     "/persist_safe" = {
                       mountpoint = "/persist/safe";
-                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                      mountOptions = [ "subvol=persist_safe" "noatime" "nodiratime" "ssd" ];
                     };
                   };
                 };
