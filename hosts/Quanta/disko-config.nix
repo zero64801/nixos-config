@@ -36,6 +36,12 @@
                   type = "btrfs";
                   extraArgs = [ "-L nixos" ];
                   postCreateHook = ''
+                    set -eu
+                    MNTPOINT=/mnt
+                    trap 'umount $MNTPOINT";' EXIT
+
+                    mount -o subvol=/dev/mapper/cryptroot "$MNTPOINT"
+                    
                     mkdir -p $MNTPOINT/root/boot
                     mkdir -p $MNTPOINT/root/nix
                     mkdir -p $MNTPOINT/root/snapshots
