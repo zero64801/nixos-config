@@ -35,13 +35,9 @@
                 content = {
                   type = "btrfs";
                   extraArgs = [ "-L nixos" ];
-                  postCreateHook = ''
-                    set -eu
-                    MNTPOINT=/mnt
-                    trap 'umount $MNTPOINT";' EXIT
+                  preUnmountHook = ''
+		    MNTPOINT=/mnt        
 
-                    mount -o subvol=/dev/mapper/cryptroot "$MNTPOINT"
-                    
                     mkdir -p $MNTPOINT/root/boot
                     mkdir -p $MNTPOINT/root/nix
                     mkdir -p $MNTPOINT/root/snapshots
@@ -49,7 +45,7 @@
                     mkdir -p $MNTPOINT/root/persist/local
                     mkdir -p $MNTPOINT/root/persist/safe
 
-                    mkdir -p $MNTPOINT/snapshots/root
+                    mkdir -p /mnt/snapshots/root
                     btrfs subvolume snapshot -r $MNTPOINT/root $MNTPOINT/snapshots/root/blank
                   '';
                   subvolumes = {
