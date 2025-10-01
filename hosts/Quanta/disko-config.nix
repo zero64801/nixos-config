@@ -11,6 +11,7 @@
             boot = {
               size = "1G";
               type = "EF00";
+              label = "ESP";
               content = {
                 type = "filesystem";
                 format = "vfat";
@@ -25,6 +26,7 @@
             # LUKS-encrypted root partition
             luks = {
               size = "100%";
+              label = "cryptroot";
               content = {
                 type = "luks";
                 name = "cryptroot";

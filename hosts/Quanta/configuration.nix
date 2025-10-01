@@ -9,7 +9,7 @@
 in {
   imports = [
     (sources.impermanence + "/nixos.nix")
-    (sources.disko + "/nixos.nix")
+    (sources.disko + "/module.nix")
     ./disko-config.nix
     ./hardware-configuration.nix
     ./user-configuration.nix
@@ -78,16 +78,6 @@ in {
           ];
         };
       };
-    };
-
-    services = {
-      enable = true;
-      tailscale = {
-        enable = false;
-        exitNode.enable = false;
-        authFile = config.age.secrets.tailAuth.path;
-      };
-      openssh.enable = false;
     };
 
     virtualisation = {

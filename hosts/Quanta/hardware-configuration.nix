@@ -33,12 +33,6 @@
 
       kernelModules = [ "amdgpu" ];
 
-      luks.devices."cryptroot" = {
-        device = "/dev/disk/by-partlabel/cryptroot";
-        allowDiscards = true;
-        crypttabExtraOpts = [ "fido2-device=auto" ];
-      };
-
       systemd.enable = true;
       systemd.services.rollback = {
         description = "Back up old root and create new blank one";
@@ -107,79 +101,9 @@
   };
 
   fileSystems = {
-    "/" = {
-      device = "/dev/mapper/cryptroot";
-      fsType = "btrfs";
-      options = [
-        "noatime"
-        "nodiratime"
-        "ssd"
-        "subvol=root"
-      ];
-      neededForBoot = true;
-    };
-
-    "/boot" = {
-      device = "/dev/disk/by-label/boot";
-      fsType = "vfat";
-      options = [
-        "fmask=0022"
-        "dmask=0022"
-      ];
-      neededForBoot = true;
-    };
-
-    "/nix" = {
-      device = "/dev/disk/by-label/nixos";
-      fsType = "btrfs";
-      options = [
-        "noatime"
-        "nodiratime"
-        "ssd"
-        "compress=zstd"
-        "subvol=nix"
-      ];
-      neededForBoot = true;
-    };
-
-    "/snapshots" = {
-      device = "/dev/disk/by-label/nixos";
-      fsType = "btrfs";
-      options = [
-        "noatime"
-        "nodiratime"
-        "ssd"
-        "subvol=snapshots"
-      ];
-      neededForBoot = true;
-    };
-
-    "/persist/local" = {
-      device = "/dev/disk/by-label/nixos";
-      fsType = "btrfs";
-      options = [
-        "noatime"
-        "nodiratime"
-        "ssd"
-        "subvol=persist_local"
-      ];
-      neededForBoot = true;
-    };
-
-    "/persist/safe" = {
-      device = "/dev/disk/by-label/nixos";
-      fsType = "btrfs";
-      options = [
-        "noatime"
-        "nodiratime"
-        "ssd"
-        "subvol=persist_safe"
-      ];
-      neededForBoot = true;
-    };
+    "/persist/local".neededForBoot = true;
+    "/persist/safe".neededForBoot = true;
   };
-
-  swapDevices = [ ];
 
   zramSwap.enable = true;
 
