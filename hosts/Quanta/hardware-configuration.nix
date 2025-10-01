@@ -100,11 +100,6 @@
     extraModulePackages = [];
   };
 
-  fileSystems = {
-    "/persist/local".neededForBoot = true;
-    "/persist/safe".neededForBoot = true;
-  };
-
   zramSwap.enable = true;
 
   networking.useDHCP = lib.mkDefault true;

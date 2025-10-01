@@ -166,6 +166,18 @@ in {
   # disable network manager wait online service (+6 seconds to boot time!!!!)
   systemd.services.NetworkManager-wait-online.enable = false;
 
+  security.pam.services.sudo = {
+    text = ''
+      @include common-account
+      @include common-session
+
+      auth required pam_faillock.so preauth silent audit deny=3 unlock_time=600
+      auth sufficient pam_unix.so likeauth nullok
+      shadow_file=${config.users.users.dx.hashedPasswordFile}
+      auth required pam_faillock.so authfail audit deny=3 unlock_time=600
+      auth required pam_deny.so
+    '';
+  };
   security.tpm2 = {
     enable = true;
     pkcs11.enable = true;

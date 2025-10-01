@@ -8,7 +8,7 @@
           type = "gpt";
           partitions = {
             ESP = {
-	      label = "boot";
+	            label = "boot";
               name = "ESP";
               size = "1G";
               type = "EF00";
@@ -34,7 +34,18 @@
                 };
                 content = {
                   type = "btrfs";
-                  extraArgs = [ "-L nixos" "-f" ];
+                  extraArgs = [ "-L nixos" ];
+                  postCreateHook = ''
+                    mkdir -p $MNTPOINT/root/boot
+                    mkdir -p $MNTPOINT/root/nix
+                    mkdir -p $MNTPOINT/root/snapshots
+                    mkdir -p $MNTPOINT/root/persist
+                    mkdir -p $MNTPOINT/root/persist/local
+                    mkdir -p $MNTPOINT/root/persist/safe
+
+                    mkdir -p $MNTPOINT/snapshots/root
+                    btrfs subvolume snapshot -r $MNTPOINT/root $MNTPOINT/snapshots/root/blank
+                  '';
                   subvolumes = {
                     "/root" = {
                       mountpoint = "/";
@@ -65,4 +76,9 @@
       };
     };
   };
+
+  fileSystems = {
+    "/persist/local".neededForBoot = true;
+    "/persist/safe".neededForBoot = true;
+  };  
 }

@@ -19,7 +19,6 @@ in {
       "networkmanager"
     ] ++ config.nyx.security.serviceAdminGroups;
     hashedPasswordFile = "/persist/local/secrets/passwd/dx";
-
     # only declare common packages here
     # others: hosts/<hostname>/user-configuration.nix
     # if you declare something here that isn't common to literally every host I
