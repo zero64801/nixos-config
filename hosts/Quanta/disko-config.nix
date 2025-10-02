@@ -8,21 +8,26 @@
           type = "gpt";
           partitions = {
             ESP = {
+              label = "boot";
               name = "ESP";
               size = "1G";
               type = "EF00";
               content = {
                 type = "filesystem";
                 format = "vfat";
-                extraArgs = [ "-n boot" ];
                 mountpoint = "/boot";
+                mountOptions = [
+                  "defaults"
+                ];
               };
             };
             luks = {
               size = "100%";
+              label = "luks";
               content = {
                 type = "luks";
                 name = "cryptroot";
+                extraFormatArgs = [ "--type luks2" ];
                 askPassword = true;
                 settings = {
                   allowDiscards = true;
@@ -53,23 +58,23 @@
                   subvolumes = {
                     "/root" = {
                       mountpoint = "/";
-                      mountOptions = [ "noatime", "nodiratime", "ssd" ];
+                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
                     };
                     "/nix" = {
                       mountpoint = "/nix";
-                      mountOptions = [ "noatime", "nodiratime", "ssd", "compress=zstd" ];
+                      mountOptions = [ "noatime" "nodiratime" "ssd" "compress=zstd" ];
                     };
                     "/snapshots" = {
                       mountpoint = "/snapshots";
-                      mountOptions = [ "noatime", "nodiratime", "ssd" ];
+                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
                     };
                     "/persist_local" = {
                       mountpoint = "/persist/local";
-                      mountOptions = [ "noatime", "nodiratime", "ssd" ];
+                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
                     };
                     "/persist_safe" = {
                       mountpoint = "/persist/safe";
-                      mountOptions = [ "noatime", "nodiratime", "ssd" ];
+                      mountOptions = [ "noatime" "nodiratime" "ssd" ];
                     };
                   };
                 };
