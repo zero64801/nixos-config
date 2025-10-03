@@ -24,22 +24,12 @@
     # This is crucial for a good desktop experience.
     xdg.portal.enable = true;
 
-    # Conditionally add the Flathub remote using a systemd service.
-    # This is a robust, declarative way to ensure the remote is present.
-    systemd.services.flatpak-repo = lib.mkIf config.nyx.programs.flatpak.addFlathub {
-      description = "Add Flathub remote for Flatpak";
+    systemd.services.flatpak-repo = {
       wantedBy = [ "multi-user.target" ];
-      # Ensure this service runs after the network is up
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
-      # Provide the flatpak binary to the script's PATH
       path = [ pkgs.flatpak ];
-      # The script itself is idempotent due to `--if-not-exists`
       script = ''
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       '';
-      # This service is simple and only needs to run once.
-      serviceConfig.Type = "oneshot";
     };
   };
 }

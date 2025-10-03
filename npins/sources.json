@@ -22,9 +22,9 @@
       },
       "branch": "main",
       "submodules": false,
-      "revision": "8891b7429f61c6482a8947e389de3811fd37c2fa",
-      "url": "https://github.com/EbodShojaei/bake/archive/8891b7429f61c6482a8947e389de3811fd37c2fa.tar.gz",
-      "hash": "sha256-L3Gpl3olNAux3IzQT7VlKLALpepJPMO5XdTgLasT90k="
+      "revision": "12143a244e0d6393bd9d26ba4356780d531255f8",
+      "url": "https://github.com/EbodShojaei/bake/archive/12143a244e0d6393bd9d26ba4356780d531255f8.tar.gz",
+      "hash": "sha256-HbBibwrd73GA0Z3xiYJAu1te7BADqsSkk0d99bMrwPw="
     },
     "crane": {
       "type": "Git",
@@ -35,9 +35,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "444e81206df3f7d92780680e45858e31d2f07a08",
-      "url": "https://github.com/ipetkov/crane/archive/444e81206df3f7d92780680e45858e31d2f07a08.tar.gz",
-      "hash": "sha256-0tcS8FHd4QjbCVoxN9jI+PjHgA4vc/IjkUSp+N3zy0U="
+      "revision": "95d528a5f54eaba0d12102249ce42f4d01f4e364",
+      "url": "https://github.com/ipetkov/crane/archive/95d528a5f54eaba0d12102249ce42f4d01f4e364.tar.gz",
+      "hash": "sha256-NU5WaEdfwF6i8faJ2Yh+jcK9vVFrofLcwlD/mP65JrI="
     },
     "disko": {
       "type": "GitRelease",
@@ -62,11 +62,11 @@
         "owner": "nix-community",
         "repo": "home-manager"
       },
-      "branch": "main",
+      "branch": "master",
       "submodules": false,
-      "revision": "77f348da3176dc68b20a73dab94852a417daf361",
-      "url": "https://github.com/nix-community/home-manager/archive/77f348da3176dc68b20a73dab94852a417daf361.tar.gz",
-      "hash": "sha256-eiy0klFK5EVJLNilutR7grsZN/7Itj9DyD75eyOf83k="
+      "revision": "004753ae6b04c4b18aa07192c1106800aaacf6c3",
+      "url": "https://github.com/nix-community/home-manager/archive/004753ae6b04c4b18aa07192c1106800aaacf6c3.tar.gz",
+      "hash": "sha256-CcT3QvZ74NGfM+lSOILcCEeU+SnqXRvl1XCRHenZ0Us="
     },
     "impermanence": {
       "type": "Git",
@@ -81,27 +81,11 @@
       "url": "https://github.com/nix-community/impermanence/archive/4b3e914cdf97a5b536a889e939fb2fd2b043a170.tar.gz",
       "hash": "sha256-LJggUHbpyeDvNagTUrdhe/pRVp4pnS6wVKALS782gRI="
     },
-    "lanzaboote": {
-      "type": "GitRelease",
-      "repository": {
-        "type": "GitHub",
-        "owner": "nix-community",
-        "repo": "lanzaboote"
-      },
-      "pre_releases": false,
-      "version_upper_bound": null,
-      "release_prefix": null,
-      "submodules": false,
-      "version": "v0.4.2",
-      "revision": "f0212638a2ec787a7841882f4477d40ae24f0a5d",
-      "url": "https://api.github.com/repos/nix-community/lanzaboote/tarball/refs/tags/v0.4.2",
-      "hash": "sha256-AEEDktApTEZ5PZXNDkry2YV2k6t0dTgLPEmAZbnigXU="
-    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixos-unstable",
-      "url": "https://releases.nixos.org/nixos/unstable/nixos-25.11pre864002.8eaee1103447/nixexprs.tar.xz",
-      "hash": "sha256-XDY3A83bclygHDtesRoaRTafUd80Q30D/Daf9KSG6bs="
+      "url": "https://releases.nixos.org/nixos/unstable/nixos-25.11pre870157.7df7ff7d8e00/nixexprs.tar.xz",
+      "hash": "sha256-1yCvOeEMQX/0WqpVtxtKFI2rlfq9W/bxOTGJtRuQv7g="
     },
     "nixpkgs-frozen": {
       "type": "Channel",
@@ -119,9 +103,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "afa9fe50cb0bff9ba7e9f7796892f71722b2180d",
-      "url": "https://github.com/andir/npins/archive/afa9fe50cb0bff9ba7e9f7796892f71722b2180d.tar.gz",
-      "hash": "sha256-D6dYAMk9eYpBriE07s8Q7M3WBT7uM9pz3RKIoNk+h7I="
+      "revision": "e49bcf58d66fa7f586aff687feae72c23e429672",
+      "url": "https://github.com/andir/npins/archive/e49bcf58d66fa7f586aff687feae72c23e429672.tar.gz",
+      "hash": "sha256-ZLrVWa7WU+IUXPAd6mR7B9c6FDZSiGgW8ClfW0SxbMs="
     },
     "nur-expressions": {
       "type": "Git",
@@ -131,9 +115,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "f9c2e6b2eebdbe0e87236a63ea323c86da79b6c5",
+      "revision": "8af6dfcbcbf1115a4f5aeed77ff0db5d3c02caf0",
       "url": null,
-      "hash": "sha256-eAzmD4ijeWCFy4YqArNmVu8901nLQLHr6dCv94yRrFk="
+      "hash": "sha256-EteyL8KyG9R5xzqyOBzyag4n2cSemu61VFrl3opJSqE="
     },
     "rosep-fish": {
       "type": "Git",
@@ -170,9 +154,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "07619500e5937cc4669f24fec355d18a8fec0165",
-      "url": "https://github.com/oxalica/rust-overlay/archive/07619500e5937cc4669f24fec355d18a8fec0165.tar.gz",
-      "hash": "sha256-NspGtm0ZpihxlFD628pvh5ZEhL/Q6/Z9XBpe3n6ZtEw="
+      "revision": "7ef14552303de7128662666f9a71342099ffc725",
+      "url": "https://github.com/oxalica/rust-overlay/archive/7ef14552303de7128662666f9a71342099ffc725.tar.gz",
+      "hash": "sha256-kULiC2oMMuyaO92gPiu+6XBfeXuFcXaauwo0tXAwXdQ="
     }
   },
   "version": 6

@@ -10,13 +10,10 @@
     environment.systemPackages = with pkgs; [ radeontop btop-rocm ];
     hardware.graphics = {
       extraPackages = with pkgs; [
-        amdvlk
         rocmPackages.clr.icd
         vaapiVdpau
         libvdpau-va-gl
       ];
-
-      extraPackages32 = with pkgs; [driversi686Linux.amdvlk];
     };
 
     services.xserver.videoDrivers = ["amdgpu"];
