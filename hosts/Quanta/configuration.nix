@@ -138,6 +138,27 @@ in {
   programs = {
   };
 
+  systemd.user.services.set-default-audio-device = {
+    description = "Set default audio sink";
+    wantedBy = [ "pipewire-session-manager.service" ];
+    after = [ "pipewire-session-manager.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.writeShellScript "set-default-audio" ''
+        # Wait a moment for devices to be fully registered
+        sleep 2
+      
+        # Find the sink by name and set it as default
+        ${pkgs.wireplumber}/bin/wpctl status | \
+          ${pkgs.gnugrep}/bin/grep -A 999 "Audio" | \
+          ${pkgs.gnugrep}/bin/grep "Family 17h/19h/1ah HD Audio Controller Analog Stereo" | \
+          ${pkgs.gnugrep}/bin/grep -oP '\d+(?=\.)' | \
+          head -n1 | \
+          xargs -I {} ${pkgs.wireplumber}/bin/wpctl set-default {}
+      ''}";
+    };
+  };
+
   users.mutableUsers = false;
 
   # This is for the monitor input switching feature unique to this machine.
