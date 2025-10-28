@@ -2,15 +2,10 @@
   imports = [
     # unimported
     ./desktop
-    ./gdm.nix
 
     # internal
     ./age.nix
     ./direnv.nix
-    ./keyd.nix
-    ./zed.nix
-    ./helix.nix
-    ./firefox.nix
 
     # external
     #./lanzaboote.nix
@@ -18,7 +13,6 @@
     # this is not an option
     # auto enables fish and overwrites bash
     ./fish.nix
-
     ./flatpak.nix
   ];
 

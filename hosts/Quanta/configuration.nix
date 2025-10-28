@@ -26,13 +26,10 @@ in {
       amd.enable = true;
     };
 
-    desktop.kde.enable = true;
+    desktop.gnome.enable = true;
     security.yubikey.enable = true;
 
     programs = {
-      zeditor.enable = true;
-      helix.enable = true;
-      keyd.enable = false;
       flatpak.enable = true;
     };
 

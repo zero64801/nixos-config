@@ -4,9 +4,6 @@
     silent = true;
     loadInNixShell = true;
     nix-direnv.enable = true;
-    # YOUVE GOT TO BE FUCKING KIDDING ME
-    # ALL I HADDA DO WAS REBOOT AND I WASTED SO MANY HOURS?
-    # AAAAAAAAAAAAAAAAA
     direnvrcExtra = ''
       : "''${XDG_CACHE_HOME:="''${HOME}/.cache"}"
       declare -A direnv_layout_dirs
