@@ -7,13 +7,6 @@
 
 with lib;
 
-let
-  looking-glass-client-with-libdecor = pkgs.looking-glass-client.overrideAttrs (oldAttrs: {
-    buildInputs = oldAttrs.buildInputs ++ [ pkgs.libdecor ];
-
-    cmakeFlags = oldAttrs.cmakeFlags ++ [ "-DENABLE_LIBDECOR=ON" ];
-  });
-in
 {
   options.nyx.virtualisation.desktop = {
     vfio.enable = mkEnableOption "VFIO/IOMMU GPU passthrough support.";
@@ -80,8 +73,7 @@ in
     virtualisation.spiceUSBRedirection.enable = true;
     environment.systemPackages = with pkgs; [
       spice-gtk
-    ] ++ (lib.optionals config.nyx.virtualisation.desktop.looking-glass.enable [
-      looking-glass-client-with-libdecor
-    ]);
+      looking-glass-client
+    ];
   };
 }

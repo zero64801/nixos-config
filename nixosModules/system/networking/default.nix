@@ -5,7 +5,6 @@
 }: {
   imports = [
     ./bluetooth.nix
-    #./dnsproxy2.nix
   ];
 
   config = lib.mkIf (!config.nyx.data.headless) {

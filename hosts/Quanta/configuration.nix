@@ -26,21 +26,14 @@ in {
       amd.enable = true;
     };
 
-    desktop.gnome.enable = true;
+    desktop.kde.enable = true;
     security.yubikey.enable = true;
 
     programs = {
+      zeditor.enable = true;
       helix.enable = true;
-      obs-studio.enable = false;
       keyd.enable = false;
       flatpak.enable = true;
-      privoxy = {
-        enable = false;
-        forwards = [
-          # I shouldn't be exposing myself like this
-          {domains = ["www.privoxy.org" ".donmai.us" "rule34.xxx" ".yande.re" "www.zerochan.net" ".kemono.su" "hanime.tv"];}
-        ];
-      };
     };
 
     impermanence = {
@@ -147,7 +140,7 @@ in {
       ExecStart = "${pkgs.writeShellScript "set-default-audio" ''
         # Wait a moment for devices to be fully registered
         sleep 2
-      
+
         # Find the sink by name and set it as default
         ${pkgs.wireplumber}/bin/wpctl status | \
           ${pkgs.gnugrep}/bin/grep -A 999 "Audio" | \

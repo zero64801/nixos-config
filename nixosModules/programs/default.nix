@@ -7,11 +7,10 @@
     # internal
     ./age.nix
     ./direnv.nix
-    ./obs.nix
     ./keyd.nix
+    ./zed.nix
     ./helix.nix
     ./firefox.nix
-    ./privoxy.nix
 
     # external
     #./lanzaboote.nix
