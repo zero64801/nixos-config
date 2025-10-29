@@ -1,18 +1,16 @@
 {
-  config,
-  lib,
   pkgs,
   sources,
   ...
-}: let
-  inherit (lib) mkForce optional;
-in {
+}:
+{
   imports = [
     (sources.impermanence + "/nixos.nix")
     (sources.disko + "/module.nix")
     ./disko-config.nix
     ./hardware-configuration.nix
     ./user-configuration.nix
+    ./vms
     ../../users/dx.nix
   ];
 
@@ -76,52 +74,26 @@ in {
       desktop = {
         vfio = {
           enable = true;
-          ids = [ "10de:2489" "10de:228b" "1912:0014" ];
+          ids = [
+            "10de:2489"
+            "10de:228b"
+            "1912:0014"
+          ];
         };
 
         looking-glass = {
           enable = true;
           staticSizeMb = 32;
         };
-
-        hooks.win11 = pkgs.writeShellScript "win11-vfio-hook.sh" ''
-          #!${pkgs.bash}/bin/bash
-          set -e
-          set -x
-
-          HOST_CORES="0-3,8-11"
-          ALL_CORES="0-15"
-
-          VM_NAME="$1"
-          OPERATION="$2"
-          SUB_OPERATION="$3"
-
-          SYSTEMCTL="${pkgs.systemd}/bin/systemctl"
-
-          case "$OPERATION/$SUB_OPERATION" in
-          "prepare/begin")
-              echo "VFIO-HOOK: Starting for $VM_NAME"
-              echo "VFIO-HOOK: Isolating CPUs. Host will use cores: $HOST_CORES"
-              $SYSTEMCTL set-property --runtime -- user.slice AllowedCPUs=$HOST_CORES
-              $SYSTEMCTL set-property --runtime -- system.slice AllowedCPUs=$HOST_CORES
-              $SYSTEMCTL set-property --runtime -- init.scope AllowedCPUs=$HOST_CORES
-          ;;
-
-          "release/end")
-              echo "VFIO-HOOK: Stopping for $VM_NAME"
-              echo "VFIO-HOOK: Restoring all CPU cores ($ALL_CORES) to host"
-              $SYSTEMCTL set-property --runtime -- user.slice AllowedCPUs=$ALL_CORES
-              $SYSTEMCTL set-property --runtime -- system.slice AllowedCPUs=$ALL_CORES
-              $SYSTEMCTL set-property --runtime -- init.scope AllowedCPUs=$ALL_CORES
-          ;;
-          esac
-        '';
       };
     };
   };
 
   # forward dns onto the tailnet
-  networking.firewall.allowedTCPPorts = [ 8080 5001 ];
+  networking.firewall.allowedTCPPorts = [
+    8080
+    5001
+  ];
   networking.firewall.allowedUDPPorts = [ 5353 ];
 
   # generic
@@ -130,22 +102,28 @@ in {
 
   systemd.user.services.set-default-audio-device = {
     description = "Set default audio sink";
-    wantedBy = [ "pipewire-session-manager.service" ];
-    after = [ "pipewire-session-manager.service" ];
+    wantedBy = [ "graphical-session.target" ];
+    after = [ "graphical-session.target" ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.writeShellScript "set-default-audio" ''
-        # Wait a moment for devices to be fully registered
-        sleep 2
+      ExecStart = ''
+        ${pkgs.writeShellScript "set-default-audio" ''
+          # A more robust wait for the device to appear
+          until ${pkgs.wireplumber}/bin/wpctl status | ${pkgs.gnugrep}/bin/grep -q "Family 17h/19h/1ah HD Audio Controller Analog Stereo"; do
+            sleep 1
+          done
 
-        # Find the sink by name and set it as default
-        ${pkgs.wireplumber}/bin/wpctl status | \
-          ${pkgs.gnugrep}/bin/grep -A 999 "Audio" | \
-          ${pkgs.gnugrep}/bin/grep "Family 17h/19h/1ah HD Audio Controller Analog Stereo" | \
-          ${pkgs.gnugrep}/bin/grep -oP '\d+(?=\.)' | \
-          head -n1 | \
-          xargs -I {} ${pkgs.wireplumber}/bin/wpctl set-default {}
-      ''}";
+          # Find the sink by name and set it as default
+          SINK_ID=$(${pkgs.wireplumber}/bin/wpctl status | \
+            ${pkgs.gnugrep}/bin/grep -A 2 "Family 17h/19h/1ah HD Audio Controller Analog Stereo" | \
+            ${pkgs.gnugrep}/bin/grep -oP '\d+(?=\.)' | \
+            head -n1)
+
+          if [ -n "$SINK_ID" ]; then
+            ${pkgs.wireplumber}/bin/wpctl set-default "$SINK_ID"
+          fi
+        ''}
+      '';
     };
   };
 
@@ -153,7 +131,7 @@ in {
 
   # This is for the monitor input switching feature unique to this machine.
   boot.kernelModules = [ "i2c-dev" ];
-  users.groups.i2c = {};
+  users.groups.i2c = { };
   nyx.security.serviceAdminGroups = [ "i2c" ];
 
   services.udev.extraRules = ''
@@ -173,7 +151,7 @@ in {
   services.btrfs.autoScrub = {
     enable = true;
     interval = "monthly";
-    fileSystems = ["/"];
+    fileSystems = [ "/" ];
   };
 
   # disable network manager wait online service (+6 seconds to boot time!!!!)
@@ -185,5 +163,5 @@ in {
     tctiEnvironment.enable = true;
   };
 
-  users.users.dx.extraGroups = ["tss"];
+  users.users.dx.extraGroups = [ "tss" ];
 }
