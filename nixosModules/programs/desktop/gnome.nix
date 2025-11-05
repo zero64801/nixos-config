@@ -32,7 +32,7 @@
       gnome-font-viewer gnome-logs gnome-maps gnome-music
       gnome-connections gnome-tour snapshot gnome-console
       gnome-software gnome-photos gnome-disk-utility
-      gnome-passwordsafe gnome-pass-search-provider
+      gnome-secrets gnome-pass-search-provider
       gnome-weather gnome-clocks
     ];
 

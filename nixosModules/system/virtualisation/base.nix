@@ -39,11 +39,6 @@ with lib;
       package = pkgs.qemu_kvm;
       runAsRoot = false; # More secure default
       swtpm.enable = true; # For Windows 11 TPM support
-      ovmf.enable = true;
-      ovmf.packages = [(pkgs.OVMFFull.override {
-        secureBoot = true;
-        tpmSupport = true;
-      }).fd];
       verbatimConfig = ''
         cgroup_device_acl = [
           ${concatStringsSep ",\n" (map (path: ''"${path}"'') config.nyx.virtualisation.base.cgroupDeviceACL)}

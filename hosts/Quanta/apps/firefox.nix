@@ -47,7 +47,6 @@
               placements = {
                 widget-overflow-fixed-list = [ ];
                 unified-extensions-area = [
-                  "_446900e4-71c2-419f-a6a7-df9c091e268b_-browser-action"
                   "addon_darkreader_org-browser-action"
                   "ublock0_raymondhill_net-browser-action"
                 ];
@@ -71,7 +70,6 @@
               };
               seen = [
                 "addon_darkreader_org-browser-action"
-                "_446900e4-71c2-419f-a6a7-df9c091e268b_-browser-action"
                 "ublock0_raymondhill_net-browser-action"
                 "developer-button"
               ];
@@ -103,11 +101,8 @@
           let
             extensions = with pkgs.nur.repos.rycee.firefox-addons; [
               darkreader
-              tweaks-for-youtube
               return-youtube-dislikes
               ublock-origin
-              user-agent-string-switcher
-              consent-o-matic
               bitwarden
             ];
             extensionsPolicy = builtins.listToAttrs (
@@ -150,8 +145,6 @@
       '';
     };
     nativeMessagingHosts = with pkgs; [
-      keepassxc
     ];
   };
 }
-

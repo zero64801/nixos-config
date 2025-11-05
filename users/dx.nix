@@ -29,7 +29,6 @@ in {
       curl
       git
       fastfetch
-      micro
     ];
   };
 
