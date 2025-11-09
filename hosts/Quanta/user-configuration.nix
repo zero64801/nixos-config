@@ -4,16 +4,18 @@
   pkgs,
   dconf,
   ...
-}: let
+}:
+let
   packages = lib.attrValues {
     inherit (pkgs) foot;
     # from internal overlay
     inherit (pkgs) mpv-wrapped;
   };
-in {
+in
+{
   users.users."dx" = {
     inherit packages;
-    extraGroups = [];
+    extraGroups = [ ];
   };
 
   services.pcscd.enable = true;
@@ -24,7 +26,7 @@ in {
 
   home-manager.users."dx" = {
     imports = [ ./apps ];
-  
+
     programs.git = {
       enable = true;
 
@@ -38,18 +40,18 @@ in {
 
     gtk = {
       enable = true;
-      
+
       theme = {
         name = "Orchis-Purple-Dark-Compact";
         package = pkgs.orchis-theme;
       };
-      
+
       iconTheme = {
         name = "Tela-purple-dark";
         package = pkgs.tela-icon-theme;
       };
     };
-  
+
     dconf.settings = {
       "org/gnome/shell" = {
         disable-user-extensions = false;
@@ -75,7 +77,7 @@ in {
       "org/gnome/shell/extensions/user-theme".name = "Orchis-Purple-Dark-Compact";
 
       "org/gnome/desktop/interface".color-scheme = "prefer-dark";
-      "org/gnome/desktop/background".picture-uri-dark = "file:///home/dx/Pictures/Wallpapers/wp3.jpg";
+      "org/gnome/desktop/background".picture-uri-dark = "file:///home/dx/Pictures/Wallpapers/wp.png";
 
       "org/gnome/desktop/wm/preferences" = {
         button-layout = "appmenu:minimize,maximize,close"; # minimize,maximize,close
@@ -109,6 +111,53 @@ in {
         command = "${pkgs.ddcutil}/bin/ddcutil setvcp 60 1";
         binding = "<Control><Shift>F2";
       };
+    };
+
+    home.file.".config/monitors.xml" = {
+      source = pkgs.writeText "monitors.xml" ''
+        <monitors version="2">
+          <configuration>
+            <layoutmode>physical</layoutmode>
+            <logicalmonitor>
+              <x>0</x>
+              <y>0</y>
+              <scale>1</scale>
+              <monitor>
+                <monitorspec>
+                  <connector>HDMI-1</connector>
+                  <vendor>GSM</vendor>
+                  <product>LG ULTRAGEAR</product>
+                  <serial>307AZGF1N415</serial>
+                </monitorspec>
+                <mode>
+                  <width>1920</width>
+                  <height>1080</height>
+                  <rate>143.981</rate>
+                </mode>
+              </monitor>
+            </logicalmonitor>
+            <logicalmonitor>
+              <x>1920</x>
+              <y>0</y>
+              <scale>1</scale>
+              <primary>yes</primary>
+              <monitor>
+                <monitorspec>
+                  <connector>DP-2</connector>
+                  <vendor>DEL</vendor>
+                  <product>AW2724DM</product>
+                  <serial>2S6YHV3</serial>
+                </monitorspec>
+                <mode>
+                  <width>2560</width>
+                  <height>1440</height>
+                  <rate>179.960</rate>
+                </mode>
+              </monitor>
+            </logicalmonitor>
+          </configuration>
+        </monitors>
+      '';
     };
   };
 }

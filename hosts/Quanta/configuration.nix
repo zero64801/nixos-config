@@ -83,7 +83,7 @@
 
         looking-glass = {
           enable = true;
-          staticSizeMb = 32;
+          staticSizeMb = 64;
         };
       };
     };
