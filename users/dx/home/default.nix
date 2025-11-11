@@ -1,8 +1,14 @@
-{ config, lib, pkgs, stateVersion, ... }:
+{
+  lib,
+  pkgs,
+  stateVersion,
+  ...
+}:
 
 {
   imports = [
     ./programs
+    ./desktop
   ];
 
   home = {

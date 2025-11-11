@@ -1,4 +1,4 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
 {
   imports = [
@@ -15,7 +15,7 @@
     ../../profiles/desktop.nix
   ];
 
-  system.stateVersion = "25.05";
+  system.stateVersion = "25.11";
   networking.hostName = "Quanta";
 
   # Graphics
@@ -25,7 +25,7 @@
   };
 
   # Desktop
-  nyx.desktop.cosmic.enable = true;
+  nyx.desktop.plasma6.enable = true;
 
   # Security
   nyx.security.yubikey.enable = true;
@@ -70,9 +70,15 @@
         ".var"
         ".local/share/direnv"
         ".local/share/fish"
+        ".local/state/cosmic"
+        ".local/state/cosmic-comp"
         ".config/cosmic"
         "Downloads"
         "Pictures/Wallpapers"
+      ];
+
+      files = [
+        ".config/cosmic-initial-setup-done"
       ];
     };
   };
@@ -85,9 +91,9 @@
       vfio = {
         enable = true;
         ids = [
-          "10de:2489"  # NVIDIA Graphics
-          "10de:228b"  # NVIDIA Audio
-          "1912:0014"  # USB Controller
+          "10de:2489" # NVIDIA Graphics
+          "10de:228b" # NVIDIA Audio
+          "1912:0014" # USB Controller
         ];
       };
 
