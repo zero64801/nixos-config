@@ -21,9 +21,32 @@
         wallpaper = "${pkgs.kdePackages.plasma-workspace-wallpapers}/share/wallpapers/Elarun/contents/images/2560x1600.png";
       };
 
+      # Disable automatic screen locking
+      kscreenlocker = {
+        autoLock = false;
+        lockOnResume = false;
+        lockOnStartup = false;
+      };
+
+      # Disable auto-suspend and screen turning off
+      powerdevil = {
+        AC = {
+          autoSuspend = {
+            action = "nothing";
+          };
+          turnOffDisplay = {
+            idleTimeout = "never";
+          };
+          dimDisplay = {
+            enable = false;
+          };
+        };
+      };
+
       panels = [
         {
           location = "bottom";
+          screen = 0;
           widgets = [
             {
               kickoff = {
@@ -74,14 +97,27 @@
             Theme = "Tela-dark";
           };
         };
-        # KScreen configuration for display layout
-        kscreenrc = {
-          "Display-HDMI-A-1" = {
-            Position = "0,0"; # Secondary monitor on the left
+        # Disable KDE Wallet
+        kwalletrc = {
+          "Wallet" = {
+            "Enabled" = false;
+            "First Use" = false;
+            "Prompt on Open" = false;
           };
-          "Display-DP-2" = {
-            Position = "1920,0"; # Primary monitor
-          };
+        };
+      };
+
+      startup.startupScript = {
+        displayLayout = {
+          text = ''
+            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.HDMI-A-1.position.0,0 output.DP-2.position.1920,0 output.DP-2.primary
+
+            # Set brightness to 100% for all displays
+            for output in HDMI-A-1 DP-2; do
+              ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.$output.brightness.100
+            done
+          '';
+          priority = 1;
         };
       };
     };

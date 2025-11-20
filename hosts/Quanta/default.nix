@@ -130,7 +130,7 @@
 
   # Audio device service
   systemd.user.services.set-default-audio-device = {
-    description = "Set default audio sink";
+    description = "Set default audio sink and volume";
     wantedBy = [ "graphical-session.target" ];
     after = [ "graphical-session.target" ];
 
@@ -147,7 +147,10 @@
           ${pkgs.gnugrep}/bin/grep -oP '\d+(?=\.)' | \
           head -n1)
 
-        [ -n "$SINK_ID" ] && ${pkgs.wireplumber}/bin/wpctl set-default "$SINK_ID"
+        if [ -n "$SINK_ID" ]; then
+          ${pkgs.wireplumber}/bin/wpctl set-default "$SINK_ID"
+          ${pkgs.wireplumber}/bin/wpctl set-volume "$SINK_ID" 100%
+        fi
       '';
     };
   };
