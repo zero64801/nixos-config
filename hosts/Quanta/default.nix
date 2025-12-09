@@ -6,6 +6,7 @@
     ./hardware.nix
     ./disko.nix
     ./networking.nix
+    ./storage.nix
     ./libvirt
 
     # User
@@ -21,7 +22,9 @@
   # Graphics
   nyx.graphics = {
     enable = true;
+    primary = "amd";
     amd.enable = true;
+    nvidia.enable = true;
   };
 
   # Desktop
@@ -35,6 +38,9 @@
     pkcs11.enable = true;
     tctiEnvironment.enable = true;
   };
+
+  # Power Management
+  powerManagement.cpuFreqGovernor = "performance";
 
   # Programs
   nyx.programs.flatpak.enable = true;
@@ -50,13 +56,6 @@
       "/var/lib/NetworkManager"
       "/var/lib/systemd/coredump"
       "/etc/NetworkManager/system-connections"
-      "/etc/u2f_keys"
-      {
-        directory = "/var/lib/libvirt";
-        user = "root";
-        group = "libvirtd";
-        mode = "0770";
-      }
     ];
 
     files = [
@@ -94,6 +93,20 @@
           "10de:2489" # NVIDIA Graphics
           "10de:228b" # NVIDIA Audio
           "1912:0014" # USB Controller
+        ];
+      };
+
+      # GPU switching between NVIDIA driver and VFIO-PCI
+      gpuSwitch = {
+        enable = true;
+        defaultMode = "vfio"; # Start with vfio-pci driver loaded
+        pciAddresses = [
+          "0a:00.0" # NVIDIA Graphics
+          "0a:00.1" # NVIDIA Audio
+        ];
+        deviceIds = [
+          "10de:2489" # NVIDIA Graphics
+          "10de:228b" # NVIDIA Audio
         ];
       };
 

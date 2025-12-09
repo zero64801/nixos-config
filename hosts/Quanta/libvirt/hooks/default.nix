@@ -1,6 +1,6 @@
 {
   imports = [
-    ./win11.nix
+    ./win10.nix
     ./win11-re.nix
   ];
 }

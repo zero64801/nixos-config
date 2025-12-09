@@ -31,6 +31,7 @@
       # Disable auto-suspend and screen turning off
       powerdevil = {
         AC = {
+          powerProfile = "performance";
           autoSuspend = {
             action = "nothing";
           };

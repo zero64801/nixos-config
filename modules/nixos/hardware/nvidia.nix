@@ -1,16 +1,19 @@
 {
-  pkgs,
   config,
   lib,
   ...
-}: {
+}:
+{
   options.nyx.graphics.nvidia = {
     enable = lib.mkEnableOption "nVidia graphics";
     hybrid = {
       enable = lib.mkEnableOption "optimus prime";
       igpu = {
         vendor = lib.mkOption {
-          type = lib.types.enum ["amd" "intel"];
+          type = lib.types.enum [
+            "amd"
+            "intel"
+          ];
           default = "amd";
         };
         port = lib.mkOption {
@@ -25,9 +28,10 @@
     };
   };
 
-  config = let
-    cfg = config.nyx.graphics.nvidia;
-  in
+  config =
+    let
+      cfg = config.nyx.graphics.nvidia;
+    in
     lib.mkIf (cfg.enable && config.nyx.graphics.enable) {
       nix.settings = {
         extra-substituters = [
@@ -38,15 +42,25 @@
           "cuda-maintainers.cachix.org-1:0dq3bujKpuEPMCX6U4WylrUDZ9JyUG0VpVZa7CNfq5E="
         ];
       };
-      services.xserver.videoDrivers = ["nvidia"];
-      environment.systemPackages = [pkgs.zenith-nvidia];
+      services.xserver.videoDrivers =
+        let
+          order = if config.nyx.graphics.primary == "nvidia" then 100 else 200;
+        in
+        lib.mkOrder order [ "nvidia" ];
+
+      boot.kernelModules = [
+        "nvidia"
+        "nvidia_modeset"
+        "nvidia_uvm"
+        "nvidia_drm"
+      ];
 
       hardware.nvidia = {
         modesetting.enable = true;
-        dynamicBoost.enable = true;
+        dynamicBoost.enable = false;
 
         powerManagement = {
-          enable = true;
+          enable = false;
           finegrained = cfg.hybrid.enable;
         };
 

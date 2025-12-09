@@ -3,11 +3,15 @@
   config,
   lib,
   ...
-}: {
+}:
+{
   options.nyx.graphics.amd.enable = lib.mkEnableOption "amd graphics";
 
   config = lib.mkIf (config.nyx.graphics.amd.enable && config.nyx.graphics.enable) {
-    environment.systemPackages = with pkgs; [ radeontop btop-rocm ];
+    environment.systemPackages = with pkgs; [
+      radeontop
+      btop-rocm
+    ];
     hardware.graphics = {
       extraPackages = with pkgs; [
         rocmPackages.clr.icd
@@ -16,7 +20,11 @@
       ];
     };
 
-    services.xserver.videoDrivers = ["amdgpu"];
+    services.xserver.videoDrivers =
+      let
+        order = if config.nyx.graphics.primary == "amd" then 100 else 200;
+      in
+      lib.mkOrder order [ "amdgpu" ];
 
     # amd hip workaround
     systemd.tmpfiles.rules = [

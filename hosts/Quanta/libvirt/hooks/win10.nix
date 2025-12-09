@@ -1,6 +1,6 @@
 { pkgs, ... }:
 {
-  nyx.virtualisation.desktop.hooks.win11 = pkgs.writeShellScript "win11-vfio-hook.sh" ''
+  nyx.virtualisation.desktop.hooks.win10 = pkgs.writeShellScript "win10-vfio-hook.sh" ''
     #!${pkgs.bash}/bin/bash
     set -e
     set -x

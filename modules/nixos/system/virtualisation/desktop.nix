@@ -9,7 +9,7 @@ with lib;
 
 let
   cfg = config.nyx.virtualisation.desktop;
-  baseCfg = config.nyx.virtualisation.base;
+  gpuSwitchCfg = cfg.gpuSwitch;
 in
 {
   options.nyx.virtualisation.desktop = {
@@ -20,14 +20,20 @@ in
         type = types.listOf types.str;
         default = [ ];
         description = "PCI device IDs to bind to vfio-pci driver";
-        example = [ "10de:1b80" "10de:10f0" ];
+        example = [
+          "10de:1b80"
+          "10de:10f0"
+        ];
       };
 
       pciAddresses = mkOption {
         type = types.listOf types.str;
         default = [ ];
         description = "PCI bus addresses to detach for passthrough";
-        example = [ "01:00.0" "01:00.1" ];
+        example = [
+          "01:00.0"
+          "01:00.1"
+        ];
       };
     };
 
@@ -58,11 +64,19 @@ in
   config = mkMerge [
     # VFIO Configuration
     (mkIf cfg.vfio.enable {
-      boot.initrd.kernelModules = [ "vfio_pci" "vfio" "vfio_iommu_type1" ];
-
-      nyx.virtualisation.base.extraModprobeConfigLines = mkIf (cfg.vfio.ids != [ ]) [
-        "options vfio-pci ids=${concatStringsSep "," cfg.vfio.ids}"
+      boot.initrd.kernelModules = [
+        "vfio_pci"
+        "vfio"
+        "vfio_iommu_type1"
       ];
+
+      # Only bind to vfio-pci at boot if gpuSwitch is disabled OR if defaultMode is vfio
+      # When gpuSwitch is enabled with nvidia defaultMode, we want nvidia to load first
+      nyx.virtualisation.base.extraModprobeConfigLines =
+        mkIf (cfg.vfio.ids != [ ] && (!gpuSwitchCfg.enable || gpuSwitchCfg.defaultMode == "vfio"))
+          [
+            "options vfio-pci ids=${concatStringsSep "," cfg.vfio.ids}"
+          ];
 
       nyx.virtualisation.base.cgroupDeviceACL = [ "/dev/vfio/vfio" ];
     })

@@ -3,10 +3,8 @@
 {
   config = lib.mkIf (!config.nyx.data.headless) {
     # System services
-    services.thermald.enable = lib.mkDefault true;
     services.fwupd.enable = lib.mkDefault true;
     services.dbus.implementation = lib.mkDefault "broker";
-    services.irqbalance.enable = lib.mkDefault true;
 
     # X11 keyboard configuration
     services.xserver.xkb = {

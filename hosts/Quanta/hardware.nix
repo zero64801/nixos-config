@@ -14,7 +14,7 @@
 
   boot = {
     kernelPackages = pkgs.linuxPackages_latest;
-    kernelModules = [ "kvm-amd" "nvidia" ];
+    kernelModules = [ "kvm-amd" ];
     kernelParams = [
       "amd_pstate=active"
     ];
