@@ -10,7 +10,8 @@ let
 in
 {
   boot.initrd.luks.devices."cryptstorage" = {
-    device = "/dev/nvme1n1p1";
+    # Use stable UUID instead of /dev/nvmeXn1p1 - device order can change between boots
+    device = "/dev/disk/by-uuid/55b0120f-6cd0-4820-885c-bfd656e6beba";
     crypttabExtraOpts = [ "fido2-device=auto" ];
     allowDiscards = true;
   };

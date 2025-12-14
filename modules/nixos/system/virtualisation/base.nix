@@ -49,6 +49,10 @@ in
             cgroup_device_acl = [
               ${concatStringsSep ",\n    " (map (path: ''"${path}"'') cfg.cgroupDeviceACL)}
             ]
+          ''
+          + optionalString cfg.enableVirgl ''
+            spice_gl = 1
+            spice_rendernode = "/dev/dri/renderD128"
           '';
         };
       };
@@ -65,7 +69,10 @@ in
         "/dev/rtc"
         "/dev/hpet"
       ]
-      ++ optional cfg.enableVirgl "/dev/dri/renderD128";
+      ++ optionals cfg.enableVirgl [
+        "/dev/dri/card0"
+        "/dev/dri/renderD128"
+      ];
 
       # Trust the virtual network interface
       networking.firewall.trustedInterfaces = [ "virbr0" ];
@@ -82,7 +89,8 @@ in
       nyx.security.serviceAdminGroups = [
         "libvirtd"
         "kvm"
-      ];
+      ]
+      ++ optional cfg.enableVirgl "render";
 
       # Package management
       environment.systemPackages =

@@ -24,7 +24,6 @@
     enable = true;
     primary = "amd";
     amd.enable = true;
-    nvidia.enable = true;
   };
 
   # Desktop
@@ -84,35 +83,17 @@
 
   # Virtualization
   nyx.virtualisation = {
-    base.enable = true;
+    base = {
+      enable = true;
+      enableVirgl = true;
+    };
 
     desktop = {
       vfio = {
         enable = true;
         ids = [
-          "10de:2489" # NVIDIA Graphics
-          "10de:228b" # NVIDIA Audio
           "1912:0014" # USB Controller
         ];
-      };
-
-      # GPU switching between NVIDIA driver and VFIO-PCI
-      gpuSwitch = {
-        enable = true;
-        defaultMode = "vfio"; # Start with vfio-pci driver loaded
-        pciAddresses = [
-          "0a:00.0" # NVIDIA Graphics
-          "0a:00.1" # NVIDIA Audio
-        ];
-        deviceIds = [
-          "10de:2489" # NVIDIA Graphics
-          "10de:228b" # NVIDIA Audio
-        ];
-      };
-
-      looking-glass = {
-        enable = true;
-        staticSizeMb = 64;
       };
     };
   };
