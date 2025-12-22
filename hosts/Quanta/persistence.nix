@@ -22,6 +22,7 @@
         ".local/share/fish"
         "Downloads"
         "Pictures/Wallpapers"
+        ".config/vesktop/"
       ];
       files = [
       ];

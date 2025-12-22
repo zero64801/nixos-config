@@ -31,10 +31,14 @@ let
         users = { };
       };
 
-  # CLI tool for managing persistence
+  # Export the evaluated config to JSON for the CLI
+  persistenceJson = pkgs.writeText "persistence.json" (builtins.toJSON persistenceConfig);
+
+  # CLI tool
   nyx-persist = pkgs.callPackage ./cli.nix {
     inherit (cfg) persistentStoragePath configRepoPath;
     inherit hostname persistenceConfigPath;
+    inherit persistenceJson;
   };
 
   # Preset directories and files
@@ -125,20 +129,13 @@ in
       type = types.nullOr types.str;
       default = null;
       example = "/home/dx/nixos";
-      description = ''
-        Path to the NixOS configuration repository (used by CLI tool).
-        Persistence paths are managed in hosts/<hostname>/persistence.nix
-      '';
+      description = "Path to the NixOS configuration repository.";
     };
 
     persistenceConfigFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      example = lib.literalExpression "./persistence.nix";
-      description = ''
-        Path to the persistence.nix file for this host.
-        This should be a Nix path (not a string) so it's properly evaluated.
-      '';
+      description = "Path to the persistence.nix file for this host.";
     };
 
     hideMounts = mkOption {
@@ -148,69 +145,29 @@ in
     };
 
     presets = {
-      system = mkEnableOption "common system directories (/var/log, /var/lib/nixos, etc.)";
-      network = mkEnableOption "network-related persistence (NetworkManager)";
+      system = mkEnableOption "common system directories";
+      network = mkEnableOption "network-related persistence";
       bluetooth = mkEnableOption "Bluetooth persistence";
       ssh = mkEnableOption "SSH host keys persistence";
     };
 
-    # Btrfs rollback configuration
     btrfs = {
       enable = mkEnableOption "btrfs rollback on boot";
-
-      device = mkOption {
-        type = types.str;
-        default = "/dev/disk/by-label/nixos";
-        example = "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_XXXXX";
-        description = ''
-          Device or label to mount for rollback.
-          Use /dev/disk/by-id/ or /dev/disk/by-label/ for stability.
-        '';
-      };
-
-      rootSubvolume = mkOption {
-        type = types.str;
-        default = "/root";
-        description = "Path to the root subvolume (relative to btrfs mount).";
-      };
-
-      blankSnapshot = mkOption {
-        type = types.str;
-        default = "/snapshots/root/blank";
-        description = "Path to the blank snapshot to restore from.";
-      };
-
-      previousSnapshot = mkOption {
-        type = types.str;
-        default = "/snapshots/root/previous";
-        description = "Path to store the previous root backup.";
-      };
-
-      keepPrevious = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Keep a backup of the previous root before wiping.";
-      };
-
-      unlockDevice = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        example = "dev-mapper-cryptroot.device";
-        description = ''
-          Systemd device unit to wait for before rollback.
-          Set this if using LUKS encryption (e.g., "dev-mapper-cryptroot.device").
-        '';
-      };
+      device = mkOption { type = types.str; default = "/dev/disk/by-label/nixos"; };
+      rootSubvolume = mkOption { type = types.str; default = "/root"; };
+      blankSnapshot = mkOption { type = types.str; default = "/snapshots/root/blank"; };
+      previousSnapshot = mkOption { type = types.str; default = "/snapshots/root/previous"; };
+      keepPrevious = mkOption { type = types.bool; default = true; };
+      unlockDevice = mkOption { type = types.nullOr types.str; default = null; };
     };
   };
 
   config = mkIf cfg.enable (mkMerge [
-    # Assertions
     {
       assertions = [
         {
           assertion = options ? environment.persistence;
-          message = "nyx.impermanence requires the impermanence module to be imported.";
+          message = "nyx.impermanence requires the impermanence module.";
         }
         {
           assertion = cfg.btrfs.enable -> config.boot.initrd.systemd.enable;
@@ -218,15 +175,7 @@ in
         }
       ];
 
-      warnings = optional (cfg.configRepoPath == null) ''
-        nyx.impermanence: configRepoPath is not set.
-        Set nyx.impermanence.configRepoPath to your NixOS config directory
-        to enable the nyx-persist CLI tool and persistence.nix management.
-      '';
-    }
-
-    # Base impermanence configuration
-    {
+      # Map our config to the upstream impermanence module structure
       environment.persistence.${cfg.persistentStoragePath} = {
         inherit (cfg) hideMounts;
         directories = allDirectories;
@@ -237,7 +186,6 @@ in
       environment.systemPackages = [ nyx-persist ];
     }
 
-    # Btrfs rollback service
     (mkIf cfg.btrfs.enable {
       boot.initrd.systemd.services.impermanence-rollback = {
         description = "Rollback btrfs root to blank snapshot";

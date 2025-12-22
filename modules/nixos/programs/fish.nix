@@ -1,5 +1,4 @@
 {
-  lib,
   pkgs,
   config,
   ...
@@ -10,15 +9,25 @@ let
   rebuildCommand = "sudo nixos-rebuild --flake ~/nixos#${hostName}";
 
   rosepine-fzf = [
-    "fg:#908caa" "bg:-1" "hl:#ebbcba"
-    "fg+:#e0def4" "bg+:#26233a" "hl+:#ebbcba"
-    "border:#403d52" "header:#31748f" "gutter:#191724"
-    "spinner:#f6c177" "info:#9ccfd8"
-    "pointer:#c4a7e7" "marker:#eb6f92" "prompt:#908caa"
+    "fg:#908caa"
+    "bg:-1"
+    "hl:#ebbcba"
+    "fg+:#e0def4"
+    "bg+:#26233a"
+    "hl+:#ebbcba"
+    "border:#403d52"
+    "header:#31748f"
+    "gutter:#191724"
+    "spinner:#f6c177"
+    "info:#9ccfd8"
+    "pointer:#c4a7e7"
+    "marker:#eb6f92"
+    "prompt:#908caa"
   ];
 
-  fzf-options = builtins.concatStringsSep " "
-    (builtins.map (option: "--color=" + option) rosepine-fzf);
+  fzf-options = builtins.concatStringsSep " " (
+    builtins.map (option: "--color=" + option) rosepine-fzf
+  );
 in
 {
   users.users.root.shell = pkgs.fish;

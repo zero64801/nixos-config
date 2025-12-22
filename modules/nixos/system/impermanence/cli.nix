@@ -8,10 +8,13 @@
   gawk,
   gnused,
   rsync,
+  jq,
+  nix,
   persistentStoragePath ? "/persist/local",
   configRepoPath ? null,
   hostname ? "unknown",
   persistenceConfigPath ? null,
+  persistenceJson ? null,
 }:
 
 writeShellApplication {
@@ -25,6 +28,8 @@ writeShellApplication {
     gawk
     gnused
     rsync
+    jq
+    nix
   ];
 
   text = ''
@@ -34,6 +39,7 @@ writeShellApplication {
         CONFIG_REPO="${if configRepoPath != null then configRepoPath else ""}"
         HOSTNAME="${hostname}"
         PERSIST_CONFIG="${if persistenceConfigPath != null then persistenceConfigPath else ""}"
+        PERSIST_JSON_FALLBACK="${if persistenceJson != null then persistenceJson else ""}"
 
         # Colors
         RED='\033[0;31m'
@@ -52,87 +58,69 @@ writeShellApplication {
         error() { echo -e "''${RED}✗''${NC} $1" >&2; }
         header() { echo -e "\n''${BOLD}$1''${NC}"; }
 
-        # Check if config repo is set
         check_config_repo() {
           if [[ -z "''${CONFIG_REPO}" ]] || [[ -z "''${PERSIST_CONFIG}" ]]; then
             error "configRepoPath is not set in nyx.impermanence"
-            echo "Set it in your NixOS config to enable persistence management:"
-            echo ""
-            echo "  nyx.impermanence.configRepoPath = \"/home/user/nixos\";"
-            echo ""
             exit 1
           fi
         }
 
-        # Ensure config file exists with empty structure
         ensure_config() {
           check_config_repo
           if [[ ! -f "''${PERSIST_CONFIG}" ]]; then
             mkdir -p "$(dirname "''${PERSIST_CONFIG}")"
             cat > "''${PERSIST_CONFIG}" << 'NIXEOF'
-    # Persistence configuration for this host
-    # Managed by nyx-persist CLI - you can also edit manually
     {
-      directories = [
-      ];
-      files = [
-      ];
-      users = {
-      };
+      directories = [ ];
+      files = [ ];
+      users = { };
     }
     NIXEOF
             success "Created ''${PERSIST_CONFIG}"
           fi
         }
 
-        # Read a list from the Nix config (simple parsing for our known format)
-        read_list() {
-          local key="$1"
-          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then
-            return
+        get_config_json() {
+          if [[ -f "''${PERSIST_CONFIG}" ]]; then
+            if nix-instantiate --eval --strict --json -E "let c = import ''${PERSIST_CONFIG}; in if builtins.isFunction c then c {} else c" 2>/dev/null; then
+              return 0
+            fi
           fi
-          # Fix SC1087: Use ''${key}[ instead of $key[
-          sed -n "/^[[:space:]]*''${key}[[:space:]]*=[[:space:]]*\[/,/^[[:space:]]*\];/p" "''${PERSIST_CONFIG}" | \
-            grep -E '^\s+"' | \
-            sed 's/^[[:space:]]*"\(.*\)".*$/\1/'
+          if [[ -f "''${PERSIST_JSON_FALLBACK}" ]]; then
+            cat "''${PERSIST_JSON_FALLBACK}"
+          else
+            echo "{}"
+          fi
         }
 
-        # Read user directories/files
+        read_list() {
+          local key="$1"
+          get_config_json | jq -r ".''${key}[]? | if type==\"string\" then . else .directory end"
+        }
+
         read_user_list() {
           local user="$1"
           local key="$2"
-          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then
-            return
-          fi
-          # Find user block and extract the list
-          awk -v user="''${user}" -v key="''${key}" '
-            $0 ~ "^[[:space:]]*" user "[[:space:]]*=" { in_user=1 }
-            in_user && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { in_list=1; next }
-            in_list && /\];/ { in_list=0 }
-            in_list && /^[[:space:]]*"/ {
-              gsub(/^[[:space:]]*"|".*$/, "")
-              print
-            }
-            in_user && /^[[:space:]]*\};/ { in_user=0 }
-          ' "''${PERSIST_CONFIG}"
+          get_config_json | jq -r ".users[\"''${user}\"].''${key}[]? | if type==\"string\" then . else .directory end"
         }
 
-        # Get list of users in config
         read_users() {
-          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then
-            return
-          fi
-          awk '
-            /^[[:space:]]*users[[:space:]]*=/ { in_users=1; next }
-            in_users && /^[[:space:]]*\};/ { exit }
-            in_users && /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_-]*[[:space:]]*=/ {
-              gsub(/^[[:space:]]*|[[:space:]]*=.*$/, "")
-              print
-            }
-          ' "''${PERSIST_CONFIG}"
+          get_config_json | jq -r ".users | keys[]?"
         }
 
-        # Add item to a list in the Nix config
+        detect_user_from_path() {
+          local p="$1"
+          local abs_path
+          abs_path=$(realpath -m "$p")
+          if [[ "$abs_path" == /home/* ]]; then
+             local u
+             u=$(echo "$abs_path" | cut -d/ -f3)
+             if id "$u" &>/dev/null; then
+                echo "$u"
+             fi
+          fi
+        }
+
         add_to_list() {
           local key="$1"
           local value="$2"
@@ -140,7 +128,6 @@ writeShellApplication {
 
           ensure_config
 
-          # Check if already exists
           if read_list "''${key}" | grep -qxF "''${value}"; then
             warn "Already in ''${key}: ''${value}"
             return 1
@@ -153,16 +140,20 @@ writeShellApplication {
             entry="    \"''${value}\""
           fi
 
-          # Fix SC1087: Use ''${key}[ instead of $key[
-          sed -i "/^[[:space:]]*''${key}[[:space:]]*=[[:space:]]*\[/,/^[[:space:]]*\];/ {
-            /^[[:space:]]*\];/ i\\
-    ''${entry}
-          }" "''${PERSIST_CONFIG}"
+          awk -v key="''${key}" -v entry="''${entry}" '
+            BEGIN { depth = 0; in_list = 0; }
+            {
+              line = $0; gsub(/[^}{]/, "", line); len = length(line);
+              for (i=1; i<=len; i++) { if (substr(line, i, 1) == "{") depth++; if (substr(line, i, 1) == "}") depth--; }
+            }
+            depth == 1 && $0 ~ "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*[[]" { in_list = 1 }
+            in_list && /^[[:space:]]*\];/ { print entry; in_list = 0 }
+            { print }
+          ' "''${PERSIST_CONFIG}" > "''${PERSIST_CONFIG}.tmp" && mv "''${PERSIST_CONFIG}.tmp" "''${PERSIST_CONFIG}"
 
           return 0
         }
 
-        # Add item to user's list
         add_to_user_list() {
           local user="$1"
           local key="$2"
@@ -171,21 +162,16 @@ writeShellApplication {
 
           ensure_config
 
-          # Check if user block exists, create if not
           if ! grep -q "^[[:space:]]*''${user}[[:space:]]*=" "''${PERSIST_CONFIG}"; then
-            # Add user block before closing }; of users
             sed -i "/^[[:space:]]*users[[:space:]]*=/,/^[[:space:]]*\};/ {
               /^[[:space:]]*\};/ i\\
         ''${user} = {\\
-          directories = [\\
-          ];\\
-          files = [\\
-          ];\\
+          directories = [ ];\\
+          files = [ ];\\
         };
             }" "''${PERSIST_CONFIG}"
           fi
 
-          # Check if already exists
           if read_user_list "''${user}" "''${key}" | grep -qxF "''${value}"; then
             warn "Already in ''${user}.''${key}: ''${value}"
             return 1
@@ -198,89 +184,129 @@ writeShellApplication {
             entry="        \"''${value}\""
           fi
 
-          # Find user block and insert into the right list
-          awk -v user="''${user}" -v key="''${key}" -v entry="''${entry}" '
-            $0 ~ "^[[:space:]]*" user "[[:space:]]*=" { in_user=1 }
-            in_user && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { in_list=1 }
-            in_list && /\];/ {
-              print entry
-              in_list=0
+          awk -v target_user="''${user}" -v key="''${key}" -v entry="''${entry}" '
+            BEGIN { depth = 0; in_users = 0; in_target_user = 0; in_list = 0; }
+            {
+              line = $0; gsub(/[^}{]/, "", line); len = length(line);
+
+              if (depth == 1 && $0 ~ /^[[:space:]]*users[[:space:]]*=[[:space:]]*[{]/) in_users = 1
+              if (in_users && depth == 2 && $0 ~ "^[[:space:]]*" target_user "[[:space:]]*=[[:space:]]*[{]") in_target_user = 1
+              if (in_target_user && depth == 3 && $0 ~ "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*[[]") in_list = 1
+
+              for (i=1; i<=len; i++) {
+                char = substr(line, i, 1)
+                if (char == "{") depth++
+                if (char == "}") {
+                   depth--
+                   if (depth < 3) in_target_user = 0
+                   if (depth < 2) in_users = 0
+                }
+              }
             }
+            in_list && /^[[:space:]]*\];/ { print entry; in_list = 0 }
             { print }
-            in_user && /^[[:space:]]*\};/ { in_user=0 }
           ' "''${PERSIST_CONFIG}" > "''${PERSIST_CONFIG}.tmp" && mv "''${PERSIST_CONFIG}.tmp" "''${PERSIST_CONFIG}"
 
           return 0
         }
 
-        # Remove item from list
         remove_from_list() {
           local key="$1"
           local value="$2"
 
-          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then
-            return 1
-          fi
+          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then return 1; fi
 
-          # Remove line matching the value (both string and attrset forms)
-          local escaped_value
-          # SC2016: Disable warning about expressions in single quotes for sed regex
-          # shellcheck disable=SC2016
-          escaped_value=$(printf '%s\n' "''${value}" | sed 's/[[\.*^$()+?{|]/\\&/g')
+          awk -v key="''${key}" -v val="''${value}" '
+            BEGIN { depth = 0; in_list = 0; }
+            {
+              line = $0; gsub(/[^}{]/, "", line); len = length(line);
+              for (i=1; i<=len; i++) if (substr(line, i, 1) == "{") depth++;
+            }
 
-          # Fix SC1087: Use ''${key}[ instead of $key[
-          sed -i "/^[[:space:]]*''${key}[[:space:]]*=[[:space:]]*\[/,/^[[:space:]]*\];/ {
-            /\"''${escaped_value}\"/d
-            /directory[[:space:]]*=[[:space:]]*\"''${escaped_value}\"/d
-          }" "''${PERSIST_CONFIG}"
+            depth == 1 && $0 ~ "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*[[]" { in_list = 1 }
+            in_list && /^[[:space:]]*\];/ { in_list = 0 }
+
+            in_list && (index($0, "\"" val "\"") || index($0, "directory = \"" val "\"")) {
+               next
+            }
+
+            {
+               print
+               line = $0; gsub(/[^}{]/, "", line); len = length(line);
+               for (i=1; i<=len; i++) if (substr(line, i, 1) == "}") depth--;
+            }
+          ' "''${PERSIST_CONFIG}" > "''${PERSIST_CONFIG}.tmp" && mv "''${PERSIST_CONFIG}.tmp" "''${PERSIST_CONFIG}"
         }
 
-        # Remove item from user list
         remove_from_user_list() {
           local user="$1"
           local key="$2"
           local value="$3"
 
-          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then
-            return 1
-          fi
+          if [[ ! -f "''${PERSIST_CONFIG}" ]]; then return 1; fi
 
-          local escaped_value
-          # shellcheck disable=SC2016
-          escaped_value=$(printf '%s\n' "''${value}" | sed 's/[[\.*^$()+?{|]/\\&/g')
+          awk -v target_user="''${user}" -v key="''${key}" -v val="''${value}" '
+            BEGIN { depth = 0; in_users = 0; in_target_user = 0; in_list = 0; }
+            {
+               line = $0; gsub(/[^}{]/, "", line); len = length(line);
 
-          awk -v user="''${user}" -v key="''${key}" -v value="''${escaped_value}" '
-            $0 ~ "^[[:space:]]*" user "[[:space:]]*=" { in_user=1 }
-            in_user && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { in_list=1 }
-            in_list && /\];/ { in_list=0 }
-            in_list && ($0 ~ "\"" value "\"" || $0 ~ "directory[[:space:]]*=[[:space:]]*\"" value "\"") { next }
-            { print }
-            in_user && /^[[:space:]]*\};/ { in_user=0 }
+               if (depth == 1 && $0 ~ /^[[:space:]]*users[[:space:]]*=[[:space:]]*[{]/) in_users = 1
+               if (in_users && depth == 2 && $0 ~ "^[[:space:]]*" target_user "[[:space:]]*=[[:space:]]*[{]") in_target_user = 1
+               if (in_target_user && depth == 3 && $0 ~ "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*[[]") in_list = 1
+
+               for (i=1; i<=len; i++) if (substr(line, i, 1) == "{") depth++;
+            }
+
+            in_list && /^[[:space:]]*\];/ { in_list = 0 }
+
+            in_list && (index($0, "\"" val "\"") || index($0, "directory = \"" val "\"")) { next }
+
+            {
+               print
+               line = $0; gsub(/[^}{]/, "", line); len = length(line);
+               for (i=1; i<=len; i++) {
+                 if (substr(line, i, 1) == "}") {
+                   depth--;
+                   if (depth < 3) in_target_user = 0;
+                   if (depth < 2) in_users = 0;
+                 }
+               }
+            }
           ' "''${PERSIST_CONFIG}" > "''${PERSIST_CONFIG}.tmp" && mv "''${PERSIST_CONFIG}.tmp" "''${PERSIST_CONFIG}"
         }
 
-        # Check if path is a bind mount
-        is_bind_mounted() {
+        is_active() {
           local path="$1"
-          findmnt --type none --options bind --target "''${path}" &>/dev/null
+          # Check if it's a bind mount (using mountpoint to catch systemd mounts)
+          if findmnt --mountpoint "$path" &>/dev/null; then return 0; fi
+
+          # Check if it's a symlink pointing to persistence (for method=symlink)
+          if [[ -L "$path" ]]; then
+             local target
+             target=$(readlink -f "$path")
+             if [[ "$target" == "''${PERSIST_PATH}"* ]]; then return 0; fi
+          fi
+          return 1
         }
 
-        # Get bind-mounted paths
         get_mounted_paths() {
-          findmnt --type none --options bind --noheadings --output TARGET 2>/dev/null | sort -u || true
+          findmnt --options bind --noheadings --output TARGET 2>/dev/null | sort -u || true
         }
 
-        # Get size of path
         get_size() {
           local path="$1"
+          local size
           if [[ -e "''${path}" ]]; then
-            du -sh "''${path}" 2>/dev/null | cut -f1
+            if size=$(du -sh "''${path}" 2>/dev/null | cut -f1); then
+              echo "''${size}"
+            else
+              echo "n/a"
+            fi
           else
             echo "-"
           fi
         }
 
-        # Print usage
         usage() {
           cat << 'EOF'
     nyx-persist - Manage impermanence paths
@@ -290,18 +316,26 @@ writeShellApplication {
 
     COMMANDS:
         list, ls                 List all persisted paths
-        status, st               Show persistence status and health checks
+        status, st               Show persistence status
         add <path> [OPTIONS]     Add a path to persistence
         remove, rm <path>        Remove a path from config
         check <path>             Check persistence status of a path
         diff                     Show common paths that aren't persisted
         edit                     Open CLI config in $EDITOR
         help                     Show this help
-    ...
+
+    ADD OPTIONS:
+        --user <username>        Add to user's home directory (auto-detected if omitted)
+        --mode <mode>            Set directory permissions (default: 0755)
+        --type <file|dir>        Force path type
+        --no-migrate             Don't copy existing data
+
+    REMOVE OPTIONS:
+        --wipe                   Delete data from persistent storage
+
     EOF
         }
 
-        # List all persisted paths
         cmd_list() {
           header "Persisted Paths"
           echo -e "''${DIM}Host: ''${HOSTNAME} | Storage: ''${PERSIST_PATH}''${NC}"
@@ -310,73 +344,32 @@ writeShellApplication {
             echo -e "''${DIM}Config: ''${PERSIST_CONFIG}''${NC}"
           fi
 
-          # System directories
           echo -e "\n''${CYAN}System Directories''${NC}"
           local has_dirs=false
-
-          # From CLI config
           while IFS= read -r dir; do
             if [[ -n "''${dir}" ]]; then
               local size
               size=$(get_size "''${dir}")
               local status="''${YELLOW}◐''${NC}"
-              if is_bind_mounted "''${dir}"; then
-                status="''${GREEN}●''${NC}"
-              fi
+              if is_active "''${dir}"; then status="''${GREEN}●''${NC}"; fi
               echo -e "  ''${status} ''${dir} ''${DIM}(''${size}) [cli]''${NC}"
               has_dirs=true
             fi
           done < <(read_list "directories")
+          if [[ "''${has_dirs}" == "false" ]]; then echo -e "  ''${DIM}(none)''${NC}"; fi
 
-          # Show mounted dirs not in CLI config (from NixOS config)
-          while IFS= read -r mount; do
-            if [[ -n "''${mount}" && -d "''${mount}" ]]; then
-              local in_cli
-              in_cli=$(read_list "directories" | grep -xF "''${mount}" || true)
-              if [[ -z "''${in_cli}" ]]; then
-                local size
-                size=$(get_size "''${mount}")
-                echo -e "  ''${GREEN}●''${NC} ''${mount} ''${DIM}(''${size}) [nixos]''${NC}"
-                has_dirs=true
-              fi
-            fi
-          done < <(get_mounted_paths)
-
-          if [[ "''${has_dirs}" == "false" ]]; then
-            echo -e "  ''${DIM}(none)''${NC}"
-          fi
-
-          # System files
           echo -e "\n''${CYAN}System Files''${NC}"
           local has_files=false
-
           while IFS= read -r file; do
             if [[ -n "''${file}" ]]; then
               local status="''${YELLOW}◐''${NC}"
-              if is_bind_mounted "''${file}"; then
-                status="''${GREEN}●''${NC}"
-              fi
+              if is_active "''${file}"; then status="''${GREEN}●''${NC}"; fi
               echo -e "  ''${status} ''${file} ''${DIM}[cli]''${NC}"
               has_files=true
             fi
           done < <(read_list "files")
+          if [[ "''${has_files}" == "false" ]]; then echo -e "  ''${DIM}(none)''${NC}"; fi
 
-          while IFS= read -r mount; do
-            if [[ -n "''${mount}" && -f "''${mount}" ]]; then
-              local in_cli
-              in_cli=$(read_list "files" | grep -xF "''${mount}" || true)
-              if [[ -z "''${in_cli}" ]]; then
-                echo -e "  ''${GREEN}●''${NC} ''${mount} ''${DIM}[nixos]''${NC}"
-                has_files=true
-              fi
-            fi
-          done < <(get_mounted_paths)
-
-          if [[ "''${has_files}" == "false" ]]; then
-            echo -e "  ''${DIM}(none)''${NC}"
-          fi
-
-          # User paths
           local users
           users=$(read_users)
           if [[ -n "''${users}" ]]; then
@@ -387,88 +380,57 @@ writeShellApplication {
                 local home_dir
                 home_dir=$(getent passwd "''${user}" | cut -d: -f6 || echo "/home/''${user}")
 
-                # User directories
                 while IFS= read -r dir; do
                   if [[ -n "''${dir}" ]]; then
                     local full_path="''${home_dir}/''${dir}"
                     local size
                     size=$(get_size "''${full_path}")
                     local status="''${YELLOW}◐''${NC}"
-                    if is_bind_mounted "''${full_path}"; then
-                      status="''${GREEN}●''${NC}"
-                    fi
+                    if is_active "''${full_path}"; then status="''${GREEN}●''${NC}"; fi
                     echo -e "    ''${status} ''${dir} ''${DIM}(''${size})''${NC}"
                   fi
                 done < <(read_user_list "''${user}" "directories")
 
-                # User files
                 while IFS= read -r file; do
                   if [[ -n "''${file}" ]]; then
                     local full_path="''${home_dir}/''${file}"
                     local status="''${YELLOW}◐''${NC}"
-                    if is_bind_mounted "''${full_path}"; then
-                      status="''${GREEN}●''${NC}"
-                    fi
+                    if is_active "''${full_path}"; then status="''${GREEN}●''${NC}"; fi
                     echo -e "    ''${status} ''${file} ''${DIM}(file)''${NC}"
                   fi
                 done < <(read_user_list "''${user}" "files")
               fi
             done <<< "''${users}"
           fi
-
           echo ""
-          echo -e "''${DIM}Legend: ''${GREEN}●''${NC}''${DIM}=mounted ''${YELLOW}◐''${NC}''${DIM}=pending rebuild''${NC}"
+          echo -e "''${DIM}Legend: ''${GREEN}●''${NC}''${DIM}=mounted/active ''${YELLOW}◐''${NC}''${DIM}=pending rebuild''${NC}"
         }
 
-        # Show status
         cmd_status() {
           header "Impermanence Status"
-
           echo -e "\n''${CYAN}System''${NC}"
           echo -e "  Host: ''${HOSTNAME}"
           echo -e "  Storage: ''${PERSIST_PATH}"
-          if [[ -n "''${PERSIST_CONFIG}" ]]; then
-            echo -e "  Config: ''${PERSIST_CONFIG}"
+          if [[ -n "''${PERSIST_CONFIG}" ]]; then echo -e "  Config: ''${PERSIST_CONFIG}"; fi
+
+          if nix-instantiate --eval --strict --json -E "import ''${PERSIST_CONFIG}" &>/dev/null; then
+             echo -e "  Source: ''${GREEN}Live Config (Evaluated)''${NC}"
+          else
+             echo -e "  Source: ''${YELLOW}Build-time JSON (Fallback)''${NC}"
           fi
 
           if [[ -d "''${PERSIST_PATH}" ]]; then
             local total_size available used_percent
-            total_size=$(du -sh "''${PERSIST_PATH}" 2>/dev/null | cut -f1)
-            available=$(df -h "''${PERSIST_PATH}" 2>/dev/null | awk 'NR==2 {print $4}')
-            used_percent=$(df -h "''${PERSIST_PATH}" 2>/dev/null | awk 'NR==2 {print $5}')
+            if ! total_size=$(du -sh "''${PERSIST_PATH}" 2>/dev/null | cut -f1); then total_size="n/a"; fi
+            if ! available=$(df -h "''${PERSIST_PATH}" 2>/dev/null | awk 'NR==2 {print $4}'); then available="-"; fi
+            if ! used_percent=$(df -h "''${PERSIST_PATH}" 2>/dev/null | awk 'NR==2 {print $5}'); then used_percent="-"; fi
             echo -e "  Persisted: ''${total_size}"
             echo -e "  Available: ''${available} (''${used_percent} full)"
           else
             error "Storage path does not exist!"
           fi
-
-          header "Health Checks"
-
-          if is_bind_mounted "/etc/machine-id"; then
-            success "/etc/machine-id persisted"
-          else
-            warn "/etc/machine-id NOT persisted - changes on reboot"
-          fi
-
-          if is_bind_mounted "/var/lib/nixos"; then
-            success "/var/lib/nixos persisted - UIDs/GIDs stable"
-          else
-            warn "/var/lib/nixos NOT persisted - UIDs/GIDs may change"
-          fi
-
-          if is_bind_mounted "/var/log"; then
-            success "/var/log persisted"
-          else
-            warn "/var/log NOT persisted - logs lost on reboot"
-          fi
-
-          header "Statistics"
-          local mount_count
-          mount_count=$(get_mounted_paths | wc -l)
-          echo -e "  Active mounts: ''${mount_count}"
         }
 
-        # Add path to persistence
         cmd_add() {
           local path=""
           local user=""
@@ -487,65 +449,61 @@ writeShellApplication {
             esac
           done
 
-          if [[ -z "''${path}" ]]; then
-            error "No path specified"
-            usage
-            exit 1
-          fi
-
+          if [[ -z "''${path}" ]]; then error "No path specified"; usage; exit 1; fi
           check_config_repo
 
-          # Resolve full path
           local full_path="''${path}"
           local config_path="''${path}"
+
+          if [[ -z "''${user}" ]]; then
+             user=$(detect_user_from_path "''${path}")
+             if [[ -n "''${user}" ]]; then
+                info "Detected user path: ''${user}"
+             fi
+          fi
 
           if [[ -n "''${user}" ]]; then
             local home_dir
             home_dir=$(getent passwd "''${user}" | cut -d: -f6)
-            if [[ -z "''${home_dir}" ]]; then
-              error "User ''${user} not found"
-              exit 1
-            fi
+            if [[ -z "''${home_dir}" ]]; then error "User ''${user} not found"; exit 1; fi
+
             if [[ "''${path}" != /* ]]; then
               full_path="''${home_dir}/''${path}"
               config_path="''${path}"
             else
-              # Fix SC2295: Quote inside parameter expansion
-              config_path="''${path#"$home_dir"/}"
+              if [[ "''${path}" == "''${home_dir}"* ]]; then
+                 full_path="''${path}"
+                 config_path="''${path#"''${home_dir}"/}"
+              else
+                 warn "Path ''${path} is not inside ''${home_dir}, but --user was set."
+                 full_path="''${path}"
+                 config_path="''${path}"
+              fi
             fi
           fi
 
           full_path=$(realpath -m "''${full_path}")
 
-          # Check if already mounted
-          if is_bind_mounted "''${full_path}"; then
-            warn "Already persisted: ''${full_path}"
-            exit 0
+          # REMOVED: The blocking check for is_active.
+          # We now rely on add_to_list to check if it's in the config.
+          if is_active "''${full_path}"; then
+             info "Path is currently active (mounted/linked)."
           fi
 
-          # Detect type
           local path_type
-          if [[ -n "''${force_type}" ]]; then
-            path_type="''${force_type}"
-          elif [[ -f "''${full_path}" ]]; then
-            path_type="file"
-          elif [[ -d "''${full_path}" ]]; then
-            path_type="dir"
-          elif [[ "''${full_path}" == *.* ]] && [[ ! "$(basename "''${full_path}")" == .* ]]; then
-            path_type="file"
-          else
-            path_type="dir"
+          if [[ -n "''${force_type}" ]]; then path_type="''${force_type}"
+          elif [[ -f "''${full_path}" ]]; then path_type="file"
+          elif [[ -d "''${full_path}" ]]; then path_type="dir"
+          elif [[ "''${full_path}" == *.* ]] && [[ ! "$(basename "''${full_path}")" == .* ]]; then path_type="file"
+          else path_type="dir"
           fi
 
           local persist_target="''${PERSIST_PATH}''${full_path}"
-
           info "Adding: ''${full_path} (type: ''${path_type})"
 
-          # Migrate data
           if [[ "''${migrate}" == true ]] && [[ -e "''${full_path}" ]] && [[ ! -e "''${persist_target}" ]]; then
             info "Migrating existing data..."
             sudo mkdir -p "$(dirname "''${persist_target}")"
-
             if [[ "''${path_type}" == "dir" ]]; then
               sudo rsync -a "''${full_path}/" "''${persist_target}/"
             else
@@ -557,31 +515,20 @@ writeShellApplication {
             if [[ "''${path_type}" == "dir" ]]; then
               sudo mkdir -p "''${persist_target}"
               sudo chmod "''${mode}" "''${persist_target}"
-              if [[ -n "''${user}" ]]; then
-                sudo chown "''${user}:$(id -gn "''${user}")" "''${persist_target}"
-              fi
+              if [[ -n "''${user}" ]]; then sudo chown "''${user}:$(id -gn "''${user}")" "''${persist_target}"; fi
             else
               sudo mkdir -p "$(dirname "''${persist_target}")"
               sudo touch "''${persist_target}"
-              if [[ -n "''${user}" ]]; then
-                sudo chown "''${user}:$(id -gn "''${user}")" "''${persist_target}"
-              fi
+              if [[ -n "''${user}" ]]; then sudo chown "''${user}:$(id -gn "''${user}")" "''${persist_target}"; fi
             fi
           fi
 
-          # Update Nix config
           if [[ -n "''${user}" ]]; then
-            if [[ "''${path_type}" == "dir" ]]; then
-              add_to_user_list "''${user}" "directories" "''${config_path}" "''${mode}"
-            else
-              add_to_user_list "''${user}" "files" "''${config_path}"
-            fi
+            if [[ "''${path_type}" == "dir" ]]; then add_to_user_list "''${user}" "directories" "''${config_path}" "''${mode}"
+            else add_to_user_list "''${user}" "files" "''${config_path}"; fi
           else
-            if [[ "''${path_type}" == "dir" ]]; then
-              add_to_list "directories" "''${config_path}" "''${mode}"
-            else
-              add_to_list "files" "''${config_path}"
-            fi
+            if [[ "''${path_type}" == "dir" ]]; then add_to_list "directories" "''${config_path}" "''${mode}"
+            else add_to_list "files" "''${config_path}"; fi
           fi
 
           success "Added to config: ''${PERSIST_CONFIG}"
@@ -589,25 +536,29 @@ writeShellApplication {
           info "Run 'sudo nixos-rebuild switch' to apply"
         }
 
-        # Remove path
         cmd_remove() {
           local path=""
           local user=""
+          local wipe=false
 
           while [[ $# -gt 0 ]]; do
             case "$1" in
               --user) user="$2"; shift 2 ;;
+              --wipe) wipe=true; shift ;;
               -*) error "Unknown option: $1"; exit 1 ;;
               *) path="$1"; shift ;;
             esac
           done
 
-          if [[ -z "''${path}" ]]; then
-            error "No path specified"
-            exit 1
-          fi
-
+          if [[ -z "''${path}" ]]; then error "No path specified"; exit 1; fi
           check_config_repo
+
+          if [[ -z "''${user}" ]]; then
+             user=$(detect_user_from_path "''${path}")
+             if [[ -n "''${user}" ]]; then
+                info "Detected user path: ''${user}"
+             fi
+          fi
 
           if [[ -n "''${user}" ]]; then
             remove_from_user_list "''${user}" "directories" "''${path}"
@@ -618,56 +569,54 @@ writeShellApplication {
           fi
 
           success "Removed from config: ''${path}"
-          warn "Data remains in ''${PERSIST_PATH} - delete manually if needed"
+
+          if [[ "''${wipe}" == "true" ]]; then
+             local full_path="''${path}"
+             if [[ -n "''${user}" ]]; then
+                local home_dir
+                home_dir=$(getent passwd "''${user}" | cut -d: -f6)
+                if [[ "''${path}" != /* ]]; then full_path="''${home_dir}/''${path}"; fi
+             fi
+
+             local persist_target="''${PERSIST_PATH}''${full_path}"
+             if [[ -e "''${persist_target}" ]]; then
+                info "Wiping data from ''${persist_target}..."
+                sudo rm -rf "''${persist_target}"
+                success "Data wiped."
+             else
+                warn "Data not found at ''${persist_target}"
+             fi
+          else
+             warn "Data remains in ''${PERSIST_PATH} - use --wipe to delete"
+          fi
+
           info "Run 'sudo nixos-rebuild switch' to apply"
         }
 
-        # Check a path
         cmd_check() {
           local path="$1"
-
-          if [[ -z "''${path}" ]]; then
-            error "No path specified"
-            exit 1
-          fi
-
+          if [[ -z "''${path}" ]]; then error "No path specified"; exit 1; fi
           local full_path
           full_path=$(realpath -m "''${path}")
           local persist_target="''${PERSIST_PATH}''${full_path}"
 
           header "Path: ''${full_path}"
-
           echo -e "\n''${CYAN}Status''${NC}"
-          if is_bind_mounted "''${full_path}"; then
-            success "Currently mounted"
-          else
-            warn "NOT mounted"
-          fi
-
+          if is_active "''${full_path}"; then success "Currently mounted/active"; else warn "NOT mounted"; fi
           if [[ -e "''${persist_target}" ]]; then
             local size
             size=$(get_size "''${persist_target}")
             success "Exists in storage (''${size})"
-          else
-            warn "NOT in persistent storage"
-          fi
+          else warn "NOT in persistent storage"; fi
 
-          # Check if in CLI config
           local in_dirs in_files
           in_dirs=$(read_list "directories" | grep -xF "''${full_path}" || true)
           in_files=$(read_list "files" | grep -xF "''${full_path}" || true)
-
-          if [[ -n "''${in_dirs}" ]] || [[ -n "''${in_files}" ]]; then
-            success "In CLI config"
-          else
-            info "Not in CLI config (may be in NixOS config)"
-          fi
+          if [[ -n "''${in_dirs}" ]] || [[ -n "''${in_files}" ]]; then success "In CLI config"; else info "Not in CLI config (may be in NixOS config)"; fi
         }
 
-        # Show diff of common paths
         cmd_diff() {
           header "Persistence Recommendations"
-
           local common_paths=(
             "/var/log:dir:Logs"
             "/var/lib/nixos:dir:NixOS state (UIDs/GIDs)"
@@ -680,42 +629,27 @@ writeShellApplication {
             "/etc/ssh/ssh_host_ed25519_key:file:SSH host key"
             "/etc/ssh/ssh_host_rsa_key:file:SSH host key (RSA)"
           )
-
           echo -e "\n''${CYAN}Common System Paths''${NC}"
           for entry in "''${common_paths[@]}"; do
-            # Fix SC2034: Use _ for unused variable 't'
             IFS=: read -r p _ desc <<< "''${entry}"
             if [[ -e "''${p}" ]]; then
-              if is_bind_mounted "''${p}"; then
-                echo -e "  ''${GREEN}●''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"
-              else
-                echo -e "  ''${RED}○''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"
-              fi
+              if is_active "''${p}"; then echo -e "  ''${GREEN}●''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"; else echo -e "  ''${RED}○''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"; fi
             fi
           done
-
           echo ""
           echo -e "''${DIM}Legend: ''${GREEN}●''${NC}''${DIM}=persisted ''${RED}○''${NC}''${DIM}=NOT persisted''${NC}"
           echo -e "\n''${DIM}Add missing paths with: nyx-persist add <path>''${NC}"
         }
 
-        # Edit config file
         cmd_edit() {
           check_config_repo
           ensure_config
           ''${EDITOR:-nano} "''${PERSIST_CONFIG}"
         }
 
-        # Main
         main() {
-          if [[ $# -eq 0 ]]; then
-            usage
-            exit 0
-          fi
-
-          local cmd="$1"
-          shift
-
+          if [[ $# -eq 0 ]]; then usage; exit 0; fi
+          local cmd="$1"; shift
           case "''${cmd}" in
             list|ls) cmd_list ;;
             status|st) cmd_status ;;
