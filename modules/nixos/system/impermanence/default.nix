@@ -15,9 +15,10 @@ let
 
   # Path to persistence config (stored in config repo for reproducibility)
   persistenceConfigPath =
-    if cfg.configRepoPath != null
-    then "${cfg.configRepoPath}/hosts/${hostname}/persistence.nix"
-    else null;
+    if cfg.configRepoPath != null then
+      "${cfg.configRepoPath}/hosts/${hostname}/persistence.nix"
+    else
+      null;
 
   # Read persistence config from Nix file if it exists
   persistenceConfig =
@@ -37,12 +38,12 @@ let
       "/var/log"
       "/var/lib/nixos"
       "/var/lib/systemd/coredump"
-    ] ++
-    optionals cfg.presets.network [
+    ]
+    ++ optionals cfg.presets.network [
       "/var/lib/NetworkManager"
       "/etc/NetworkManager/system-connections"
-    ] ++
-    optionals cfg.presets.bluetooth [
+    ]
+    ++ optionals cfg.presets.bluetooth [
       "/var/lib/bluetooth"
     ];
 
@@ -50,8 +51,8 @@ let
     optionals cfg.presets.system [
       "/etc/machine-id"
       "/etc/adjtime"
-    ] ++
-    optionals cfg.presets.ssh [
+    ]
+    ++ optionals cfg.presets.ssh [
       "/etc/ssh/ssh_host_ed25519_key"
       "/etc/ssh/ssh_host_ed25519_key.pub"
       "/etc/ssh/ssh_host_rsa_key"
@@ -59,48 +60,50 @@ let
     ];
 
   # Merge everything
-  allDirectories = (persistenceConfig.directories or []) ++ presetDirectories;
-  allFiles = (persistenceConfig.files or []) ++ presetFiles;
-  allUsers = persistenceConfig.users or {};
+  allDirectories = (persistenceConfig.directories or [ ]) ++ presetDirectories;
+  allFiles = (persistenceConfig.files or [ ]) ++ presetFiles;
+  allUsers = persistenceConfig.users or { };
 
   # Btrfs rollback script
-  rollbackScript = let
-    device = cfg.btrfs.device;
-    rootSubvolume = cfg.btrfs.rootSubvolume;
-    blankSnapshot = cfg.btrfs.blankSnapshot;
-    previousSnapshot = cfg.btrfs.previousSnapshot;
-  in ''
-    echo "impermanence: mounting btrfs volume"
-    mkdir -p /mnt
-    mount ${device} /mnt
+  rollbackScript =
+    let
+      device = cfg.btrfs.device;
+      rootSubvolume = cfg.btrfs.rootSubvolume;
+      blankSnapshot = cfg.btrfs.blankSnapshot;
+      previousSnapshot = cfg.btrfs.previousSnapshot;
+    in
+    ''
+      echo "impermanence: mounting btrfs volume"
+      mkdir -p /mnt
+      mount ${device} /mnt
 
-    echo "impermanence: cleaning up nested subvolumes under ${rootSubvolume}"
-    btrfs subvolume list -o /mnt${rootSubvolume} | cut -f9 -d' ' | while read subvolume; do
-      echo "impermanence: deleting /$subvolume"
-      btrfs subvolume delete "/mnt/$subvolume"
-    done
+      echo "impermanence: cleaning up nested subvolumes under ${rootSubvolume}"
+      btrfs subvolume list -o /mnt${rootSubvolume} | cut -f9 -d' ' | while read subvolume; do
+        echo "impermanence: deleting /$subvolume"
+        btrfs subvolume delete "/mnt/$subvolume"
+      done
 
-    ${optionalString cfg.btrfs.keepPrevious ''
-      if [ -d "/mnt${previousSnapshot}" ]; then
-        echo "impermanence: deleting previous backup"
-        btrfs subvolume delete /mnt${previousSnapshot}
-      fi
+      ${optionalString cfg.btrfs.keepPrevious ''
+        if [ -d "/mnt${previousSnapshot}" ]; then
+          echo "impermanence: deleting previous backup"
+          btrfs subvolume delete /mnt${previousSnapshot}
+        fi
 
-      echo "impermanence: creating backup of current root"
-      btrfs subvolume snapshot -r /mnt${rootSubvolume} /mnt${previousSnapshot}
-    ''}
+        echo "impermanence: creating backup of current root"
+        btrfs subvolume snapshot -r /mnt${rootSubvolume} /mnt${previousSnapshot}
+      ''}
 
-    echo "impermanence: deleting ${rootSubvolume}"
-    btrfs subvolume delete /mnt${rootSubvolume}
+      echo "impermanence: deleting ${rootSubvolume}"
+      btrfs subvolume delete /mnt${rootSubvolume}
 
-    echo "impermanence: restoring from ${blankSnapshot}"
-    btrfs subvolume snapshot /mnt${blankSnapshot} /mnt${rootSubvolume}
+      echo "impermanence: restoring from ${blankSnapshot}"
+      btrfs subvolume snapshot /mnt${blankSnapshot} /mnt${rootSubvolume}
 
-    echo "impermanence: unmounting"
-    umount /mnt
+      echo "impermanence: unmounting"
+      umount /mnt
 
-    echo "impermanence: rollback complete"
-  '';
+      echo "impermanence: rollback complete"
+    '';
 
 in
 {
