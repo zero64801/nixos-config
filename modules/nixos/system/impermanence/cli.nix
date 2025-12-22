@@ -503,7 +503,7 @@ writeShellApplication {
             local home_dir
             home_dir=$(getent passwd "''${user}" | cut -d: -f6)
             if [[ -z "''${home_dir}" ]]; then
-              error "User '''${user}' not found"
+              error "User ''${user} not found"
               exit 1
             fi
             if [[ "''${path}" != /* ]]; then

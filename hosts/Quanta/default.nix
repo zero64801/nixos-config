@@ -49,6 +49,7 @@
   nyx.impermanence = {
     enable = true;
     persistentStoragePath = "/persist/local";
+    persistenceConfigFile = ./persistence.nix;
     configRepoPath = "/home/dx/nixos";
     hideMounts = true;
 

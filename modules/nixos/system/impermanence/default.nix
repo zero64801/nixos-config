@@ -13,18 +13,23 @@ let
   cfg = config.nyx.impermanence;
   hostname = config.networking.hostName;
 
-  # Path to persistence config (stored in config repo for reproducibility)
+  # Path to persistence config (for CLI tool display only)
   persistenceConfigPath =
     if cfg.configRepoPath != null then
       "${cfg.configRepoPath}/hosts/${hostname}/persistence.nix"
     else
       null;
 
-  # Read persistence config from Nix file if it exists
+  # Read persistence config from the Nix path option (evaluated at build time)
   persistenceConfig =
-    if persistenceConfigPath != null && pathExists persistenceConfigPath
-    then import persistenceConfigPath
-    else { directories = []; files = []; users = {}; };
+    if cfg.persistenceConfigFile != null then
+      import cfg.persistenceConfigFile
+    else
+      {
+        directories = [ ];
+        files = [ ];
+        users = { };
+      };
 
   # CLI tool for managing persistence
   nyx-persist = pkgs.callPackage ./cli.nix {
@@ -121,8 +126,18 @@ in
       default = null;
       example = "/home/dx/nixos";
       description = ''
-        Path to the NixOS configuration repository.
+        Path to the NixOS configuration repository (used by CLI tool).
         Persistence paths are managed in hosts/<hostname>/persistence.nix
+      '';
+    };
+
+    persistenceConfigFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      example = lib.literalExpression "./persistence.nix";
+      description = ''
+        Path to the persistence.nix file for this host.
+        This should be a Nix path (not a string) so it's properly evaluated.
       '';
     };
 
