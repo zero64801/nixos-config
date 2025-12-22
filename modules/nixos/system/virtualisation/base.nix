@@ -106,17 +106,15 @@ in
     }
 
     # Persist libvirt state across reboots (impermanence)
-    (mkIf (options ? environment.persistence) {
-      environment.persistence."/persist/local" = {
-        directories = [
-          {
-            directory = "/var/lib/libvirt";
-            user = "root";
-            group = "libvirtd";
-            mode = "0770";
-          }
-        ];
-      };
+    (mkIf config.nyx.impermanence.enable {
+      environment.persistence.${config.nyx.impermanence.persistentStoragePath}.directories = [
+        {
+          directory = "/var/lib/libvirt";
+          user = "root";
+          group = "libvirtd";
+          mode = "0770";
+        }
+      ];
     })
   ]);
 }

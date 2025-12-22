@@ -30,12 +30,10 @@
       }
 
       # Persist U2F key registrations across reboots (impermanence)
-      (lib.mkIf (options ? environment.persistence) {
-        environment.persistence."/persist/local" = {
-          files = [
-            "/etc/u2f_keys"
-          ];
-        };
+      (lib.mkIf config.nyx.impermanence.enable {
+        environment.persistence.${config.nyx.impermanence.persistentStoragePath}.files = [
+          "/etc/u2f_keys"
+        ];
       })
     ]
   );

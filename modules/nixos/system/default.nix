@@ -8,5 +8,6 @@
     ./services.nix
     ./security
     ./virtualisation
+    ./impermanence
   ];
 }

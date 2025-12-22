@@ -20,7 +20,7 @@
       inputs.home-manager.follows = "home-manager";
     };
 
-    impermanence.url = "github:nix-community/impermanence";
+    impermanence.url = "github:nix-community/impermanence/home-manager-v2";
     disko.url = "github:nix-community/disko";
   };
 

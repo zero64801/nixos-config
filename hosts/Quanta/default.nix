@@ -6,7 +6,7 @@
     ./hardware.nix
     ./disko.nix
     ./networking.nix
-    ./storage.nix
+    # ./storage.nix
     ./libvirt
 
     # User
@@ -24,6 +24,7 @@
     enable = true;
     primary = "amd";
     amd.enable = true;
+    nvidia.enable = true;
   };
 
   # Desktop
@@ -44,56 +45,53 @@
   # Programs
   nyx.programs.flatpak.enable = true;
 
-  # Impermanence
-  environment.persistence."/persist/local" = {
+  # Impermanence - paths defined in persistence.nix
+  nyx.impermanence = {
+    enable = true;
+    persistentStoragePath = "/persist/local";
+    configRepoPath = "/home/dx/nixos";
     hideMounts = true;
 
-    directories = [
-      "/var/log"
-      "/var/lib/nixos"
-      "/var/lib/flatpak"
-      "/var/lib/NetworkManager"
-      "/var/lib/systemd/coredump"
-      "/etc/NetworkManager/system-connections"
-    ];
-
-    files = [
-      "/etc/machine-id"
-      "/etc/adjtime"
-    ];
-
-    users.dx = {
-      directories = [
-        "nixos"
-        ".var"
-        ".local/share/direnv"
-        ".local/share/fish"
-        ".local/state/cosmic"
-        ".local/state/cosmic-comp"
-        ".config/cosmic"
-        "Downloads"
-        "Pictures/Wallpapers"
-      ];
-
-      files = [
-        ".config/cosmic-initial-setup-done"
-      ];
+    btrfs = {
+      enable = true;
+      device = "/dev/disk/by-label/nixos";
+      rootSubvolume = "/root";
+      blankSnapshot = "/snapshots/root/blank";
+      keepPrevious = true;
+      unlockDevice = "dev-mapper-cryptroot.device";
     };
   };
 
   # Virtualization
   nyx.virtualisation = {
-    base = {
-      enable = true;
-      enableVirgl = true;
-    };
+    base.enable = true;
 
     desktop = {
       vfio = {
         enable = true;
         ids = [
-          "1912:0014" # USB Controller
+          "10de:2489" # NVIDIA Graphics
+          "10de:228b" # NVIDIA Audio
         ];
+      };
+
+      # GPU switching between NVIDIA driver and VFIO-PCI
+      gpuSwitch = {
+        enable = true;
+        defaultMode = "vfio"; # Start with vfio-pci driver loaded
+        pciAddresses = [
+          "0a:00.0" # NVIDIA Graphics
+          "0a:00.1" # NVIDIA Audio
+        ];
+        deviceIds = [
+          "10de:2489" # NVIDIA Graphics
+          "10de:228b" # NVIDIA Audio
+        ];
+      };
+
+      looking-glass = {
+        enable = true;
+        staticSizeMb = 64;
       };
     };
   };
