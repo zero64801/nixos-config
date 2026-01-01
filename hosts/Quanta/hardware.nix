@@ -18,6 +18,9 @@
     kernelParams = [
       "amd_pstate=active"
     ];
+    kernel.sysctl = {
+      "vm.max_map_count" = 2147483642;
+    };
 
     initrd = {
       availableKernelModules = [
@@ -36,7 +39,7 @@
       systemd.enable = true;
     };
 
-    extraModulePackages = [];
+    extraModulePackages = [ ];
   };
 
   zramSwap.enable = true;

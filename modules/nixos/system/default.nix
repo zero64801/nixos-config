@@ -6,6 +6,7 @@
     ./locales.nix
     ./networking
     ./services.nix
+    ./scx.nix
     ./security
     ./virtualisation
     ./impermanence

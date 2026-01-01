@@ -1,5 +1,4 @@
 {
-  lib,
   pkgs,
   ...
 }:
@@ -10,8 +9,7 @@ let
 in
 {
   boot.initrd.luks.devices."cryptstorage" = {
-    # Use stable UUID instead of /dev/nvmeXn1p1 - device order can change between boots
-    device = "/dev/disk/by-uuid/55b0120f-6cd0-4820-885c-bfd656e6beba";
+    device = "/dev/disk/by-path/pci-0000:07:00.0-nvme-1";
     crypttabExtraOpts = [ "fido2-device=auto" ];
     allowDiscards = true;
   };
@@ -24,41 +22,26 @@ in
       "nodiratime"
       "compress=zstd"
       "ssd"
-      # Don't fail boot if drive is missing
       "nofail"
     ];
   };
 
+  # Handle directory creation and permissions
   systemd.tmpfiles.rules = [
-    # Create VMs directory owned by qemu-libvirtd
-    "d ${vmStoragePath} 0770 qemu-libvirtd qemu-libvirtd -"
+    # Make the root storage directory world-writable with sticky bit (1777)
+    # This allows any user to create files, but only the owner can delete them.
+    "d ${storageMountPoint} 1777 root root - -"
+
+    # VM directory: Keep owned by qemu-libvirtd for Libvirt compatibility
+    "d ${vmStoragePath} 0770 qemu-libvirtd qemu-libvirtd - -"
+
+    # Set No-COW attribute for VM folder
+    "h ${vmStoragePath} - - - - +C"
   ];
 
-  system.activationScripts.vmStoragePermissions = lib.stringAfter [ "users" "groups" ] ''
-    # Wait for mount (nofail means it might not be ready during activation)
-    if ${pkgs.util-linux}/bin/mountpoint -q ${storageMountPoint}; then
-      # Create VMs directory if it doesn't exist
-      ${pkgs.coreutils}/bin/mkdir -p ${vmStoragePath}
-
-      # Set ownership to qemu-libvirtd user/group
-      ${pkgs.coreutils}/bin/chown qemu-libvirtd:qemu-libvirtd ${vmStoragePath}
-
-      # Set permissions: owner and group have full access
-      ${pkgs.coreutils}/bin/chmod 0770 ${vmStoragePath}
-
-      # Set the No-COW attribute for BTRFS (critical for VM performance)
-      # This must be set on the directory, new files will inherit it
-      ${pkgs.e2fsprogs}/bin/chattr +C ${vmStoragePath} 2>/dev/null || true
-
-      echo "VM storage permissions configured at ${vmStoragePath}"
-    else
-      echo "Storage drive not mounted, skipping VM storage setup"
-    fi
-  '';
-
-  # Systemd service to fix permissions after mount (handles late mounts)
+  # Service to enforce permissions and fix ownership
   systemd.services.vm-storage-permissions = {
-    description = "Set VM storage directory permissions";
+    description = "Ensure Storage permissions and No-COW";
     after = [ "mnt-storage.mount" ];
     requires = [ "mnt-storage.mount" ];
     wantedBy = [ "multi-user.target" ];
@@ -66,37 +49,23 @@ in
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = pkgs.writeShellScript "setup-vm-storage" ''
-        set -euo pipefail
+      ExecStart = pkgs.writeShellScript "setup-storage" ''
+        # 1777 = rwxrwxrwt (Sticky bit protects deletion of others' files)
+        chmod 1777 ${storageMountPoint}
 
-        # Create VMs directory
+        # VM Specific Configuration
         mkdir -p ${vmStoragePath}
 
-        # Set ownership
+        # Set No-COW (Critical for BTRFS performance with VMs)
+        ${pkgs.e2fsprogs}/bin/chattr +C ${vmStoragePath} 2>/dev/null || true
+
+        # Enforce Ownership for VM folder so QEMU can access images
         chown qemu-libvirtd:qemu-libvirtd ${vmStoragePath}
         chmod 0770 ${vmStoragePath}
 
-        # Set No-COW attribute for BTRFS performance
-        ${pkgs.e2fsprogs}/bin/chattr +C ${vmStoragePath} 2>/dev/null || true
-
-        # Fix permissions on any existing files
+        # Fix any existing VM images inside
         find ${vmStoragePath} -maxdepth 1 -name "*.qcow2" -exec chown qemu-libvirtd:qemu-libvirtd {} \;
-
-        echo "VM storage ready at ${vmStoragePath}"
       '';
     };
   };
-
-  # Grant read access to browse the storage drive
-  # while keeping VMs owned by qemu-libvirtd
-  systemd.services.vm-storage-permissions.serviceConfig.ExecStartPost =
-    pkgs.writeShellScript "setup-storage-acl" ''
-      # Allow user to browse the storage mount
-      ${pkgs.acl}/bin/setfacl -m u:dx:rx ${storageMountPoint}
-      # Allow user to list VMs directory (but qemu-libvirtd owns the files)
-      ${pkgs.acl}/bin/setfacl -m u:dx:rx ${vmStoragePath}
-    '';
-
-  # Ensure ACL support is available
-  environment.systemPackages = [ pkgs.acl ];
 }

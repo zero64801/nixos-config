@@ -6,7 +6,7 @@
     ./hardware.nix
     ./disko.nix
     ./networking.nix
-    # ./storage.nix
+    ./storage.nix
     ./libvirt
 
     # User
@@ -43,7 +43,13 @@
   powerManagement.cpuFreqGovernor = "performance";
 
   # Programs
-  nyx.programs.flatpak.enable = true;
+  nyx.programs = {
+    flatpak.enable = true;
+    steam = {
+      enable = true;
+      isolation = true;
+    };
+  };
 
   # Impermanence - paths defined in persistence.nix
   nyx.impermanence = {
@@ -81,8 +87,8 @@
         enable = true;
         defaultMode = "vfio"; # Start with vfio-pci driver loaded
         pciAddresses = [
-          "0a:00.0" # NVIDIA Graphics
-          "0a:00.1" # NVIDIA Audio
+          "0b:00.0" # NVIDIA Graphics
+          "0b:00.1" # NVIDIA Audio
         ];
         deviceIds = [
           "10de:2489" # NVIDIA Graphics
@@ -95,6 +101,13 @@
         staticSizeMb = 64;
       };
     };
+  };
+
+  # Dual GPU
+  services.switcherooControl.enable = true;
+
+  environment.sessionVariables = {
+    KWIN_DRM_DEVICES = "/dev/dri/card1:/dev/dri/card0";
   };
 
   # System-specific configuration

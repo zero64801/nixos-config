@@ -484,8 +484,6 @@ writeShellApplication {
 
           full_path=$(realpath -m "''${full_path}")
 
-          # REMOVED: The blocking check for is_active.
-          # We now rely on add_to_list to check if it's in the config.
           if is_active "''${full_path}"; then
              info "Path is currently active (mounted/linked)."
           fi
@@ -503,12 +501,20 @@ writeShellApplication {
 
           if [[ "''${migrate}" == true ]] && [[ -e "''${full_path}" ]] && [[ ! -e "''${persist_target}" ]]; then
             info "Migrating existing data..."
-            sudo mkdir -p "$(dirname "''${persist_target}")"
-            if [[ "''${path_type}" == "dir" ]]; then
-              sudo rsync -a "''${full_path}/" "''${persist_target}/"
-            else
-              sudo cp -a "''${full_path}" "''${persist_target}"
+
+            # Ensure base persistence directory exists
+            if [[ ! -d "''${PERSIST_PATH}" ]]; then
+                sudo mkdir -p "''${PERSIST_PATH}"
             fi
+
+            # Use rsync -aR (relative) to copy path AND preserve parent directory attributes
+            # This ensures /persist/local/home/user gets ownership from /home/user
+            if [[ "''${path_type}" == "dir" ]]; then
+               sudo rsync -aR "''${full_path}/" "''${PERSIST_PATH}/"
+            else
+               sudo rsync -aR "''${full_path}" "''${PERSIST_PATH}/"
+            fi
+
             success "Data migrated to persistent storage"
           elif [[ ! -e "''${persist_target}" ]]; then
             info "Creating in persistent storage..."

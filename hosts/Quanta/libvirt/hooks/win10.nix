@@ -5,7 +5,7 @@
     set -e
     set -x
 
-    HOST_CORES="0-3,8-11"
+    HOST_CORES="0-1,8-9"
     ALL_CORES="0-15"
 
     VM_NAME="$1"

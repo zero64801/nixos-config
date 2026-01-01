@@ -6,6 +6,7 @@
     ./direnv.nix
     ./fish.nix
     ./flatpak.nix
+    ./steam.nix
   ];
 
   environment = {

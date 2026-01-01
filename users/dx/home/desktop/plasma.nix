@@ -97,7 +97,20 @@
           Icons = {
             Theme = "Tela-dark";
           };
+          KDE = {
+            "ShowDeleteCommand" = true;
+          };
         };
+
+        dolphinrc = {
+          "General" = {
+            "ShowDeleteCommand" = true;
+          };
+          "Confirmation" = {
+            "ConfirmDelete" = true;
+          };
+        };
+
         # Disable KDE Wallet
         kwalletrc = {
           "Wallet" = {
@@ -111,10 +124,10 @@
       startup.startupScript = {
         displayLayout = {
           text = ''
-            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.HDMI-A-1.position.0,0 output.DP-3.position.1920,0 output.DP-3.primary
+            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.HDMI-A-1.position.0,0 output.DP-1.position.1920,0 output.DP-1.primary
 
             # Set brightness to 100% for all displays
-            for output in HDMI-A-1 DP-3; do
+            for output in HDMI-A-1 DP-1; do
               ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.$output.brightness.100
             done
           '';
