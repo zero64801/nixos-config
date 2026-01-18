@@ -25,6 +25,9 @@
         ".config/vesktop/"
       ];
       files = [
+        ".mozilla/firefox/profiles.ini"
+        ".mozilla/firefox/default/key4.db"
+        ".mozilla/firefox/default/cookies.sqlite"
       ];
     };
   };

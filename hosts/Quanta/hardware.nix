@@ -14,12 +14,24 @@
 
   boot = {
     kernelPackages = pkgs.linuxPackages_zen;
-    kernelModules = [ "kvm-amd" ];
+    kernelModules = [ "kvm-amd" "tcp_bbr" ];
     kernelParams = [
       "amd_pstate=active"
     ];
     kernel.sysctl = {
-      "vm.max_map_count" = 2147483642;
+      "vm.swappiness" = 100;
+      "vm.vfs_cache_pressure" = 50;
+      "vm.page-cluster" = 0;
+      "vm.dirty_bytes" = 256 * 1024 * 1024;
+      "vm.dirty_background_bytes" = 64 * 1024 * 1024;
+      "vm.dirty_writeback_centisecs" = 1500;
+      "kernel.nmi_watchdog" = 0;
+      "kernel.unprivileged_userns_clone" = 1;
+      "kernel.kptr_restrict" = 2;
+      "net.core.netdev_max_backlog" = 4096;
+      "fs.file-max" = 2097152;
+      "net.core.default_qdisc" = "cake";
+      "net.ipv4.tcp_congestion_control" = "bbr";
     };
 
     initrd = {
@@ -42,9 +54,14 @@
     extraModulePackages = [ ];
   };
 
-  zramSwap.enable = true;
+  zramSwap = {
+    enable = true;
+    algorithm = "zstd";
+    memoryPercent = 100;
+  };
 
   networking.useDHCP = lib.mkDefault true;
 
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
+  hardware.keyboard.qmk.enable = true;
 }

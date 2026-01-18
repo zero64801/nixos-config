@@ -31,7 +31,7 @@
       # Disable auto-suspend and screen turning off
       powerdevil = {
         AC = {
-          powerProfile = "performance";
+          powerProfile = "balanced";
           autoSuspend = {
             action = "nothing";
           };
@@ -124,10 +124,12 @@
       startup.startupScript = {
         displayLayout = {
           text = ''
-            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.HDMI-A-1.position.0,0 output.DP-1.position.1920,0 output.DP-1.primary
+            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-2.position.0,0 output.DP-1.position.2560,0 output.DP-1.primary
+
+            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-1.vrrpolicy.automatic
 
             # Set brightness to 100% for all displays
-            for output in HDMI-A-1 DP-1; do
+            for output in DP-2 DP-1; do
               ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.$output.brightness.100
             done
           '';
