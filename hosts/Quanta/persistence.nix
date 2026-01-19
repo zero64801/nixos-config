@@ -21,13 +21,9 @@
         ".local/share/direnv"
         ".local/share/fish"
         "Downloads"
-        "Pictures/Wallpapers"
         ".config/vesktop/"
       ];
       files = [
-        ".mozilla/firefox/profiles.ini"
-        ".mozilla/firefox/default/key4.db"
-        ".mozilla/firefox/default/cookies.sqlite"
       ];
     };
   };

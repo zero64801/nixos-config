@@ -16,9 +16,7 @@
                 type = "filesystem";
                 format = "vfat";
                 mountpoint = "/boot";
-                mountOptions = [
-                  "defaults"
-                ];
+                mountOptions = [ "defaults" ];
               };
             };
             luks = {
@@ -38,7 +36,6 @@
                   extraArgs = [ "-L nixos" ];
                   postCreateHook = ''
                     TMP_MNT=$(mktemp -d)
-
                     mount "$device" "$TMP_MNT"
 
                     mkdir -p "$TMP_MNT/root/boot"
@@ -50,6 +47,7 @@
 
                     mkdir -p "$TMP_MNT/snapshots/root"
 
+                    # Create the blank snapshot for impermanence rollback
                     btrfs subvolume snapshot -r "$TMP_MNT/root" "$TMP_MNT/snapshots/root/blank"
 
                     umount "$TMP_MNT"
@@ -75,6 +73,45 @@
                     "/persist_safe" = {
                       mountpoint = "/persist/safe";
                       mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+
+      storage = {
+        type = "disk";
+        device = "/dev/disk/by-path/pci-0000:07:00.0-nvme-1";
+        content = {
+          type = "gpt";
+          partitions = {
+            luks = {
+              size = "100%";
+              label = "storage_luks";
+              content = {
+                type = "luks";
+                name = "cryptstorage";
+                extraFormatArgs = [ "--type luks2" ];
+                settings = {
+                  allowDiscards = true;
+                  crypttabExtraOpts = [ "fido2-device=auto" ];
+                };
+                content = {
+                  type = "btrfs";
+                  extraArgs = [ "-L storage" ];
+                  subvolumes = {
+                    "/data" = {
+                      mountpoint = "/mnt/storage";
+                      mountOptions = [
+                        "noatime"
+                        "nodiratime"
+                        "compress=zstd"
+                        "ssd"
+                        "nofail"
+                      ];
                     };
                   };
                 };

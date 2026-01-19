@@ -6,8 +6,6 @@
     ./hardware.nix
     ./disko.nix
     ./networking.nix
-    ./storage.nix
-    ./libvirt
 
     # User
     ../../users/dx
@@ -62,9 +60,6 @@
       unlockDevice = "dev-mapper-cryptroot.device";
     };
   };
-
-  # Virtualization
-  nyx.virtualisation.base.enable = true;
 
   # System-specific configuration
   users.mutableUsers = false;
