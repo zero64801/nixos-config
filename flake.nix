@@ -44,7 +44,7 @@
             ./hosts/${hostname}
 
             # NixOS modules
-            ./modules/nixos
+            ./modules
 
             # External modules
             inputs.home-manager.nixosModules.home-manager

@@ -1,3 +1,8 @@
+{ config, lib, ... }:
+
+let
+  user = config.nyx.flake.user;
+in
 {
   disko.devices = {
     disk = {
@@ -123,8 +128,14 @@
     };
   };
 
+  # Needed for impermanence
   fileSystems = {
     "/persist/local".neededForBoot = true;
     "/persist/safe".neededForBoot = true;
   };
+
+  # -- Permissions Rules --
+  systemd.tmpfiles.rules = [
+    "d /mnt/storage 0755 ${user} users -"
+  ];
 }

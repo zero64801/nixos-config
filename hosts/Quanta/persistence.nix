@@ -22,6 +22,7 @@
         ".local/share/fish"
         "Downloads"
         ".config/vesktop/"
+        ".local/share/flatpak"
       ];
       files = [
       ];

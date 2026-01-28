@@ -10,6 +10,7 @@
       "wheel"
       "networkmanager"
       "tss"
+      "gamemode"
     ] ++ config.nyx.security.serviceAdminGroups;
 
     hashedPasswordFile = "/persist/local/secrets/passwd/dx";

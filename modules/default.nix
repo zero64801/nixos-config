@@ -1,5 +1,9 @@
 { lib, pkgs, ... }:
 
+let
+  inherit (lib) types;
+  inherit (lib.options) mkOption;
+in
 {
   imports = [
     ./system
@@ -9,6 +13,19 @@
 
   options = {
     nyx.data.headless = lib.mkEnableOption "headless mode (disables GUI components)";
+    nyx.flake = {
+      host = mkOption {
+        description = "Hostname of the system";
+        type = types.str;
+        default = "Quanta";
+      };
+
+      user = mkOption {
+        description = "The user of the system";
+        type = types.str;
+        default = "dx";
+      };
+    };
   };
 
   config = {
