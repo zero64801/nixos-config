@@ -52,7 +52,14 @@ in
 
     desktop.plasma6.enable = true;
 
-    programs.flatpak.enable = true;
+    programs = {
+      flatpak.enable = true;
+      gaming = {
+        enable = true;
+        steam.enable = true;
+        heroic.enable = true;
+      };
+    };
 
     security.yubikey.enable = true;
 

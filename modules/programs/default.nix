@@ -6,10 +6,14 @@
     ./direnv.nix
     ./fish.nix
     ./flatpak.nix
+    ./games.nix
   ];
 
   environment = {
-    systemPackages = [ pkgs.git ];
+    systemPackages = with pkgs; [
+      lsof
+      git
+    ];
 
     variables = {
       EDITOR = lib.mkForce "vim";

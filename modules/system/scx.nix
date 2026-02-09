@@ -251,37 +251,34 @@ let
 
 in
 {
-  environment.systemPackages = [
-    scx-env
-    scx-switch
-    scx-gui
-    scx-desktop-item
-    pkgs.qt6.qtwayland
-    pkgs.adwaita-qt6
-    pkgs.nixos-icons
-  ];
+  options.nyx.programs.scx.package = lib.mkOption {
+    type = lib.types.package;
+    default = scx-switch;
+    description = "The scx-switch package to be used by other modules";
+  };
 
-  services.scx.enable = false;
+  config = {
+    environment.systemPackages = [
+      scx-env
+      scx-switch
+      scx-gui
+      scx-desktop-item
+      pkgs.qt6.qtwayland
+      pkgs.adwaita-qt6
+      pkgs.nixos-icons
+    ];
 
-  security.polkit.extraConfig = ''
-    polkit.addRule(function(action, subject) {
-      if (action.id == "org.freedesktop.policykit.exec" &&
-          action.lookup("command_line") &&
-          action.lookup("command_line").indexOf("${scx-switch}/bin/scx-switch") === 0 &&
-          subject.isInGroup("wheel")) {
-        return polkit.Result.YES;
-      }
-    });
-  '';
+    services.scx.enable = false;
 
-  programs.gamemode = {
-    enable = true;
-    settings = {
-      custom = {
-        # Using /run/wrappers/bin/pkexec to fix the "attribute missing" error
-        start = "/run/wrappers/bin/pkexec ${scx-switch}/bin/scx-switch apply scx_lavd --performance";
-        end = "/run/wrappers/bin/pkexec ${scx-switch}/bin/scx-switch disable";
-      };
-    };
+    security.polkit.extraConfig = ''
+      polkit.addRule(function(action, subject) {
+        if (action.id == "org.freedesktop.policykit.exec" &&
+            action.lookup("command_line") &&
+            action.lookup("command_line").indexOf("${scx-switch}/bin/scx-switch") === 0 &&
+            subject.isInGroup("wheel")) {
+          return polkit.Result.YES;
+        }
+      });
+    '';
   };
 }

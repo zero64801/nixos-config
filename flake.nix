@@ -3,15 +3,25 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-
-    nur = {
-      url = "github:nix-community/NUR";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    impermanence.url = "github:nix-community/impermanence";
+    disko.url = "github:nix-community/disko";
 
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    firefox-addons = {
+      url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    zen-browser = {
+      url = "github:0xc000022070/zen-browser-flake";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        home-manager.follows = "home-manager";
+      };
     };
 
     plasma-manager = {
@@ -21,9 +31,6 @@
         home-manager.follows = "home-manager";
       };
     };
-
-    impermanence.url = "github:nix-community/impermanence/4a07d84eaaac3d8cfd26a5f7a3da8161df0e75cd";
-    disko.url = "github:nix-community/disko";
   };
 
   outputs =
@@ -55,7 +62,6 @@
             {
               nixpkgs.overlays = [
                 (import ./overlays/default.nix)
-                inputs.nur.overlays.default
               ];
             }
             (

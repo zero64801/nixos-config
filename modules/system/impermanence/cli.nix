@@ -39,23 +39,28 @@ writeShellApplication {
         CONFIG_REPO="${if configRepoPath != null then configRepoPath else ""}"
         HOSTNAME="${hostname}"
         PERSIST_CONFIG="${if persistenceConfigPath != null then persistenceConfigPath else ""}"
-        PERSIST_JSON_FALLBACK="${if persistenceJson != null then persistenceJson else ""}"
+        PERSIST_JSON="${if persistenceJson != null then persistenceJson else ""}"
 
-        # Colors
-        RED='\033[0;31m'
-        GREEN='\033[0;32m'
-        YELLOW='\033[1;33m'
-        BLUE='\033[0;34m'
-        CYAN='\033[0;36m'
-        NC='\033[0m'
-        BOLD='\033[1m'
-        DIM='\033[2m'
+        RED='\x1b[0;31m'
+        GREEN='\x1b[0;32m'
+        YELLOW='\x1b[1;33m'
+        BLUE='\x1b[0;34m'
+        MAGENTA='\x1b[0;35m'
+        CYAN='\x1b[0;36m'
+        NC='\x1b[0m'
+        BOLD='\x1b[1m'
+        DIM='\x1b[2m'
 
-        # Print helpers
-        info() { echo -e "''${BLUE}●''${NC} $1"; }
-        success() { echo -e "''${GREEN}✓''${NC} $1"; }
+        ICON_INFO='\xe2\x97\x8f'
+        ICON_OK='\xe2\x9c\x93'
+        ICON_ERR='\xe2\x9c\x97'
+        ICON_WAIT='\xe2\x97\x90'
+        ICON_EMPTY='\xe2\x97\x8b'
+
+        info() { echo -e "''${BLUE}''${ICON_INFO}''${NC} $1"; }
+        success() { echo -e "''${GREEN}''${ICON_OK}''${NC} $1"; }
         warn() { echo -e "''${YELLOW}!''${NC} $1"; }
-        error() { echo -e "''${RED}✗''${NC} $1" >&2; }
+        error() { echo -e "''${RED}''${ICON_ERR}''${NC} $1" >&2; }
         header() { echo -e "\n''${BOLD}$1''${NC}"; }
 
         check_config_repo() {
@@ -81,31 +86,31 @@ writeShellApplication {
         }
 
         get_config_json() {
-          if [[ -f "''${PERSIST_CONFIG}" ]]; then
-            if nix-instantiate --eval --strict --json -E "let c = import ''${PERSIST_CONFIG}; in if builtins.isFunction c then c {} else c" 2>/dev/null; then
-              return 0
-            fi
-          fi
-          if [[ -f "''${PERSIST_JSON_FALLBACK}" ]]; then
-            cat "''${PERSIST_JSON_FALLBACK}"
+          if [[ -f "''${PERSIST_JSON}" ]]; then
+            cat "''${PERSIST_JSON}"
           else
             echo "{}"
           fi
         }
 
-        read_list() {
-          local key="$1"
-          get_config_json | jq -r ".''${key}[]? | if type==\"string\" then . else .directory end"
+        get_local_config_json() {
+           if [[ -f "''${PERSIST_CONFIG}" ]]; then
+            if nix-instantiate --eval --strict --json -E "let c = import ''${PERSIST_CONFIG}; in if builtins.isFunction c then c {} else c" 2>/dev/null; then
+              return 0
+            fi
+          fi
+          echo "{}"
         }
 
-        read_user_list() {
+        read_local_list() {
+          local key="$1"
+          get_local_config_json | jq -r ".''${key}[]? | if type==\"string\" then . else .directory end"
+        }
+
+        read_local_user_list() {
           local user="$1"
           local key="$2"
-          get_config_json | jq -r ".users[\"''${user}\"].''${key}[]? | if type==\"string\" then . else .directory end"
-        }
-
-        read_users() {
-          get_config_json | jq -r ".users | keys[]?"
+          get_local_config_json | jq -r ".users[\"''${user}\"].''${key}[]? | if type==\"string\" then . else .directory end"
         }
 
         detect_user_from_path() {
@@ -128,7 +133,7 @@ writeShellApplication {
 
           ensure_config
 
-          if read_list "''${key}" | grep -qxF "''${value}"; then
+          if read_local_list "''${key}" | grep -qxF "''${value}"; then
             warn "Already in ''${key}: ''${value}"
             return 1
           fi
@@ -172,7 +177,7 @@ writeShellApplication {
             }" "''${PERSIST_CONFIG}"
           fi
 
-          if read_user_list "''${user}" "''${key}" | grep -qxF "''${value}"; then
+          if read_local_user_list "''${user}" "''${key}" | grep -qxF "''${value}"; then
             warn "Already in ''${user}.''${key}: ''${value}"
             return 1
           fi
@@ -277,20 +282,13 @@ writeShellApplication {
 
         is_active() {
           local path="$1"
-          # Check if it's a bind mount (using mountpoint to catch systemd mounts)
           if findmnt --mountpoint "$path" &>/dev/null; then return 0; fi
-
-          # Check if it's a symlink pointing to persistence (for method=symlink)
           if [[ -L "$path" ]]; then
              local target
              target=$(readlink -f "$path")
              if [[ "$target" == "''${PERSIST_PATH}"* ]]; then return 0; fi
           fi
           return 1
-        }
-
-        get_mounted_paths() {
-          findmnt --options bind --noheadings --output TARGET 2>/dev/null | sort -u || true
         }
 
         get_size() {
@@ -315,10 +313,11 @@ writeShellApplication {
         nyx-persist <COMMAND> [OPTIONS]
 
     COMMANDS:
-        list, ls                 List all persisted paths
+        list, ls                 List all persisted paths (Source: Active System)
         status, st               Show persistence status
         add <path> [OPTIONS]     Add a path to persistence
         remove, rm <path>        Remove a path from config
+        clean, junk              Find and remove files in storage that are not persisted
         check <path>             Check persistence status of a path
         diff                     Show common paths that aren't persisted
         edit                     Open CLI config in $EDITOR
@@ -337,73 +336,231 @@ writeShellApplication {
         }
 
         cmd_list() {
-          header "Persisted Paths"
+          header "Persisted Paths (Active System)"
           echo -e "''${DIM}Host: ''${HOSTNAME} | Storage: ''${PERSIST_PATH}''${NC}"
 
-          if [[ -n "''${PERSIST_CONFIG}" ]] && [[ -f "''${PERSIST_CONFIG}" ]]; then
-            echo -e "''${DIM}Config: ''${PERSIST_CONFIG}''${NC}"
-          fi
+          local local_json
+          local_json=$(get_local_config_json)
 
           echo -e "\n''${CYAN}System Directories''${NC}"
-          local has_dirs=false
-          while IFS= read -r dir; do
-            if [[ -n "''${dir}" ]]; then
-              local size
-              size=$(get_size "''${dir}")
-              local status="''${YELLOW}◐''${NC}"
-              if is_active "''${dir}"; then status="''${GREEN}●''${NC}"; fi
-              echo -e "  ''${status} ''${dir} ''${DIM}(''${size}) [cli]''${NC}"
-              has_dirs=true
-            fi
-          done < <(read_list "directories")
-          if [[ "''${has_dirs}" == "false" ]]; then echo -e "  ''${DIM}(none)''${NC}"; fi
+          local sys_dirs
+          sys_dirs=$(get_config_json | jq -r "to_entries[] | .value.directories[]?")
+
+          local local_sys_dirs
+          local_sys_dirs=$(echo "$local_json" | jq -r ".directories[]? | if type==\"string\" then . else .directory end")
+
+          if [[ -n "$sys_dirs" ]]; then
+            while IFS= read -r p; do
+               local size
+               size=$(get_size "''${p}")
+               local status="''${YELLOW}''${ICON_WAIT}''${NC}"
+               if is_active "''${p}"; then status="''${GREEN}''${ICON_INFO}''${NC}"; fi
+
+               local source_tag=""
+               if ! echo "$local_sys_dirs" | grep -qxF "$p"; then
+                  source_tag=" ''${MAGENTA}[module]''${NC}"
+               fi
+
+               echo -e "  ''${status} ''${p} ''${DIM}(''${size})''${NC}''${source_tag}"
+            done <<< "$sys_dirs"
+          else
+            echo -e "  ''${DIM}(none)''${NC}"
+          fi
 
           echo -e "\n''${CYAN}System Files''${NC}"
-          local has_files=false
-          while IFS= read -r file; do
-            if [[ -n "''${file}" ]]; then
-              local status="''${YELLOW}◐''${NC}"
-              if is_active "''${file}"; then status="''${GREEN}●''${NC}"; fi
-              echo -e "  ''${status} ''${file} ''${DIM}[cli]''${NC}"
-              has_files=true
-            fi
-          done < <(read_list "files")
-          if [[ "''${has_files}" == "false" ]]; then echo -e "  ''${DIM}(none)''${NC}"; fi
+          local sys_files
+          sys_files=$(get_config_json | jq -r "to_entries[] | .value.files[]?")
+
+          local local_sys_files
+          local_sys_files=$(echo "$local_json" | jq -r ".files[]? | if type==\"string\" then . else .file end")
+
+          if [[ -n "$sys_files" ]]; then
+            while IFS= read -r p; do
+               local status="''${YELLOW}''${ICON_WAIT}''${NC}"
+               if is_active "''${p}"; then status="''${GREEN}''${ICON_INFO}''${NC}"; fi
+
+               local source_tag=""
+               if ! echo "$local_sys_files" | grep -qxF "$p"; then
+                  source_tag=" ''${MAGENTA}[module]''${NC}"
+               fi
+
+               echo -e "  ''${status} ''${p} ''${DIM}(file)''${NC}''${source_tag}"
+            done <<< "$sys_files"
+          else
+            echo -e "  ''${DIM}(none)''${NC}"
+          fi
 
           local users
-          users=$(read_users)
-          if [[ -n "''${users}" ]]; then
-            echo -e "\n''${CYAN}User Paths''${NC}"
-            while IFS= read -r user; do
-              if [[ -n "''${user}" ]]; then
+          users=$(get_config_json | jq -r "to_entries[] | .value.users | keys[]?")
+
+          if [[ -n "$users" ]]; then
+             echo -e "\n''${CYAN}User Paths''${NC}"
+             while IFS= read -r user; do
                 echo -e "  ''${BOLD}''${user}''${NC}"
-                local home_dir
-                home_dir=$(getent passwd "''${user}" | cut -d: -f6 || echo "/home/''${user}")
 
-                while IFS= read -r dir; do
-                  if [[ -n "''${dir}" ]]; then
-                    local full_path="''${home_dir}/''${dir}"
-                    local size
-                    size=$(get_size "''${full_path}")
-                    local status="''${YELLOW}◐''${NC}"
-                    if is_active "''${full_path}"; then status="''${GREEN}●''${NC}"; fi
-                    echo -e "    ''${status} ''${dir} ''${DIM}(''${size})''${NC}"
-                  fi
-                done < <(read_user_list "''${user}" "directories")
+                local u_dirs
+                u_dirs=$(get_config_json | jq -r "to_entries[] | .value.users[\"''${user}\"].directories[]?")
 
-                while IFS= read -r file; do
-                  if [[ -n "''${file}" ]]; then
-                    local full_path="''${home_dir}/''${file}"
-                    local status="''${YELLOW}◐''${NC}"
-                    if is_active "''${full_path}"; then status="''${GREEN}●''${NC}"; fi
-                    echo -e "    ''${status} ''${file} ''${DIM}(file)''${NC}"
-                  fi
-                done < <(read_user_list "''${user}" "files")
-              fi
-            done <<< "''${users}"
+                local local_u_dirs
+                local_u_dirs=$(echo "$local_json" | jq -r ".users[\"''${user}\"].directories[]? | if type==\"string\" then . else .directory end")
+
+                if [[ -n "$u_dirs" ]]; then
+                   while IFS= read -r p; do
+                      local size
+                      size=$(get_size "''${p}")
+                      local status="''${YELLOW}''${ICON_WAIT}''${NC}"
+                      if is_active "''${p}"; then status="''${GREEN}''${ICON_INFO}''${NC}"; fi
+
+                      local source_tag=""
+                      local home_dir
+                      home_dir=$(getent passwd "''${user}" | cut -d: -f6)
+                      local rel_path="''${p#"''${home_dir}"/}"
+
+                      if ! echo "$local_u_dirs" | grep -qxF "$rel_path"; then
+                         source_tag=" ''${MAGENTA}[module]''${NC}"
+                      fi
+
+                      echo -e "    ''${status} ''${p} ''${DIM}(''${size})''${NC}''${source_tag}"
+                   done <<< "$u_dirs"
+                fi
+
+                local u_files
+                u_files=$(get_config_json | jq -r "to_entries[] | .value.users[\"''${user}\"].files[]?")
+
+                local local_u_files
+                local_u_files=$(echo "$local_json" | jq -r ".users[\"''${user}\"].files[]? | if type==\"string\" then . else .file end")
+
+                if [[ -n "$u_files" ]]; then
+                   while IFS= read -r p; do
+                      local status="''${YELLOW}''${ICON_WAIT}''${NC}"
+                      if is_active "''${p}"; then status="''${GREEN}''${ICON_INFO}''${NC}"; fi
+
+                      local home_dir
+                      home_dir=$(getent passwd "''${user}" | cut -d: -f6)
+                      local rel_path="''${p#"''${home_dir}"/}"
+
+                      local source_tag=""
+                      if ! echo "$local_u_files" | grep -qxF "$rel_path"; then
+                         source_tag=" ''${MAGENTA}[module]''${NC}"
+                      fi
+
+                      echo -e "    ''${status} ''${p} ''${DIM}(file)''${NC}''${source_tag}"
+                   done <<< "$u_files"
+                fi
+             done <<< "$users"
           fi
+
           echo ""
-          echo -e "''${DIM}Legend: ''${GREEN}●''${NC}''${DIM}=mounted/active ''${YELLOW}◐''${NC}''${DIM}=pending rebuild''${NC}"
+          echo -e "''${DIM}Legend: ''${GREEN}''${ICON_INFO}''${NC}''${DIM}=mounted/active ''${MAGENTA}[module]''${NC}''${DIM}=from other nix modules''${NC}"
+        }
+
+        cmd_clean() {
+          header "Cleaning Junk Files"
+          info "Scanning ''${PERSIST_PATH} for unmanaged files..."
+
+          if [[ ! -d "''${PERSIST_PATH}" ]]; then
+             error "Persistence path not found."
+             exit 1
+          fi
+
+          local valid_prefixes_file
+          valid_prefixes_file=$(mktemp)
+          get_config_json | jq -r '
+            to_entries[] | .key as $storage | .value as $root |
+            ($root.directories[]? | $storage + .),
+            ($root.users[]? | .directories[]? | $storage + .)
+          ' > "$valid_prefixes_file"
+
+          local valid_exact_file
+          valid_exact_file=$(mktemp)
+          get_config_json | jq -r '
+            to_entries[] | .key as $storage | .value as $root |
+            ($root.files[]? | $storage + .),
+            ($root.users[]? | .files[]? | $storage + .)
+          ' > "$valid_exact_file"
+
+          local all_explicit
+          all_explicit=$(cat "$valid_prefixes_file" "$valid_exact_file")
+
+          echo "''${PERSIST_PATH}" >> "$valid_exact_file"
+
+          while IFS= read -r p; do
+             if [[ -n "$p" ]]; then
+                local parent="$p"
+                while [[ "$parent" != "''${PERSIST_PATH}" ]] && [[ "$parent" != "/" ]] && [[ "$parent" != "." ]]; do
+                   parent=$(dirname "$parent")
+                   echo "$parent" >> "$valid_exact_file"
+                done
+             fi
+          done <<< "$all_explicit"
+
+          local junk_list
+          junk_list=$(find "''${PERSIST_PATH}" -mindepth 1 | awk \
+            -v prefixes_file="$valid_prefixes_file" \
+            -v exact_file="$valid_exact_file" \
+            -v root="''${PERSIST_PATH}" '
+            BEGIN {
+              while ((getline line < prefixes_file) > 0) {
+                if (line != "") prefixes[line] = 1
+              }
+              close(prefixes_file)
+
+              while ((getline line < exact_file) > 0) {
+                if (line != "") exact[line] = 1
+              }
+              close(exact_file)
+            }
+            {
+              path = $0
+
+              if (index(path, root "/secrets") == 1) next
+
+              if (path in exact) next
+
+              is_valid_child = 0
+              for (prefix in prefixes) {
+                if (index(path, prefix "/") == 1) {
+                  is_valid_child = 1
+                  break
+                }
+                if (path == prefix) {
+                  is_valid_child = 1
+                  break
+                }
+              }
+
+              if (is_valid_child) next
+
+              print path
+            }
+          ')
+
+          rm "$valid_prefixes_file" "$valid_exact_file"
+
+          if [[ -z "$junk_list" ]]; then
+             success "No junk files found. Storage is clean."
+             return 0
+          fi
+
+          echo -e "\n''${YELLOW}The following files/directories are in storage but NOT persisted:''${NC}"
+
+          while IFS= read -r line; do
+             printf "  %b %s%b\n" "''${RED}''${ICON_ERR}" "$line" "''${NC}"
+          done <<< "$junk_list"
+
+          echo -e "\n''${BOLD}WARNING: This will permanently delete these files!''${NC}"
+          read -r -p "Do you want to delete them? [y/N] " response
+          if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+             echo "$junk_list" | while read -r junk; do
+                if [[ -e "$junk" ]]; then
+                   echo -e "Deleting: $junk"
+                   sudo rm -rf "$junk"
+                fi
+             done
+             success "Cleanup complete."
+          else
+             info "Aborted."
+          fi
         }
 
         cmd_status() {
@@ -412,12 +569,7 @@ writeShellApplication {
           echo -e "  Host: ''${HOSTNAME}"
           echo -e "  Storage: ''${PERSIST_PATH}"
           if [[ -n "''${PERSIST_CONFIG}" ]]; then echo -e "  Config: ''${PERSIST_CONFIG}"; fi
-
-          if nix-instantiate --eval --strict --json -E "import ''${PERSIST_CONFIG}" &>/dev/null; then
-             echo -e "  Source: ''${GREEN}Live Config (Evaluated)''${NC}"
-          else
-             echo -e "  Source: ''${YELLOW}Build-time JSON (Fallback)''${NC}"
-          fi
+          echo -e "  Source: ''${GREEN}Active System (Evaluated JSON)''${NC}"
 
           if [[ -d "''${PERSIST_PATH}" ]]; then
             local total_size available used_percent
@@ -501,20 +653,12 @@ writeShellApplication {
 
           if [[ "''${migrate}" == true ]] && [[ -e "''${full_path}" ]] && [[ ! -e "''${persist_target}" ]]; then
             info "Migrating existing data..."
-
-            # Ensure base persistence directory exists
-            if [[ ! -d "''${PERSIST_PATH}" ]]; then
-                sudo mkdir -p "''${PERSIST_PATH}"
-            fi
-
-            # Use rsync -aR (relative) to copy path AND preserve parent directory attributes
-            # This ensures /persist/local/home/user gets ownership from /home/user
+            if [[ ! -d "''${PERSIST_PATH}" ]]; then sudo mkdir -p "''${PERSIST_PATH}"; fi
             if [[ "''${path_type}" == "dir" ]]; then
                sudo rsync -aR "''${full_path}/" "''${PERSIST_PATH}/"
             else
                sudo rsync -aR "''${full_path}" "''${PERSIST_PATH}/"
             fi
-
             success "Data migrated to persistent storage"
           elif [[ ! -e "''${persist_target}" ]]; then
             info "Creating in persistent storage..."
@@ -615,10 +759,15 @@ writeShellApplication {
             success "Exists in storage (''${size})"
           else warn "NOT in persistent storage"; fi
 
-          local in_dirs in_files
-          in_dirs=$(read_list "directories" | grep -xF "''${full_path}" || true)
-          in_files=$(read_list "files" | grep -xF "''${full_path}" || true)
-          if [[ -n "''${in_dirs}" ]] || [[ -n "''${in_files}" ]]; then success "In CLI config"; else info "Not in CLI config (may be in NixOS config)"; fi
+          local in_json
+          in_json=$(get_config_json | jq -r "
+            to_entries[] | .key as \$storage | .value as \$root |
+            (\$root.files[]? | \$storage + .),
+            (\$root.directories[]? | \$storage + .),
+            (\$root.users[]? | (.files[]? | \$storage + .), (.directories[]? | \$storage + .))
+          " | grep -xF "''${persist_target}" || true)
+
+          if [[ -n "''${in_json}" ]]; then success "In System Config (Active)"; else info "Not in active config"; fi
         }
 
         cmd_diff() {
@@ -639,11 +788,11 @@ writeShellApplication {
           for entry in "''${common_paths[@]}"; do
             IFS=: read -r p _ desc <<< "''${entry}"
             if [[ -e "''${p}" ]]; then
-              if is_active "''${p}"; then echo -e "  ''${GREEN}●''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"; else echo -e "  ''${RED}○''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"; fi
+              if is_active "''${p}"; then echo -e "  ''${GREEN}''${ICON_INFO}''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"; else echo -e "  ''${RED}''${ICON_EMPTY}''${NC} ''${p} ''${DIM}- ''${desc}''${NC}"; fi
             fi
           done
           echo ""
-          echo -e "''${DIM}Legend: ''${GREEN}●''${NC}''${DIM}=persisted ''${RED}○''${NC}''${DIM}=NOT persisted''${NC}"
+          echo -e "''${DIM}Legend: ''${GREEN}''${ICON_INFO}''${NC}''${DIM}=persisted ''${RED}''${ICON_EMPTY}''${NC}''${DIM}=NOT persisted''${NC}"
           echo -e "\n''${DIM}Add missing paths with: nyx-persist add <path>''${NC}"
         }
 
@@ -661,6 +810,7 @@ writeShellApplication {
             status|st) cmd_status ;;
             add|a) cmd_add "$@" ;;
             remove|rm) cmd_remove "$@" ;;
+            clean|junk) cmd_clean ;;
             check|c) cmd_check "$@" ;;
             diff|d) cmd_diff ;;
             edit|e) cmd_edit ;;

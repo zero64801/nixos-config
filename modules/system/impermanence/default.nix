@@ -7,20 +7,17 @@
 }:
 
 with lib;
-with builtins;
 
 let
   cfg = config.nyx.impermanence;
   hostname = config.networking.hostName;
 
-  # Path to persistence config (for CLI tool display only)
   persistenceConfigPath =
     if cfg.configRepoPath != null then
       "${cfg.configRepoPath}/hosts/${hostname}/persistence.nix"
     else
       null;
 
-  # Read persistence config from the Nix path option (evaluated at build time)
   persistenceConfig =
     if cfg.persistenceConfigFile != null then
       import cfg.persistenceConfigFile
@@ -31,17 +28,23 @@ let
         users = { };
       };
 
-  # Export the evaluated config to JSON for the CLI
-  persistenceJson = pkgs.writeText "persistence.json" (builtins.toJSON persistenceConfig);
+  persistenceData = lib.mapAttrs (name: pCfg: {
+    directories = map (d: d.dirPath) pCfg.directories;
+    files = map (f: f.filePath) pCfg.files;
+    users = lib.mapAttrs (user: uCfg: {
+      directories = map (d: d.dirPath) uCfg.directories;
+      files = map (f: f.filePath) uCfg.files;
+    }) pCfg.users;
+  }) config.environment.persistence;
 
-  # CLI tool
+  persistenceJson = pkgs.writeText "persistence.json" (builtins.toJSON persistenceData);
+
   nyx-persist = pkgs.callPackage ./cli.nix {
     inherit (cfg) persistentStoragePath configRepoPath;
     inherit hostname persistenceConfigPath;
     inherit persistenceJson;
   };
 
-  # Preset directories and files
   presetDirectories =
     optionals cfg.presets.system [
       "/var/log"
@@ -68,12 +71,10 @@ let
       "/etc/ssh/ssh_host_rsa_key.pub"
     ];
 
-  # Merge everything
   allDirectories = (persistenceConfig.directories or [ ]) ++ presetDirectories;
   allFiles = (persistenceConfig.files or [ ]) ++ presetFiles;
   allUsers = persistenceConfig.users or { };
 
-  # Btrfs rollback script
   rollbackScript =
     let
       device = cfg.btrfs.device;
@@ -175,7 +176,6 @@ in
         }
       ];
 
-      # Map our config to the upstream impermanence module structure
       environment.persistence.${cfg.persistentStoragePath} = {
         inherit (cfg) hideMounts;
         directories = allDirectories;

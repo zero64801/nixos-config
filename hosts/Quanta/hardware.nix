@@ -14,7 +14,11 @@
 
   boot = {
     kernelPackages = pkgs.linuxPackages_zen;
-    kernelModules = [ "kvm-amd" "tcp_bbr" ];
+    kernelModules = [
+      "kvm-amd"
+      "tcp_bbr"
+      "ntsync"
+    ];
     kernelParams = [
       "amd_pstate=active"
     ];

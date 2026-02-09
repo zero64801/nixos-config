@@ -28,7 +28,6 @@
           u2f.settings.authfile = "/etc/u2f_keys";
         };
       }
-
       # Persist U2F key registrations across reboots (impermanence)
       (lib.mkIf config.nyx.impermanence.enable {
         environment.persistence.${config.nyx.impermanence.persistentStoragePath}.files = [

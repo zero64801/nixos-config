@@ -24,7 +24,7 @@
     # This is crucial for a good desktop experience.
     xdg.portal.enable = true;
 
-    systemd.services.flatpak-repo = {
+    systemd.services.flatpak-repo = lib.mkIf config.nyx.programs.flatpak.addFlathub {
       wantedBy = [ "multi-user.target" ];
       path = [ pkgs.flatpak ];
       script = ''
