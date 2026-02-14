@@ -3,7 +3,16 @@
 let
   lib = inputs.nixpkgs.lib;
 
-  recursivelyImport = import ./lib/recursivelyImport.nix { inherit lib; };
+  importDir = dir:
+    let
+      allFiles = lib.filesystem.listFilesRecursive dir;
+      nixFiles = builtins.filter (f:
+        let name = baseNameOf (toString f); in
+        lib.hasSuffix ".nix" (toString f)
+        && name != "flake.nix"
+        && !lib.hasPrefix "_" name
+      ) allFiles;
+    in nixFiles;
 
   hostnames = builtins.attrNames (
     lib.filterAttrs (_: type: type == "directory") (builtins.readDir ./hosts)
@@ -13,16 +22,14 @@ let
     lib.nixosSystem {
       specialArgs = { inherit inputs; };
 
-      modules = recursivelyImport [
-        ./base
-        ./apps
-        ./desktop
-        ./hardware
-        ./modules
-        ./hosts/${hostname}
-      ] ++ [
-        inputs.lix-module.nixosModules.default
-      ];
+      modules =
+        importDir ./core
+        ++ importDir ./apps
+        ++ importDir ./modules
+        ++ importDir ./hosts/${hostname}
+        ++ [
+          inputs.lix-module.nixosModules.default
+        ];
     };
 
 in

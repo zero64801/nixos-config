@@ -2,12 +2,11 @@ inputs: final: prev:
 let
   inherit (prev) lib callPackage;
 
-  # Auto-discover packages
-  packages = lib.filesystem.listFilesRecursive ./packages;
+  packageFiles = lib.filesystem.listFilesRecursive ./packages;
 
   nixFiles = builtins.filter (f:
     lib.hasSuffix ".nix" (toString f)
-  ) packages;
+  ) packageFiles;
 
   autoPackages = builtins.listToAttrs (map (f: {
     name = lib.removeSuffix ".nix" (baseNameOf (toString f));
@@ -15,5 +14,7 @@ let
   }) nixFiles);
 
   functions = import ./functions.nix inputs final prev;
+  overrides = import ./overrides.nix inputs final prev;
+
 in
-  autoPackages // functions
+  autoPackages // functions // overrides

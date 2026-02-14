@@ -1,26 +1,20 @@
-{
-  lib,
-  config,
-  pkgs,
-  options,
-  ...
-}:
+{ config, lib, pkgs, options, ... }:
 
 let
-  cfg = config.nyx.programs.gaming;
+  cfg = config.nyx.apps.gaming;
   user = config.nyx.flake.user;
-  scxPackage = config.nyx.programs.scx.package;
+  scxPackage = config.nyx.apps.scx.package;
   dwproton = pkgs.dwproton-bin;
 in
 {
-  options.nyx.programs.gaming = {
-    enable = lib.mkEnableOption "Enable gaming package";
+  options.nyx.apps.gaming = {
+    enable = lib.mkEnableOption "Gaming support";
 
     steam = {
       enable = lib.mkEnableOption "Steam";
-      remotePlay = lib.mkEnableOption "Enable remotePlay support";
-      dedicatedServer = lib.mkEnableOption "Enable dedicatedServer support";
-      localTransfer = lib.mkEnableOption "Open ports for steam Local Network Game Transfers";
+      remotePlay = lib.mkEnableOption "Steam Remote Play";
+      dedicatedServer = lib.mkEnableOption "Steam Dedicated Server";
+      localTransfer = lib.mkEnableOption "Steam Local Network Game Transfers";
     };
 
     heroic.enable = lib.mkEnableOption "Heroic Launcher";
@@ -28,12 +22,9 @@ in
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
     {
-      environment.systemPackages = with pkgs; [
-          mangohud
-        ]
-        ++ lib.optionals cfg.heroic.enable [
-          heroic
-      ];
+      environment.systemPackages = with pkgs;
+        [ mangohud ]
+        ++ lib.optionals cfg.heroic.enable [ heroic ];
 
       programs.gamemode = {
         enable = true;
@@ -63,22 +54,18 @@ in
       ];
     })
 
-    (lib.mkIf (options ? environment.persistence) {
-      environment.persistence.${config.nyx.impermanence.persistentStoragePath} = {
-        users.${user}.directories =
-          [
-            ".cache/mesa_shader_cache"
-          ]
-          ++ lib.optionals cfg.steam.enable [
-            ".local/share/Steam"
-            ".steam"
-            ".local/share/vulkan"
-          ]
-          ++ lib.optionals cfg.heroic.enable [
-            ".config/heroic"
-            ".local/share/umu"
-          ];
-      };
-    })
+    {
+      nyx.persistence.home.directories =
+        [ ".cache/mesa_shader_cache" ]
+        ++ lib.optionals cfg.steam.enable [
+          ".local/share/Steam"
+          ".steam"
+          ".local/share/vulkan"
+        ]
+        ++ lib.optionals cfg.heroic.enable [
+          ".config/heroic"
+          ".local/share/umu"
+        ];
+    }
   ]);
 }

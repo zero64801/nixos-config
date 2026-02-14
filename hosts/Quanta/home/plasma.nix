@@ -1,7 +1,6 @@
 { pkgs, ... }:
 
 {
-  # Host-specific Plasma configuration for Quanta
   hm.programs.plasma = {
     enable = true;
 

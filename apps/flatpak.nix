@@ -1,11 +1,10 @@
+{ config, lib, pkgs, ... }:
+
+let
+  cfg = config.nyx.apps.flatpak;
+in
 {
-  lib,
-  config,
-  pkgs,
-  ...
-}:
-{
-  options.nyx.programs.flatpak = {
+  options.nyx.apps.flatpak = {
     enable = lib.mkEnableOption "Flatpak support";
 
     addFlathub = lib.mkOption {
@@ -16,15 +15,12 @@
     };
   };
 
-  config = lib.mkIf config.nyx.programs.flatpak.enable {
-    # Enable the core Flatpak service
+  config = lib.mkIf cfg.enable {
     services.flatpak.enable = true;
 
-    # Enable XDG portals for desktop integration (file pickers, etc.)
-    # This is crucial for a good desktop experience.
     xdg.portal.enable = true;
 
-    systemd.services.flatpak-repo = lib.mkIf config.nyx.programs.flatpak.addFlathub {
+    systemd.services.flatpak-repo = lib.mkIf cfg.addFlathub {
       wantedBy = [ "multi-user.target" ];
       path = [ pkgs.flatpak ];
       script = ''

@@ -1,6 +1,8 @@
-{ inputs, pkgs, ... }:
+{ config, inputs, lib, pkgs, ... }:
 
 let
+  cfg = config.nyx.apps.zen;
+
   lock = x: {
     Value = x;
     Status = "locked";
@@ -74,92 +76,96 @@ let
   '';
 in
 {
-  hm = {
-    imports = [
-      inputs.zen-browser.homeModules.beta
-    ];
+  options.nyx.apps.zen.enable = lib.mkEnableOption "Zen Browser";
 
-    programs.zen-browser = {
-      enable = true;
+  config = lib.mkIf cfg.enable {
+    hm = {
+      imports = [
+        inputs.zen-browser.homeModules.beta
+      ];
 
-      policies = commonPolicies // {
-      Preferences = commonPreferences // {
-        "browser.uiCustomization.state" = lock (
-          builtins.toJSON {
-            placements = {
-              widget-overflow-fixed-list = [ ];
-              unified-extensions-area = [
+      programs.zen-browser = {
+        enable = true;
+
+        policies = commonPolicies // {
+        Preferences = commonPreferences // {
+          "browser.uiCustomization.state" = lock (
+            builtins.toJSON {
+              placements = {
+                widget-overflow-fixed-list = [ ];
+                unified-extensions-area = [
+                  "addon_darkreader_org-browser-action"
+                  "ublock0_raymondhill_net-browser-action"
+                ];
+                nav-bar = [
+                  "sidebar-button"
+                  "back-button"
+                  "forward-button"
+                  "stop-reload-button"
+                  "personal-bookmarks"
+                  "customizableui-special-spring1"
+                  "urlbar-container"
+                  "customizableui-special-spring2"
+                  "downloads-button"
+                  "unified-extensions-button"
+                ];
+                toolbar-menubar = [ "menubar-items" ];
+                TabsToolbar = [ "tabbrowser-tabs" ];
+                PersonalToolbar = [ "import-button" ];
+              };
+              seen = [
                 "addon_darkreader_org-browser-action"
                 "ublock0_raymondhill_net-browser-action"
+                "developer-button"
               ];
-              nav-bar = [
-                "sidebar-button"
-                "back-button"
-                "forward-button"
-                "stop-reload-button"
-                "personal-bookmarks"
-                "customizableui-special-spring1"
-                "urlbar-container"
-                "customizableui-special-spring2"
-                "downloads-button"
-                "unified-extensions-button"
+              dirtyAreaCache = [
+                "nav-bar"
+                "unified-extensions-area"
+                "PersonalToolbar"
+                "toolbar-menubar"
+                "TabsToolbar"
               ];
-              toolbar-menubar = [ "menubar-items" ];
-              TabsToolbar = [ "tabbrowser-tabs" ];
-              PersonalToolbar = [ "import-button" ];
-            };
-            seen = [
-              "addon_darkreader_org-browser-action"
-              "ublock0_raymondhill_net-browser-action"
-              "developer-button"
-            ];
-            dirtyAreaCache = [
-              "nav-bar"
-              "unified-extensions-area"
-              "PersonalToolbar"
-              "toolbar-menubar"
-              "TabsToolbar"
-            ];
-            currentVersion = 20;
-            newElementCount = 5;
-          }
+              currentVersion = 20;
+              newElementCount = 5;
+            }
+          );
+        };
+
+        ExtensionSettings = mkExtensionPolicy (
+          with inputs.firefox-addons.packages.${pkgs.stdenv.hostPlatform.system}; [
+            darkreader
+            return-youtube-dislikes
+            ublock-origin
+            bitwarden
+          ]
         );
       };
 
-      ExtensionSettings = mkExtensionPolicy (
-        with inputs.firefox-addons.packages.${pkgs.stdenv.hostPlatform.system}; [
-          darkreader
-          return-youtube-dislikes
-          ublock-origin
-          bitwarden
-        ]
-      );
-    };
-
-    profiles.default = {
-      name = "Default";
-      search = {
-        force = true;
-        default = "startpage";
-        engines = {
-          startpage = {
-            name = "Startpage";
-            urls = [
-              { template = "https://www.startpage.com/sp/search?query={searchTerms}"; }
-            ];
+      profiles.default = {
+        name = "Default";
+        search = {
+          force = true;
+          default = "startpage";
+          engines = {
+            startpage = {
+              name = "Startpage";
+              urls = [
+                { template = "https://www.startpage.com/sp/search?query={searchTerms}"; }
+              ];
+            };
           };
         };
+        settings = {
+          "zen.welcome-screen.seen" = true;
+          "svg.context-properties.content.enabled" = true;
+          "sidebar.revamp" = true;
+          "sidebar.verticalTabs" = true;
+        };
+        userChrome = commonUserChrome;
       };
-      settings = {
-        "zen.welcome-screen.seen" = true;
-        "svg.context-properties.content.enabled" = true;
-        "sidebar.revamp" = true;
-        "sidebar.verticalTabs" = true;
-      };
-      userChrome = commonUserChrome;
-    };
 
-    nativeMessagingHosts = [ ];
+      nativeMessagingHosts = [ ];
+      };
     };
   };
 }

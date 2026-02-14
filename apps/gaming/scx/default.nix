@@ -1,22 +1,22 @@
-{
-  config,
-  pkgs,
-  lib,
-  ...
-}:
+{ config, lib, pkgs, ... }:
 
 let
+  cfg = config.nyx.apps.scx;
   scripts = import ./_scripts.nix { inherit pkgs lib; };
   inherit (scripts) scx-env scx-switch scx-gui scx-desktop-item;
 in
 {
-  options.nyx.programs.scx.package = lib.mkOption {
-    type = lib.types.package;
-    default = scx-switch;
-    description = "The scx-switch package to be used by other modules";
+  options.nyx.apps.scx = {
+    enable = lib.mkEnableOption "sched-ext scheduler manager";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = scx-switch;
+      description = "The scx-switch package to be used by other modules";
+    };
   };
 
-  config = {
+  config = lib.mkIf cfg.enable {
     environment.systemPackages = [
       scx-env
       scx-switch

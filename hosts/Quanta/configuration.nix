@@ -9,13 +9,11 @@ let
     GREP=${lib.getExe pkgs.gnugrep}
 
     # Wait for device to appear
-    # -q suppresses output, so we just check exit code
     until $WPCTL status | $GREP -q "FIIO KA15 Analog Stereo"; do
       sleep 1
     done
 
-    # Extract ID using Regex
-    # This remains brittle because it parses UI text, but it's cleaner here.
+    # Extract ID — brittle, parses UI text
     SINK_ID=$($WPCTL status | \
       $GREP -A 2 "FIIO KA15 Analog Stereo" | \
       $GREP -oP '\d+(?=\.)' | \
@@ -28,10 +26,6 @@ let
   '';
 in
 {
-  imports = [
-    ../../users/dx.nix
-  ];
-
   system.stateVersion = "25.11";
   networking.hostName = hostname;
 
@@ -42,6 +36,7 @@ in
     };
 
     desktop = {
+      enable = true;
       plasma6.enable = true;
     };
 
@@ -71,23 +66,37 @@ in
       serviceAdminGroups = [ "wheel" ];
     };
 
-    programs = {
+    apps = {
+      zen.enable = true;
+      discord.enable = true;
+      fish.enable = true;
+      git = {
+        enable = true;
+        email = "";
+      };
+      direnv.enable = true;
+      zeditor.enable = true;
       flatpak.enable = true;
+      scx.enable = true;
       gaming = {
         enable = true;
         steam.enable = true;
       };
     };
+
+    stylix = {
+      enable = true;
+      scheme = "rose-pine";
+      polarity = "dark";
+    };
   };
 
-  # Host-specific environment
   environment.systemPackages = with pkgs; [
     lact
   ];
-  
+
   services.lact.enable = true;
-  
-  # --- Standard Security & Power ---
+
   security.tpm2 = {
     enable = true;
     pkcs11.enable = true;
@@ -96,45 +105,37 @@ in
 
   powerManagement.cpuFreqGovernor = "ondemand";
 
-  # --- Services ---
   services.fstrim.enable = lib.mkDefault true;
 
-  # BTRFS maintenance
   services.btrfs.autoScrub = {
     enable = true;
     interval = "monthly";
     fileSystems = [ "/" ];
   };
 
-  # Auto-login
   services.displayManager.autoLogin = {
     enable = true;
     user = username;
   };
 
-  # Disable slow services
   systemd.services.NetworkManager-wait-online.enable = lib.mkDefault false;
 
-  # --- Hardware Rules (Udev) ---
   services.udev.extraRules = ''
-    # Disable wakeup on PCIe ports to save power/prevent random wakes
+    # Disable wakeup on PCIe ports
     ACTION=="add", SUBSYSTEM=="pci", DRIVER=="pcieport", ATTR{power/wakeup}="disabled"
 
     # Allow 'i2c' group access to i2c devices
     KERNEL=="i2c-[0-9]*", GROUP="i2c", MODE="0660"
   '';
 
-  # --- User Services ---
   systemd.user.services.set-default-audio-device = {
     description = "Set default audio sink and volume for FIIO KA15";
-    # Ensuring we wait for the sound server to be active
     wantedBy = [ "graphical-session.target" ];
     after = [ "graphical-session.target" "pipewire.service" "wireplumber.service" ];
 
     serviceConfig = {
       Type = "oneshot";
       ExecStart = defaultAudioScript;
-      # Optional: prevents the service from running forever if script hangs
       TimeoutStartSec = "30s";
     };
   };
