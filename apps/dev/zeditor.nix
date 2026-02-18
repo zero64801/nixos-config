@@ -9,7 +9,7 @@ in
   config = lib.mkIf cfg.enable {
     hm.programs.zed-editor = {
       enable = true;
-      extensions = [ "nix" ];
+      extensions = [ "nix" "lua" ];
     };
   };
 }

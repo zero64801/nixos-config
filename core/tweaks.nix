@@ -7,7 +7,7 @@
         ${lib.getExe pkgs.nushell} -c "
           let diff_closure = ${lib.getExe pkgs.nix} store diff-closures /run/current-system '$systemConfig';
           if \$diff_closure != \"\" {
-            let table = \$diff_closure
+            \$diff_closure
             | lines
             | where \$it =~ KiB
             | where \$it =~ →
@@ -19,8 +19,9 @@
               | into filesize
             }
             | reject DiffBin
-            | sort-by -r Diff; print \$table; \$table
-            | math sum
+            | sort-by -r Diff
+            | tee { print }
+            | if (\$in | is-not-empty) { math sum } else { null }
           }
         "
       fi

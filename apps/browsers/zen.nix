@@ -167,5 +167,9 @@ in
       nativeMessagingHosts = [ ];
       };
     };
+
+    nyx.persistence.home.directories = [
+      ".zen/default/cookies.sqlite"
+    ];
   };
 }

@@ -112,7 +112,7 @@ writeShellApplication {
 
 ''${green}''${bold}Commands:''${reset}
   ''${yellow}list, ls''${reset}       List all persistent files and directories.
-  ''${yellow}add [path]''${reset}     Add a path to persistence.
+  ''${yellow}add [path]''${reset}     Add a path to persistence. (Use --dir-only for saving directory only.)
   ''${yellow}remove, rm''${reset}     Remove a path from persistence.
   ''${yellow}junk list''${reset}      List non-persisted items in the storage directory.
   ''${yellow}junk remove''${reset}    Remove non-persisted items from the storage directory.
