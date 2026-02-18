@@ -57,6 +57,12 @@ in
     };
 
     cursor = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Enable cursor theming";
+      };
+
       package = lib.mkOption {
         type = lib.types.package;
         default = pkgs.bibata-cursors;
@@ -204,7 +210,7 @@ in
         inherit (cfg.icons) package dark light;
       };
 
-      cursor = {
+      cursor = lib.mkIf cfg.cursor.enable {
         inherit (cfg.cursor) package name size;
       };
 

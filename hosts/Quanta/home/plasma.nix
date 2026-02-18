@@ -6,13 +6,6 @@
 
     workspace = {
       clickItemTo = "open";
-      lookAndFeel = "org.kde.breezedark.desktop";
-      cursor = {
-        theme = "Bibata-Modern-Ice";
-        size = 24;
-      };
-      iconTheme = "Tela-dark";
-      theme = "breeze-dark";
       wallpaper = "${pkgs.kdePackages.plasma-workspace-wallpapers}/share/wallpapers/Elarun/contents/images/2560x1600.png";
     };
 
@@ -79,8 +72,8 @@
     configFile = {
       baloofilerc."Basic Settings"."Indexing-Enabled" = false;
       kdeglobals = {
-        General.ColorScheme = "BreezeDark";
-        Icons.Theme = "Tela-dark";
+        #General.ColorScheme = "BreezeDark";
+        #Icons.Theme = "Tela-dark";
         KDE.ShowDeleteCommand = true;
       };
 

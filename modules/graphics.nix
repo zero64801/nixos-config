@@ -1,7 +1,7 @@
 { pkgs, lib, config, ... }:
 
 let
-  inherit (lib) mkEnableOption mkIf mkOption types;
+  inherit (lib) mkEnableOption mkIf mkMerge mkOption types;
 
   dlopenLibs = [
     pkgs.glibc
@@ -16,21 +16,29 @@ in
     enable = mkEnableOption "graphics configuration";
 
     backend = mkOption {
-      type = types.enum [ "amd" "nvidia" "intel" ];
+      type = types.enum [ "amd" ];
       default = "amd";
       description = "The graphics backend to use";
     };
   };
 
-  config = mkIf cfg.enable {
-    hardware.graphics = {
-      enable = true;
-      enable32Bit = true;
-    };
+  config = mkIf cfg.enable (mkMerge [
+    {
+      hardware.graphics = {
+        enable = true;
+        enable32Bit = true;
+      };
 
-    programs.nix-ld = {
-      enable = true;
-      libraries = dlopenLibs;
-    };
-  };
+      programs.nix-ld = {
+        enable = true;
+        libraries = dlopenLibs;
+      };
+    }
+
+    (mkIf (cfg.backend == "amd") {
+      environment.systemPackages = with pkgs; [
+        pkgs.btop-rocm
+      ];
+    })
+  ]);
 }

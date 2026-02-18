@@ -197,7 +197,23 @@ writeShellApplication {
          exit 1
       fi
 
-      local path="$1"
+      local dir_only=false
+      local path=""
+
+      # Parse flags
+      while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+          --dir-only)
+            dir_only=true
+            shift
+            ;;
+          *)
+            path="$1"
+            shift
+            ;;
+        esac
+      done
+
       if [[ -z "$path" ]]; then
         echo -e "''${red}Error: No path specified.''${reset}"
         exit 1
@@ -210,6 +226,23 @@ writeShellApplication {
       # Simple type detection
       local is_dir=true
       if [[ -f "$abs_path" ]]; then is_dir=false; fi
+
+      # Copy to PERSIST_PATH with same permissions
+      local dest="''${PERSIST_PATH}''${abs_path}"
+      if [[ -e "$abs_path" ]]; then
+        echo -e "''${blue}Copying $abs_path → $dest...''${reset}"
+        mkdir -p "$(dirname "$dest")"
+        cp -a "$abs_path" "$dest"
+        echo -e "''${green}Copied to persistent storage.''${reset}"
+      else
+        echo -e "''${yellow}Warning: $abs_path does not exist on disk, skipping copy.''${reset}"
+      fi
+
+      # If --dir-only, stop here — don't touch persist.json
+      if [[ "$dir_only" == "true" ]]; then
+        echo -e "''${DIM}--dir-only: skipping persist.json update.''${NC}"
+        return
+      fi
 
       # Ensure persist.json exists
       if [[ ! -f "$PERSIST_JSON_FILE" ]]; then
@@ -261,6 +294,24 @@ writeShellApplication {
       mv "$tmp_json" "$PERSIST_JSON_FILE"
 
       echo -e "''${yellow}Removed $abs_path from local persistence.''${reset}"
+
+      # Ask whether to also remove from PERSIST_PATH
+      local dest="''${PERSIST_PATH}''${abs_path}"
+      if [[ -e "$dest" ]]; then
+        echo
+        read -rp "$(echo -e "''${yellow}Also remove $dest from persistent storage? [y/N]: ''${reset}")" yn
+        case "$yn" in
+          [Yy]*)
+            rm -rf "$dest"
+            echo -e "  ''${red}Removed''${reset} $dest"
+            ;;
+          *)
+            echo -e "''${DIM}Leaving $dest in place.''${NC}"
+            ;;
+        esac
+      else
+        echo -e "''${DIM}No corresponding path found in $PERSIST_PATH, nothing to clean up.''${NC}"
+      fi
     }
 
     # Get all master persistence paths as absolute paths
