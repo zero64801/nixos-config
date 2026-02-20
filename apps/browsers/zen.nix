@@ -168,7 +168,7 @@ in
       };
     };
 
-    nyx.persistence.home.directories = [
+    nyx.persistence.home.files = [
       ".zen/default/cookies.sqlite"
     ];
   };

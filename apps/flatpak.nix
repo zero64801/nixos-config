@@ -27,5 +27,12 @@ in
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       '';
     };
+
+    nyx.persistence.home.directories = [
+      ".var/app"
+      ".local/share/flatpak"
+    ];
+
+    nyx.persistence.directories = [ "/var/lib/flatpak" ];
   };
 }

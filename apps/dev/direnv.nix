@@ -25,5 +25,9 @@ in
         }
       '';
     };
+
+    nyx.persistence.home.directories = [
+      ".local/share/direnv"
+    ];
   };
 }

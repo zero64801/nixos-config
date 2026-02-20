@@ -138,5 +138,9 @@ in
       eza
       fish-lsp
     ];
+
+    nyx.persistence.home.directories = [
+      ".local/share/fish"
+    ];
   };
 }

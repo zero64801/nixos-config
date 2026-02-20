@@ -8,10 +8,10 @@
 }:
 
 let
-  inherit (lib) mkEnableOption mkIf mkMerge mkOption mapAttrs optional optionals optionalString;
+  inherit (lib) mkEnableOption mkIf mkMerge mkOption optional optionals optionalString;
   inherit (lib.types) bool nullOr path str;
 
-  cfg = config.nyx.impermanence;
+  cfg      = config.nyx.impermanence;
   hostname = config.networking.hostName;
 
   persistenceConfigPath =
@@ -26,75 +26,7 @@ let
     else if persistenceConfigPath != null && builtins.pathExists persistenceConfigPath then
       builtins.fromJSON (builtins.readFile persistenceConfigPath)
     else
-      {
-        directories = [ ];
-        files = [ ];
-        users = { };
-      };
-
-  # Recursively extracting paths from Home Manager users
-  hmPersistence = if (config ? home-manager) then (
-    lib.concatMap (user:
-      let
-        hmConfig = config.home-manager.users.${user};
-        homeDirectory = hmConfig.home.homeDirectory;
-      in
-      lib.concatMap (mountPoint:
-        let
-          pCfg = hmConfig.home.persistence.${mountPoint};
-          # Helper to normalize path config which can be string or attrset
-          getPaths = list: type: map (item: 
-            let
-              path = if builtins.isString item then item else item.${type};
-              absPath = if lib.hasPrefix "/" path then path else "${homeDirectory}/${path}";
-            in absPath
-          ) list;
-        in
-        [
-          { type = "directories"; paths = getPaths pCfg.directories "directory"; }
-          { type = "files"; paths = getPaths pCfg.files "file"; }
-        ]
-      ) (builtins.attrNames (hmConfig.home.persistence or {}))
-    ) (builtins.attrNames config.home-manager.users)
-  ) else [];
-
-  # System persistence (already structured in environment.persistence)
-  systemPersistence = lib.concatMap (mountPoint:
-    let
-      pCfg = config.environment.persistence.${mountPoint};
-    in
-    [
-      { type = "directories"; paths = map (d: d.dirPath) pCfg.directories; }
-      { type = "files"; paths = map (f: f.filePath) pCfg.files; }
-    ] ++ lib.concatMap (user:
-      let
-        uCfg = pCfg.users.${user};
-      in
-      [
-        { type = "directories"; paths = map (d: d.dirPath) uCfg.directories; }
-        { type = "files"; paths = map (f: f.filePath) uCfg.files; }
-      ]
-    ) (builtins.attrNames pCfg.users)
-  ) (builtins.attrNames config.environment.persistence);
-  
-  # Helper to aggregate by type
-  aggregate = type: lists: 
-    lib.unique (lib.flatten (map (x: x.paths) (lib.filter (x: x.type == type) lists)));
-
-  allPersistencePaths = systemPersistence ++ (if (config ? home-manager) then hmPersistence else []);
-
-  masterPersistence = {
-    directories = aggregate "directories" allPersistencePaths;
-    files = aggregate "files" allPersistencePaths;
-  };
-
-  masterPersistenceJson = pkgs.writeText "master-persistence.json" (builtins.toJSON masterPersistence);
-
-  nyx-persist = pkgs.callPackage ./_cli.nix {
-    inherit (cfg) persistentStoragePath configRepoPath;
-    inherit hostname persistenceConfigPath;
-    inherit masterPersistenceJson;
-  };
+      { directories = [ ]; files = [ ]; users = { }; };
 
   presetDirectories =
     optionals cfg.presets.system [
@@ -123,14 +55,94 @@ let
     ];
 
   allDirectories = (persistenceConfig.directories or [ ]) ++ presetDirectories;
-  allFiles = (persistenceConfig.files or [ ]) ++ presetFiles;
-  allUsers = persistenceConfig.users or { };
+  allFiles       = (persistenceConfig.files or [ ])       ++ presetFiles;
+  allUsers       = persistenceConfig.users or { };
+
+  # ---------------------------------------------------------------------------
+  # masterPersistence — used only by the nyx-persist CLI tool.
+  #
+  # Built exclusively from direct source inputs rather than reading back from
+  # config.environment.persistence (which this module writes to). Reading our
+  # own output during the NixOS module fixed-point evaluation causes the entire
+  # config block to fail to apply, breaking both rollback and bind mounts.
+  # ---------------------------------------------------------------------------
+
+  # Resolve a path that may be relative (user-home-relative) to absolute.
+  resolvePath = homeDir: p:
+    if lib.hasPrefix "/" p then p else "${homeDir}/${p}";
+
+  # Paths from persist.json + presets (what this module feeds into environment.persistence directly).
+  localPersistence =
+    [ { type = "directories"; paths = allDirectories; }
+      { type = "files";       paths = allFiles; }
+    ]
+    ++ lib.concatMap (u:
+      let
+        uCfg    = allUsers.${u};
+        homeDir = config.users.users.${u}.home or "/home/${u}";
+      in
+      [ { type = "directories"; paths = map (resolvePath homeDir) (uCfg.directories or []); }
+        { type = "files";       paths = map (resolvePath homeDir) (uCfg.files or []); }
+      ]
+    ) (builtins.attrNames allUsers);
+
+  #    Paths from nyx.persistence module (if it is loaded alongside this one).
+  #    Accessing config.nyx.persistence is safe — it has no dependency on
+  #    config.environment.persistence.
+  nyxPersistence =
+    if config.nyx ? persistence then
+      let
+        nyxCfg  = config.nyx.persistence;
+        user    = config.nyx.flake.user;
+        homeDir = config.users.users.${user}.home or "/home/${user}";
+      in
+      [ { type = "directories"; paths = nyxCfg.directories; }
+        { type = "files";       paths = nyxCfg.files; }
+        { type = "directories"; paths = map (resolvePath homeDir) nyxCfg.home.directories; }
+        { type = "files";       paths = map (resolvePath homeDir) nyxCfg.home.files; }
+      ]
+    else [];
+
+  #    Paths from Home Manager persistence modules.
+  #    config.home-manager is also safe — independent of environment.persistence.
+  hmPersistence =
+    if (config ? home-manager) then
+      lib.concatMap (user:
+        let hmConfig = config.home-manager.users.${user}; in
+        lib.concatMap (mountPoint:
+          let pCfg = hmConfig.home.persistence.${mountPoint}; in
+          lib.optionals pCfg.enable [
+            { type = "directories"; paths = map (d: d.dirPath)  pCfg.directories; }
+            { type = "files";       paths = map (f: f.filePath) pCfg.files; }
+          ]
+        ) (builtins.attrNames (hmConfig.home.persistence or {}))
+      ) (builtins.attrNames config.home-manager.users)
+    else [];
+
+  aggregate = type: lists:
+    lib.unique (lib.flatten (map (x: x.paths) (lib.filter (x: x.type == type) lists)));
+
+  allPersistencePaths = localPersistence ++ nyxPersistence ++ hmPersistence;
+
+  masterPersistence = {
+    directories = aggregate "directories" allPersistencePaths;
+    files       = aggregate "files"       allPersistencePaths;
+  };
+
+  masterPersistenceJson = pkgs.writeText "master-persistence.json"
+    (builtins.toJSON masterPersistence);
+
+  nyx-persist = pkgs.callPackage ./_cli.nix {
+    inherit (cfg) persistentStoragePath configRepoPath;
+    inherit hostname persistenceConfigPath;
+    inherit masterPersistenceJson;
+  };
 
   rollbackScript =
     let
-      device = cfg.btrfs.device;
-      rootSubvolume = cfg.btrfs.rootSubvolume;
-      blankSnapshot = cfg.btrfs.blankSnapshot;
+      device           = cfg.btrfs.device;
+      rootSubvolume    = cfg.btrfs.rootSubvolume;
+      blankSnapshot    = cfg.btrfs.blankSnapshot;
       previousSnapshot = cfg.btrfs.previousSnapshot;
     in
     ''
@@ -176,45 +188,45 @@ in
     enable = mkEnableOption "impermanence with nyx management";
 
     persistentStoragePath = mkOption {
-      type = str;
+      type    = str;
       default = "/persist/local";
       description = "Base path for persistent storage.";
     };
 
     configRepoPath = mkOption {
-      type = nullOr str;
+      type    = nullOr str;
       default = null;
       example = "/home/dx/nixos";
       description = "Path to the NixOS configuration repository.";
     };
 
     persistenceConfigFile = mkOption {
-      type = nullOr path;
+      type    = nullOr path;
       default = null;
-      description = "Path to the persistence.nix file for this host.";
+      description = "Path to the persistence.json file for this host.";
     };
 
     hideMounts = mkOption {
-      type = bool;
+      type    = bool;
       default = true;
       description = "Hide bind mounts from file managers.";
     };
 
     presets = {
-      system = mkEnableOption "common system directories";
-      network = mkEnableOption "network-related persistence";
+      system    = mkEnableOption "common system directories and files";
+      network   = mkEnableOption "network-related persistence";
       bluetooth = mkEnableOption "Bluetooth persistence";
-      ssh = mkEnableOption "SSH host keys persistence";
+      ssh       = mkEnableOption "SSH host keys persistence";
     };
 
     btrfs = {
-      enable = mkEnableOption "btrfs rollback on boot";
-      device = mkOption { type = str; default = "/dev/disk/by-label/nixos"; };
-      rootSubvolume = mkOption { type = str; default = "/root"; };
-      blankSnapshot = mkOption { type = str; default = "/snapshots/root/blank"; };
-      previousSnapshot = mkOption { type = str; default = "/snapshots/root/previous"; };
-      keepPrevious = mkOption { type = bool; default = true; };
-      unlockDevice = mkOption { type = nullOr str; default = null; };
+      enable           = mkEnableOption "btrfs rollback on boot";
+      device           = mkOption { type = str;        default = "/dev/disk/by-label/nixos"; };
+      rootSubvolume    = mkOption { type = str;        default = "/root"; };
+      blankSnapshot    = mkOption { type = str;        default = "/snapshots/root/blank"; };
+      previousSnapshot = mkOption { type = str;        default = "/snapshots/root/previous"; };
+      keepPrevious     = mkOption { type = bool;       default = true; };
+      unlockDevice     = mkOption { type = nullOr str; default = null; };
     };
   };
 
@@ -223,19 +235,19 @@ in
       assertions = [
         {
           assertion = options ? environment.persistence;
-          message = "nyx.impermanence requires the impermanence module.";
+          message   = "nyx.impermanence requires the impermanence module.";
         }
         {
           assertion = cfg.btrfs.enable -> config.boot.initrd.systemd.enable;
-          message = "nyx.impermanence.btrfs requires boot.initrd.systemd.enable = true";
+          message   = "nyx.impermanence.btrfs requires boot.initrd.systemd.enable = true";
         }
       ];
 
       environment.persistence.${cfg.persistentStoragePath} = {
         inherit (cfg) hideMounts;
         directories = allDirectories;
-        files = allFiles;
-        users = allUsers;
+        files       = allFiles;
+        users       = allUsers;
       };
 
       environment.systemPackages = [ nyx-persist ];
@@ -244,10 +256,10 @@ in
     (mkIf cfg.btrfs.enable {
       boot.initrd.systemd.services.impermanence-rollback = {
         description = "Rollback btrfs root to blank snapshot";
-        wantedBy = [ "initrd.target" ];
-        before = [ "sysroot.mount" ];
-        after = optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
-        requires = optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
+        wantedBy    = [ "initrd.target" ];
+        before      = [ "sysroot.mount" ];
+        after       = optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
+        requires    = optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
         unitConfig.DefaultDependencies = "no";
         serviceConfig.Type = "oneshot";
         script = rollbackScript;

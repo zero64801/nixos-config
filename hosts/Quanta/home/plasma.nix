@@ -34,7 +34,6 @@
           {
             kickoff = {
               sortAlphabetically = true;
-              icon = "kde";
             };
           }
           {
