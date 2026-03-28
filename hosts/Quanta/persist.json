@@ -1,9 +1,21 @@
 {
-  "directories": ["/var/log", "/var/lib/nixos", "/var/lib/NetworkManager"],
-  "files": ["/etc/machine-id", "/etc/adjtime"],
+  "directories": [
+    "/var/lib/NetworkManager",
+    "/var/lib/nixos",
+    "/var/log"
+  ],
+  "files": [
+    "/etc/machine-id",
+    "/etc/adjtime"
+  ],
   "users": {
     "dx": {
-      "directories": ["nixos", "Downloads"],
+      "directories": [
+        "Downloads",
+        "Games",
+        "Projects",
+        "nixos"
+      ],
       "files": []
     }
   }

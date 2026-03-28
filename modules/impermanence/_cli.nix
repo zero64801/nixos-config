@@ -257,16 +257,46 @@ writeShellApplication {
         echo '{"files": [], "directories": []}' > "$PERSIST_JSON_FILE"
       fi
 
+      # Detect if path belongs to a user's home directory
+      local owner_user=""
+      local owner_home=""
+      while IFS=: read -r uname _ uid _ _ uhome _; do
+        if [[ "$uid" -ge 1000 && "$uid" -lt 65534 && "$abs_path" == "$uhome/"* ]]; then
+          owner_user="$uname"
+          owner_home="$uhome"
+          break
+        fi
+      done < /etc/passwd
+
       local tmp_json
       tmp_json=$(mktemp)
-      if [[ "$is_dir" == "true" ]]; then
-        jq --arg p "$abs_path" '.directories = (.directories + [$p] | unique | sort)' "$PERSIST_JSON_FILE" > "$tmp_json"
-      else
-        jq --arg p "$abs_path" '.files = (.files + [$p] | unique | sort)' "$PERSIST_JSON_FILE" > "$tmp_json"
-      fi
-      mv "$tmp_json" "$PERSIST_JSON_FILE"
 
-      echo -e "''${green}Added $abs_path to persist.json.''${reset}"
+      if [[ -n "$owner_user" ]]; then
+        # Store as relative path under users.<name>
+        local rel_path="''${abs_path#"$owner_home/"}"
+        if [[ "$is_dir" == "true" ]]; then
+          jq --arg u "$owner_user" --arg p "$rel_path" '
+            .users[$u].directories = ((.users[$u].directories // []) + [$p] | unique | sort)
+          ' "$PERSIST_JSON_FILE" > "$tmp_json"
+        else
+          jq --arg u "$owner_user" --arg p "$rel_path" '
+            .users[$u].files = ((.users[$u].files // []) + [$p] | unique | sort)
+          ' "$PERSIST_JSON_FILE" > "$tmp_json"
+        fi
+        echo -e "''${green}Added $rel_path to users.$owner_user in persist.json.''${reset}"
+      else
+        # System path — existing behaviour
+        if [[ "$is_dir" == "true" ]]; then
+          jq --arg p "$abs_path" '.directories = (.directories + [$p] | unique | sort)' "$PERSIST_JSON_FILE" > "$tmp_json"
+        else
+          jq --arg p "$abs_path" '.files = (.files + [$p] | unique | sort)' "$PERSIST_JSON_FILE" > "$tmp_json"
+        fi
+        echo -e "''${green}Added $abs_path to persist.json.''${reset}"
+      fi
+
+      mv "$tmp_json" "$PERSIST_JSON_FILE"
+      chown root:root "$PERSIST_JSON_FILE"
+      chmod 644 "$PERSIST_JSON_FILE"
       echo -e "''${yellow}Note:''${reset} Run nixos-rebuild to activate the bind-mount."
     }
 
@@ -279,7 +309,19 @@ writeShellApplication {
       local path="''${1:-}"
       if [[ -z "$path" ]]; then
         if command -v fzf &> /dev/null; then
-          path=$(jq -r '.directories[], .files[]' "$PERSIST_JSON_FILE" | fzf --prompt="Select path to remove: ")
+          # Include user paths expanded to absolute for display
+          path=$(jq -r '
+            .directories[],
+            .files[],
+            (.users // {} | to_entries[] |
+              .key as $u |
+              .value.directories[]? | "/home/\($u)/\(.)"
+            ),
+            (.users // {} | to_entries[] |
+              .key as $u |
+              .value.files[]? | "/home/\($u)/\(.)"
+            )
+          ' "$PERSIST_JSON_FILE" | fzf --prompt="Select path to remove: ")
         fi
       fi
 
@@ -291,15 +333,38 @@ writeShellApplication {
       local abs_path
       abs_path=$(realpath -m "$path")
 
+      # Detect if path belongs to a user home
+      local owner_user=""
+      local owner_home=""
+      while IFS=: read -r uname _ uid _ _ uhome _; do
+        if [[ "$uid" -ge 1000 && "$uid" -lt 65534 && "$abs_path" == "$uhome/"* ]]; then
+          owner_user="$uname"
+          owner_home="$uhome"
+          break
+        fi
+      done < /etc/passwd
+
       local tmp_json
       tmp_json=$(mktemp)
-      jq --arg p "$abs_path" '
-        .directories |= filter(. != $p) |
-        .files |= filter(. != $p)
-      ' "$PERSIST_JSON_FILE" > "$tmp_json"
-      mv "$tmp_json" "$PERSIST_JSON_FILE"
 
-      echo -e "''${yellow}Removed $abs_path from persist.json.''${reset}"
+      if [[ -n "$owner_user" ]]; then
+        local rel_path="''${abs_path#"$owner_home/"}"
+        jq --arg u "$owner_user" --arg p "$rel_path" '
+          .users[$u].directories |= map(select(. != $p)) |
+          .users[$u].files       |= map(select(. != $p))
+        ' "$PERSIST_JSON_FILE" > "$tmp_json"
+        echo -e "''${yellow}Removed $rel_path from users.$owner_user in persist.json.''${reset}"
+      else
+        jq --arg p "$abs_path" '
+          .directories |= map(select(. != $p)) |
+          .files       |= map(select(. != $p))
+        ' "$PERSIST_JSON_FILE" > "$tmp_json"
+        echo -e "''${yellow}Removed $abs_path from persist.json.''${reset}"
+      fi
+
+      mv "$tmp_json" "$PERSIST_JSON_FILE"
+      chown root:root "$PERSIST_JSON_FILE"
+      chmod 644 "$PERSIST_JSON_FILE"
 
       local dest="''${PERSIST_PATH}''${abs_path}"
       if [[ -e "$dest" ]]; then

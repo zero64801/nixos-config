@@ -169,7 +169,7 @@ in
     };
 
     nyx.persistence.home.files = [
-      ".zen/default/cookies.sqlite"
+      ".config/zen/default/cookies.sqlite"
     ];
   };
 }

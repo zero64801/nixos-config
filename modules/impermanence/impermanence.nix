@@ -251,6 +251,11 @@ in
       };
 
       environment.systemPackages = [ nyx-persist ];
+
+      systemd.tmpfiles.rules =
+        lib.optionals (persistenceConfigPath != null) [
+          "f ${persistenceConfigPath} 0644 root root -"
+        ];
     }
 
     (mkIf cfg.btrfs.enable {

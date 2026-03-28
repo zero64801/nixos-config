@@ -90,6 +90,7 @@ in
       storage = {
         type = "disk";
         device = "/dev/disk/by-path/pci-0000:07:00.0-nvme-1";
+        destroy = false;
         content = {
           type = "gpt";
           partitions = {

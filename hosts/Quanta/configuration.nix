@@ -95,6 +95,12 @@ in
     lact
   ];
 
+  # fix for vinegar mcp
+  system.activationScripts.vinegarLibs = ''
+    mkdir -p /home/dx/.vinegar-libs
+    ln -sf ${pkgs.libunwind}/lib/libunwind.so.8 /home/dx/.vinegar-libs/libunwind.so.8
+  '';
+
   services.lact.enable = true;
 
   security.tpm2 = {
