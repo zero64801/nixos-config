@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
 {
   users.users.dx = {
@@ -13,7 +13,10 @@
       "gamemode"
     ] ++ config.nyx.security.serviceAdminGroups;
 
-    hashedPasswordFile = "/persist/local/secrets/passwd/dx";
+    hashedPasswordFile =
+      if config.nyx.sops.enable or false
+      then config.sops.secrets."users/dx".path
+      else "/persist/local/secrets/passwd/dx";
 
     packages = with pkgs; [
       git

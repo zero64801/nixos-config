@@ -92,12 +92,14 @@
     startup.startupScript = {
       displayLayout = {
         text = ''
-          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-2.position.0,0 output.DP-1.position.2560,0 output.DP-1.primary
+          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor \
+            output.DP-3.enable output.DP-3.position.0,0 \
+            output.DP-2.enable output.DP-2.position.2560,0 output.DP-2.primary
 
-          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-1.vrrpolicy.automatic
+          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-2.vrrpolicy.automatic
+          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-3.vrrpolicy.automatic
 
-          # Set brightness to 100% for all displays
-          for output in DP-2 DP-1; do
+          for output in DP-2 DP-3; do
             ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.$output.brightness.100
           done
         '';

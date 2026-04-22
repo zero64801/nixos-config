@@ -41,10 +41,9 @@
     initrd = {
       availableKernelModules = [
         "nvme"
-        "xhci_pci"
         "ahci"
         "thunderbolt"
-        "usb_storage"
+        "xhci_pci"
         "usbhid"
         "sd_mod"
       ];
@@ -74,4 +73,9 @@
 
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
   hardware.keyboard.qmk.enable = true;
+
+  hardware.bluetooth = {
+    enable = true;
+    powerOnBoot = true;
+  };
 }

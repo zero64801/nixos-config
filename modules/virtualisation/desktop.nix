@@ -7,13 +7,15 @@
 
 let
   inherit (lib) literalExpression mkEnableOption mkIf mkMerge mkOption concatStringsSep;
-  inherit (lib.types) attrsOf enum int listOf path str;
+  inherit (lib.types) attrsOf int listOf path str;
 
   cfg = config.nyx.virtualisation.desktop;
-  gpuSwitchCfg = cfg.gpuSwitch;
+  gpuSwitchCfg = config.nyx.virtualisation.gpuSwitch;
 in
 {
   options.nyx.virtualisation.desktop = {
+    enable = mkEnableOption "desktop virtualisation features (vfio, looking-glass, libvirt hooks)";
+
     vfio = {
       enable = mkEnableOption "VFIO/IOMMU GPU passthrough support";
 
@@ -60,18 +62,9 @@ in
         }
       '';
     };
-
-    gpuSwitch = {
-      enable = mkEnableOption "GPU switching support";
-      defaultMode = mkOption {
-        type = enum [ "integrated" "hybrid" "nvidia" "vfio" ];
-        default = "hybrid";
-        description = "Default GPU mode";
-      };
-    };
   };
 
-  config = mkMerge [
+  config = mkIf cfg.enable (mkMerge [
     (mkIf cfg.vfio.enable {
       boot.initrd.kernelModules = [
         "vfio_pci"
@@ -79,7 +72,12 @@ in
         "vfio_iommu_type1"
       ];
 
-      # Only bind vfio-pci at boot if gpuSwitch is off or defaultMode is vfio
+      boot.kernelParams = [
+        "amd_iommu=force_enable"
+        "iommu=pt"
+        "kvm.ignore_msrs=1"
+      ];
+
       nyx.virtualisation.base.extraModprobeConfigLines =
         mkIf (cfg.vfio.ids != [ ] && (!gpuSwitchCfg.enable || gpuSwitchCfg.defaultMode == "vfio"))
           [
@@ -111,5 +109,5 @@ in
       virtualisation.spiceUSBRedirection.enable = true;
       environment.systemPackages = [ pkgs.spice-gtk ];
     }
-  ];
+  ]);
 }

@@ -30,10 +30,14 @@ in
   networking.hostName = hostname;
 
   nyx = {
+    flakePath = "/home/${username}/nixos";
+
     flake = {
       host = hostname;
       user = username;
     };
+
+    sops.enable = true;
 
     desktop = {
       enable = true;
@@ -43,12 +47,42 @@ in
     graphics = {
       enable = true;
       backend = "amd";
+      nvidia.enable = true;
+    };
+
+    virtualisation = {
+      base.enable = true;
+
+      desktop = {
+        enable = true;
+
+        vfio = {
+          enable = true;
+          ids = [
+            "10de:2204"
+            "10de:1aef"
+          ];
+          pciAddresses = [
+            "05:00.0"
+            "05:00.1"
+          ];
+        };
+
+        looking-glass = {
+          enable = true;
+          staticSizeMb = 64;
+        };
+      };
+
+      gpuSwitch = {
+        enable = true;
+        defaultMode = "vfio";
+      };
     };
 
     impermanence = {
       enable = true;
       persistentStoragePath = "/persist/local";
-      configRepoPath = "/home/dx/nixos";
       persistenceConfigFile = ./persist.json;
 
       btrfs = {
@@ -59,6 +93,10 @@ in
         keepPrevious = true;
         unlockDevice = "dev-mapper-cryptroot.device";
       };
+    };
+
+    pinning = {
+      enable = true;
     };
 
     security = {
@@ -82,6 +120,10 @@ in
         enable = true;
         steam.enable = true;
       };
+      llama-cpp = {
+        enable = true;
+        rocm = true;
+      };
     };
 
     stylix = {
@@ -92,14 +134,7 @@ in
   };
 
   environment.systemPackages = with pkgs; [
-    lact
   ];
-
-  # fix for vinegar mcp
-  system.activationScripts.vinegarLibs = ''
-    mkdir -p /home/dx/.vinegar-libs
-    ln -sf ${pkgs.libunwind}/lib/libunwind.so.8 /home/dx/.vinegar-libs/libunwind.so.8
-  '';
 
   services.lact.enable = true;
 

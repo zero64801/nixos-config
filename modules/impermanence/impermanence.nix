@@ -195,9 +195,9 @@ in
 
     configRepoPath = mkOption {
       type    = nullOr str;
-      default = null;
+      default = config.nyx.flakePath;
       example = "/home/dx/nixos";
-      description = "Path to the NixOS configuration repository.";
+      description = "Path to the NixOS configuration repository. Defaults to nyx.flakePath.";
     };
 
     persistenceConfigFile = mkOption {

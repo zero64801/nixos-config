@@ -6,6 +6,11 @@ let
 in
 {
   options.nyx = {
+    flakePath = mkOption {
+      description = "Path to the NixOS flake repository";
+      type = str;
+    };
+
     desktop.enable = mkEnableOption "desktop environment (disables GUI components when false)";
 
     flake = {

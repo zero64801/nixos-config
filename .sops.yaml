@@ -1,0 +1,8 @@
+keys:
+  - &quanta age1yubikey1qd65e0tx7d6z50krvz6sdm62xrdw442cdr8h0wpu9x74lyj4rtpsjs82y0v
+
+creation_rules:
+  - path_regex: hosts/Quanta/secrets\.yaml$
+    key_groups:
+      - age:
+          - *quanta

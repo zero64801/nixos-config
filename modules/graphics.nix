@@ -1,7 +1,7 @@
 { pkgs, lib, config, ... }:
 
 let
-  inherit (lib) mkEnableOption mkIf mkMerge mkOption types;
+  inherit (lib) mkEnableOption mkIf mkMerge mkOption optionals types;
 
   dlopenLibs = [
     pkgs.glibc
@@ -10,15 +10,42 @@ let
   ];
 
   cfg = config.nyx.graphics;
+
+  amdEnabled = cfg.backend == "amd" || cfg.amd.enable;
+  nvidiaEnabled = cfg.backend == "nvidia" || cfg.nvidia.enable;
 in
 {
   options.nyx.graphics = {
     enable = mkEnableOption "graphics configuration";
 
     backend = mkOption {
-      type = types.enum [ "amd" ];
+      type = types.enum [ "amd" "nvidia" ];
       default = "amd";
-      description = "The graphics backend to use";
+      description = "Primary display graphics backend.";
+    };
+
+    amd = {
+      enable = mkOption {
+        type = types.bool;
+        default = cfg.backend == "amd";
+        description = "Install AMD drivers and userland. Defaults to true when backend is amd.";
+      };
+    };
+
+    nvidia = {
+      enable = mkEnableOption "NVIDIA drivers (secondary GPU for compute / VFIO passthrough)";
+
+      open = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Use the NVIDIA open kernel modules (Turing+ cards).";
+      };
+
+      package = mkOption {
+        type = types.nullOr types.package;
+        default = null;
+        description = "Override the NVIDIA driver package.";
+      };
     };
   };
 
@@ -33,12 +60,31 @@ in
         enable = true;
         libraries = dlopenLibs;
       };
+
+      services.xserver.videoDrivers =
+        optionals amdEnabled [ "amdgpu" ]
+        ++ optionals nvidiaEnabled [ "nvidia" ];
     }
 
-    (mkIf (cfg.backend == "amd") {
-      environment.systemPackages = with pkgs; [
-        pkgs.btop-rocm
-      ];
+    (mkIf amdEnabled {
+      environment.systemPackages = [ pkgs.btop-rocm ];
+    })
+
+    (mkIf nvidiaEnabled {
+      hardware.nvidia = {
+        modesetting.enable = true;
+        open = cfg.nvidia.open;
+        nvidiaSettings = true;
+        powerManagement.enable = false;
+        package =
+          if cfg.nvidia.package != null
+          then cfg.nvidia.package
+          else config.boot.kernelPackages.nvidiaPackages.stable;
+      };
+
+      environment.systemPackages = [ pkgs.nvtopPackages.nvidia ];
+
+      boot.blacklistedKernelModules = [ "nouveau" ];
     })
   ]);
 }
