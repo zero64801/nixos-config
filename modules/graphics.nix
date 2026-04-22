@@ -13,6 +13,7 @@ let
 
   amdEnabled = cfg.backend == "amd" || cfg.amd.enable;
   nvidiaEnabled = cfg.backend == "nvidia" || cfg.nvidia.enable;
+  nvidiaDisplay = cfg.nvidia.display;
 in
 {
   options.nyx.graphics = {
@@ -34,6 +35,18 @@ in
 
     nvidia = {
       enable = mkEnableOption "NVIDIA drivers (secondary GPU for compute / VFIO passthrough)";
+
+      display = mkOption {
+        type = types.bool;
+        default = cfg.backend == "nvidia";
+        description = ''
+          Integrate the NVIDIA card into the Linux display stack
+          (KMS modesetting + Xorg driver). Defaults true only when
+          the nvidia backend is primary; for compute-only / VFIO
+          setups leave this false so the compositor doesn't grab the
+          card and block `gpu-switch` unbinds.
+        '';
+      };
 
       open = mkOption {
         type = types.bool;
@@ -63,7 +76,7 @@ in
 
       services.xserver.videoDrivers =
         optionals amdEnabled [ "amdgpu" ]
-        ++ optionals nvidiaEnabled [ "nvidia" ];
+        ++ optionals (nvidiaEnabled && nvidiaDisplay) [ "nvidia" ];
     }
 
     (mkIf amdEnabled {
@@ -72,9 +85,9 @@ in
 
     (mkIf nvidiaEnabled {
       hardware.nvidia = {
-        modesetting.enable = true;
+        modesetting.enable = nvidiaDisplay;
         open = cfg.nvidia.open;
-        nvidiaSettings = true;
+        nvidiaSettings = nvidiaDisplay;
         powerManagement.enable = false;
         package =
           if cfg.nvidia.package != null

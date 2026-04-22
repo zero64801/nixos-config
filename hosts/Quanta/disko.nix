@@ -196,10 +196,10 @@ in
         ''}
       fi
 
-      if ${pkgs.cryptsetup}/bin/cryptsetup isLuks "$PART" 2>/dev/null; then
-        if [ ! -b "/dev/mapper/$MAPPER" ]; then
-          ${pkgs.cryptsetup}/bin/cryptsetup open ${lib.optionalString sopsEnabled "--key-file=${luksKeyFile} "}"$PART" "$MAPPER"
-        fi
+      if ${pkgs.cryptsetup}/bin/cryptsetup isLuks "$PART" 2>/dev/null \
+         && ! ${pkgs.util-linux}/bin/mountpoint -q ${storageMount} \
+         && ! ${pkgs.util-linux}/bin/lsblk -nro NAME "$PART" | ${pkgs.coreutils}/bin/tail -n +2 | ${pkgs.gnugrep}/bin/grep -q .; then
+        ${pkgs.cryptsetup}/bin/cryptsetup open ${lib.optionalString sopsEnabled "--key-file=${luksKeyFile} "}"$PART" "$MAPPER"
 
         INNER_TYPE=$(${pkgs.util-linux}/bin/blkid -o value -s TYPE "/dev/mapper/$MAPPER" 2>/dev/null || echo "")
         if [ -z "$INNER_TYPE" ]; then

@@ -92,15 +92,21 @@
     startup.startupScript = {
       displayLayout = {
         text = ''
-          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor \
+          KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
+
+          $KSCREEN \
             output.DP-3.enable output.DP-3.position.0,0 \
             output.DP-2.enable output.DP-2.position.2560,0 output.DP-2.primary
 
-          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-2.vrrpolicy.automatic
-          ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.DP-3.vrrpolicy.automatic
+          $KSCREEN output.DP-2.vrrpolicy.always
+          $KSCREEN output.DP-3.vrrpolicy.automatic
 
-          for output in DP-2 DP-3; do
-            ${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor output.$output.brightness.100
+          for out in DP-5 DP-7; do
+            $KSCREEN output.$out.disable 2>/dev/null || true
+          done
+
+          for out in DP-2 DP-3; do
+            $KSCREEN output.$out.brightness.100
           done
         '';
         priority = 1;
