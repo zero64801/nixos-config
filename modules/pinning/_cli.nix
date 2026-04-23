@@ -138,15 +138,21 @@ writeShellApplication {
           echo "$ref_str"
           ;;
         tarball)
-          # For tarballs (like lix), we can't easily pin by rev via flake ref.
-          # Use --override-input with the locked URL directly.
-          local url
+          # For tarballs (like lix on forgejo/gitea), construct a new URL
+          # with the target rev substituted in. The locked URL contains
+          # the *current* rev in both the archive path and a `rev=` query
+          # param; we strip the query (narHash/rev) and swap any 40-char
+          # hex in the path with the target rev. Works for github/gitlab/
+          # gitea/forgejo archive endpoints.
+          local url base new
           url=$(echo "$node" | jq -r '.locked.url // empty')
-          if [[ -n "$url" ]]; then
-            echo "$url"
-          else
-            die "Cannot determine URL for tarball input '$input'"
+          [[ -n "$url" ]] || die "Cannot determine URL for tarball input '$input'"
+          base="''${url%%\?*}"
+          new=$(echo "$base" | sed -E "s|[a-f0-9]{40}|$rev|g")
+          if [[ "$new" == "$base" ]]; then
+            warn "Could not substitute rev in tarball URL for '$input' — pin may not take effect"
           fi
+          echo "$new"
           ;;
         sourcehut)
           owner=$(echo "$node" | jq -r '.original.owner')
@@ -448,19 +454,15 @@ writeShellApplication {
         declare -A saved_types
         if [[ -n "$pinned_inputs" ]]; then
           while IFS= read -r pi; do
-            local pt pr
+            local pt
             pt=$(get_pin_type "$pi")
             saved_types["$pi"]="$pt"
-            case "$pt" in
-              frozen)
-                # Use current locked rev (freeze means "keep current")
-                saved_revs["$pi"]=$(get_locked_rev "$pi")
-                ;;
-              pinned)
-                # Use explicitly pinned rev
-                saved_revs["$pi"]=$(get_pin_rev "$pi")
-                ;;
-            esac
+            # Both frozen and pinned use pins.json's rev — it's the
+            # authoritative record. If the lockfile drifted (e.g., the
+            # user ran vanilla `nix flake update` before), we still
+            # restore to the pin's rev, not whatever happens to be
+            # locked now.
+            saved_revs["$pi"]=$(get_pin_rev "$pi")
           done <<< "$pinned_inputs"
         fi
 

@@ -1,12 +1,7 @@
 { pkgs, lib, config, ... }:
 
 let
-  inherit (lib) mkEnableOption mkIf optional;
-  sopsEnabled = config.nyx.sops.enable or false;
-  authfilePath =
-    if sopsEnabled
-    then config.sops.secrets.u2f_keys.path
-    else "/etc/u2f_keys";
+  inherit (lib) mkEnableOption mkIf;
 in
 {
   options.nyx.security.yubikey.enable = mkEnableOption "YubiKey support";
@@ -26,9 +21,9 @@ in
         sudo.u2fAuth = true;
         polkit-1.u2fAuth = true;
       };
-      u2f.settings.authfile = authfilePath;
+      u2f.settings.authfile = "/etc/u2f_keys";
     };
 
-    nyx.persistence.files = optional (!sopsEnabled) "/etc/u2f_keys";
+    nyx.persistence.files = [ "/etc/u2f_keys" ];
   };
 }

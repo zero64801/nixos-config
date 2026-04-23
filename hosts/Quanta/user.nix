@@ -13,11 +13,8 @@
       "gamemode"
     ] ++ config.nyx.security.serviceAdminGroups;
 
-    hashedPasswordFile =
-      if config.nyx.sops.enable or false
-      then config.sops.secrets."users/dx".path
-      else "/persist/local/secrets/passwd/dx";
-
+    hashedPasswordFile = "/persist/local/secrets/passwd/dx";
+    
     packages = with pkgs; [
       git
     ];

@@ -2,6 +2,7 @@
   "directories": [
     "/var/lib/NetworkManager",
     "/var/lib/nixos",
+    "/var/lib/systemd",
     "/var/log"
   ],
   "files": [

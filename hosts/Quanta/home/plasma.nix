@@ -98,7 +98,7 @@
             output.DP-3.enable output.DP-3.position.0,0 \
             output.DP-2.enable output.DP-2.position.2560,0 output.DP-2.primary
 
-          $KSCREEN output.DP-2.vrrpolicy.always
+          $KSCREEN output.DP-2.vrrpolicy.automatic
           $KSCREEN output.DP-3.vrrpolicy.automatic
 
           for out in DP-5 DP-7; do

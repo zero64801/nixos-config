@@ -2,15 +2,15 @@
   "pins": {
     "lix": {
       "type": "frozen",
-      "rev": "d0190cff6f2314cc1c727ff113aea20e086f4bcc",
-      "date": "2026-04-03T19:05:48Z",
-      "reason": "Don't want to recompile for a while"
+      "rev": "be34bc0481c29f858f9444989851a6527c3e813c",
+      "date": "2026-04-22T22:03:45Z",
+      "reason": "updated to latest"
     },
     "lix-module": {
       "type": "frozen",
       "rev": "5e56f5a973e24292b125dca9e9d506b0a91d6903",
-      "date": "2026-04-03T19:06:20Z",
-      "reason": "Don't want to recompile for a while"
+      "date": "2026-04-22T22:03:53Z",
+      "reason": "updated to latest"
     }
   }
 }

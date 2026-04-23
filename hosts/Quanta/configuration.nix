@@ -37,8 +37,6 @@ in
       user = username;
     };
 
-    sops.enable = true;
-
     desktop = {
       enable = true;
       plasma6.enable = true;
@@ -122,7 +120,7 @@ in
       };
       llama-cpp = {
         enable = true;
-        rocm = true;
+        vulkan = true;
       };
     };
 

@@ -17,6 +17,7 @@ let
       coreutils
       gnugrep
       gawk
+      psmisc
     ];
 
     text = ''
@@ -108,9 +109,26 @@ let
       unbind_device() {
         local addr="$1" drv
         drv="$(current_driver "$addr")"
-        if [ "$drv" != "none" ]; then
-          echo "  unbind $addr (was $drv)"
-          echo "$addr" > "/sys/bus/pci/devices/$addr/driver/unbind" || true
+        if [ "$drv" = "none" ]; then
+          return
+        fi
+        echo "  unbind $addr (was $drv)"
+        # Userspace may be holding the device (pipewire on HDMI audio, or
+        # the nvidia driver during VRAM teardown). Use a timeout so we
+        # don't wedge, and fall back to module removal.
+        if ! timeout 5 bash -c "echo '$addr' > /sys/bus/pci/devices/$addr/driver/unbind"; then
+          echo "  unbind $addr timed out — forcing via rmmod $drv"
+          case "$drv" in
+            snd_hda_intel)
+              modprobe -r snd_hda_intel 2>/dev/null || true
+              ;;
+            nvidia|nvidia_drm|nvidia_modeset)
+              modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia 2>/dev/null || true
+              ;;
+            *)
+              modprobe -r "$drv" 2>/dev/null || true
+              ;;
+          esac
         fi
       }
 
@@ -138,7 +156,9 @@ let
         local m
         for m in "$@"; do
           echo "  modprobe $m"
-          modprobe "$m"
+          if ! modprobe "$m" 2>/dev/null; then
+            echo "    (skipped: blacklisted or unavailable)"
+          fi
         done
       }
 
@@ -149,6 +169,36 @@ let
         done
       }
 
+      # KWin/Wayland compositors hold DRM refs on cards they enumerate,
+      # which wedges PCI unbind in an uninterruptible kernel wait. The
+      # workaround used by Bensikrac/VFIO-Nvidia-dynamic-unbind and
+      # various Level1Techs threads: send a fake `remove` uevent on the
+      # card's sysfs node. KWin watches these and releases its FDs on
+      # both the card and its associated render node, so the subsequent
+      # unbind completes normally. We also kill any remaining userspace
+      # holding /dev/nvidia* (nvidia-smi leftovers, persistenced, etc.).
+      release_compositor_holds() {
+        local addr card
+        for addr in "$@"; do
+          if [ -d "/sys/bus/pci/devices/$addr/drm" ]; then
+            for card in /sys/bus/pci/devices/"$addr"/drm/card*; do
+              if [ -e "$card/uevent" ]; then
+                echo "  notify remove $(basename "$card") ($addr)"
+                echo -n remove > "$card/uevent" 2>/dev/null || true
+              fi
+            done
+          fi
+        done
+        sleep 0.5
+        local dev
+        for dev in /dev/nvidia0 /dev/nvidia1 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-modeset; do
+          if [ -e "$dev" ]; then
+            fuser -k "$dev" >/dev/null 2>&1 || true
+          fi
+        done
+        sleep 0.3
+      }
+
       switch_to_vfio() {
         echo "Switching GPU -> vfio-pci"
         if any_vm_running; then
@@ -156,14 +206,27 @@ let
           exit 1
         fi
         local addr
-        local -a addrs native_mods
+        local -a addrs
         mapfile -t addrs < <(normalized_addrs)
-        mapfile -t native_mods < <(collect_native_modules "''${addrs[@]}")
+        release_compositor_holds "''${addrs[@]}"
         for addr in "''${addrs[@]}"; do
           unbind_device "$addr"
         done
-        if [ "''${#native_mods[@]}" -gt 0 ]; then
-          unload_modules "''${native_mods[@]}"
+        # Only rmmod the nvidia stack — it leaves VRAM / firmware state
+        # after unbind that can keep vfio-pci from reclaiming the card.
+        # Don't touch snd_hda_intel (shared with motherboard audio,
+        # rmmod fails when other cards hold it) or amdgpu (almost always
+        # driving the primary display). driver_override pins our target
+        # to vfio-pci regardless.
+        local has_nvidia=0
+        for addr in "''${addrs[@]}"; do
+          if [ "$(read_sys "/sys/bus/pci/devices/$addr/vendor")" = "0x10de" ]; then
+            has_nvidia=1
+            break
+          fi
+        done
+        if [ "$has_nvidia" = 1 ]; then
+          unload_modules "''${NVIDIA_MODULES[@]}" || true
         fi
         load_modules "''${VFIO_MODULES[@]}"
         for addr in "''${addrs[@]}"; do

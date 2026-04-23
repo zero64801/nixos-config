@@ -13,7 +13,6 @@ let
 
   amdEnabled = cfg.backend == "amd" || cfg.amd.enable;
   nvidiaEnabled = cfg.backend == "nvidia" || cfg.nvidia.enable;
-  nvidiaDisplay = cfg.nvidia.display;
 in
 {
   options.nyx.graphics = {
@@ -34,19 +33,7 @@ in
     };
 
     nvidia = {
-      enable = mkEnableOption "NVIDIA drivers (secondary GPU for compute / VFIO passthrough)";
-
-      display = mkOption {
-        type = types.bool;
-        default = cfg.backend == "nvidia";
-        description = ''
-          Integrate the NVIDIA card into the Linux display stack
-          (KMS modesetting + Xorg driver). Defaults true only when
-          the nvidia backend is primary; for compute-only / VFIO
-          setups leave this false so the compositor doesn't grab the
-          card and block `gpu-switch` unbinds.
-        '';
-      };
+      enable = mkEnableOption "NVIDIA drivers";
 
       open = mkOption {
         type = types.bool;
@@ -76,28 +63,41 @@ in
 
       services.xserver.videoDrivers =
         optionals amdEnabled [ "amdgpu" ]
-        ++ optionals (nvidiaEnabled && nvidiaDisplay) [ "nvidia" ];
-    }
+        ++ optionals nvidiaEnabled [ "nvidia" ];
 
-    (mkIf amdEnabled {
-      environment.systemPackages = [ pkgs.btop-rocm ];
-    })
+      environment.systemPackages = [
+        (pkgs.btop.override {
+          cudaSupport = nvidiaEnabled;
+          rocmSupport = amdEnabled;
+        })
+      ];
+    }
 
     (mkIf nvidiaEnabled {
       hardware.nvidia = {
-        modesetting.enable = nvidiaDisplay;
+        modesetting.enable = cfg.backend == "nvidia";
         open = cfg.nvidia.open;
-        nvidiaSettings = nvidiaDisplay;
+        nvidiaSettings = cfg.backend == "nvidia";
         powerManagement.enable = false;
         package =
           if cfg.nvidia.package != null
           then cfg.nvidia.package
-          else config.boot.kernelPackages.nvidiaPackages.stable;
+          else config.boot.kernelPackages.nvidiaPackages.latest;
       };
 
       environment.systemPackages = [ pkgs.nvtopPackages.nvidia ];
 
-      boot.blacklistedKernelModules = [ "nouveau" ];
+      boot.blacklistedKernelModules =
+        [ "nouveau" ]
+        ++ lib.optional (cfg.backend != "nvidia") "nvidia_drm";
+
+      boot.kernelParams =
+        lib.optional (cfg.backend != "nvidia") "modprobe.blacklist=nvidia_drm";
+
+      boot.extraModprobeConfig =
+        lib.optionalString (cfg.backend != "nvidia") ''
+          install nvidia_drm /bin/true
+        '';
     })
   ]);
 }
