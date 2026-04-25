@@ -21,4 +21,5 @@
   };
 
   hm.home.stateVersion = lib.mkDefault config.system.stateVersion;
+  hm.gtk.gtk4.theme = lib.mkDefault null;
 }

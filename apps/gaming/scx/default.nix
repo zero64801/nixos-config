@@ -14,6 +14,30 @@ in
       default = scx-switch;
       description = "The scx-switch package to be used by other modules";
     };
+
+    hostScheduler = lib.mkOption {
+      type = lib.types.str;
+      default = "scx_bpfland";
+      description = ''
+        Always-on system-wide sched-ext scheduler. Started by services.scx
+        on boot and restored after a game session ends.
+      '';
+    };
+
+    gameScheduler = lib.mkOption {
+      type = lib.types.str;
+      default = "scx_lavd";
+      description = ''
+        Scheduler activated by gamemode while a game is running.
+        Set to null/empty to skip per-game switching.
+      '';
+    };
+
+    gameSchedulerFlags = lib.mkOption {
+      type = lib.types.str;
+      default = "--performance";
+      description = "Extra flags passed to gameScheduler at game start.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -27,7 +51,10 @@ in
       pkgs.nixos-icons
     ];
 
-    services.scx.enable = false;
+    services.scx = {
+      enable = true;
+      scheduler = cfg.hostScheduler;
+    };
 
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {

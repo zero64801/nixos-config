@@ -70,11 +70,26 @@ in
           enable = true;
           staticSizeMb = 64;
         };
+
+        hooks = {
+          win11 = ./vms/hooks/win11.sh;
+        };
       };
 
       gpuSwitch = {
         enable = true;
         defaultMode = "vfio";
+      };
+
+      nixvirt = {
+        enable = true;
+        domains = [
+          {
+            definition = ./vms/win11.xml;
+            active = null;
+            restart = null;
+          }
+        ];
       };
     };
 

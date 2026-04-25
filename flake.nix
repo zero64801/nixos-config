@@ -53,6 +53,11 @@
         home-manager.follows = "home-manager";
       };
     };
+
+    nixvirt = {
+      url = "github:AshleyYakeley/NixVirt";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { ... }@inputs: {

@@ -163,8 +163,12 @@ in
       };
       qt.enable = lib.mkOption {
         type = lib.types.bool;
-        default = true;
-        description = "Enable Qt theming";
+        default = !(config.nyx.desktop.plasma6.enable or false);
+        description = ''
+          Enable Qt theming. Auto-disabled when KDE Plasma 6 is active
+          (KDE handles Qt theming natively and stylix's qt target is
+          unsupported on the kde platform).
+        '';
       };
       fontconfig.enable = lib.mkOption {
         type = lib.types.bool;

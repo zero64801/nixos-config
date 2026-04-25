@@ -12,6 +12,9 @@
 
     settings = {
       experimental-features = [ "nix-command" "flakes" "pipe-operator" ];
+      # nixpkgs lib still uses `or` as an identifier in places.
+      # Lix warns unless we acknowledge it via deprecated-features.
+      extra-deprecated-features = [ "or-as-identifier" ];
       auto-optimise-store = true;
       trusted-users = [ "root" "@wheel" ];
 

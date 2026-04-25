@@ -103,6 +103,12 @@ in
           group = "libvirtd";
           mode = "0770";
         }
+        {
+          directory = "/var/lib/swtpm-localca";
+          user = "tss";
+          group = "tss";
+          mode = "0750";
+        }
       ];
     }
   ]);

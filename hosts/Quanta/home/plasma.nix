@@ -41,6 +41,7 @@
               launchers = [
                 "applications:org.kde.dolphin.desktop"
                 "applications:org.kde.konsole.desktop"
+                "applications:zen-beta.desktop"
               ];
             };
           }

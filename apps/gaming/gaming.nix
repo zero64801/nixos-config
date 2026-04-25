@@ -28,9 +28,12 @@ in
 
       programs.gamemode = {
         enable = true;
-        settings.custom = {
-          start = "/run/wrappers/bin/pkexec ${scxPackage}/bin/scx-switch apply scx_lavd --performance";
-          end = "/run/wrappers/bin/pkexec ${scxPackage}/bin/scx-switch disable";
+        settings.custom = let
+          scxCfg = config.nyx.apps.scx;
+          switch = "${scxCfg.package}/bin/scx-switch";
+        in lib.mkIf (scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null) {
+          start = "/run/wrappers/bin/pkexec ${switch} apply ${scxCfg.gameScheduler} ${scxCfg.gameSchedulerFlags}";
+          end   = "/run/wrappers/bin/pkexec ${switch} apply ${scxCfg.hostScheduler}";
         };
       };
 

@@ -50,6 +50,21 @@ in
         default = 32;
         description = "Static size in MB for the kvmfr module";
       };
+
+      escapeKey = mkOption {
+        type = str;
+        default = "KEY_RIGHTCTRL";
+        description = "Looking Glass escape key (Linux input event keycode).";
+      };
+
+      extraClientConfig = mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf (lib.types.oneOf [ lib.types.str lib.types.int lib.types.bool ]));
+        default = { };
+        description = ''
+          Extra sections/keys merged into ~/.config/looking-glass/client.ini.
+          Example: { spice.enable = false; win.fullScreen = true; }
+        '';
+      };
     };
 
     hooks = mkOption {
@@ -102,12 +117,54 @@ in
       nyx.virtualisation.base.cgroupDeviceACL = [ "/dev/kvmfr0" ];
 
       environment.systemPackages = [ pkgs.looking-glass-client ];
+
+      hm.xdg.configFile."looking-glass/client.ini".text =
+        # Note: do NOT persist ~/.config/looking-glass — bind mount would
+        # hide this HM-managed client.ini. The LG client's runtime files
+        # (imgui.ini, presets/) are trivial UI prefs that regenerate.
+        let
+          baseConfig = {
+            app = {
+              shmFile = "/dev/kvmfr0";
+            };
+            input = {
+              escapeKey = cfg.looking-glass.escapeKey;
+              rawMouse = true;
+              ignoreWindowsKeys = true;
+            };
+            win = {
+              fullScreen = false;
+              autoResize = true;
+              keepAspect = true;
+              quickSplash = true;
+            };
+            spice = {
+              enable = true;
+              clipboard = true;
+              audio = true;
+            };
+          };
+          merged = lib.recursiveUpdate baseConfig cfg.looking-glass.extraClientConfig;
+          renderValue = v:
+            if builtins.isBool v then (if v then "yes" else "no")
+            else toString v;
+          renderSection = name: kvs:
+            "[${name}]\n" +
+            (lib.concatStringsSep "\n"
+              (lib.mapAttrsToList (k: v: "${k}=${renderValue v}") kvs)) +
+            "\n";
+        in
+        lib.concatStringsSep "\n"
+          (lib.mapAttrsToList renderSection merged);
     })
 
     {
       virtualisation.libvirtd.hooks.qemu = mkIf (cfg.hooks != { }) cfg.hooks;
       virtualisation.spiceUSBRedirection.enable = true;
       environment.systemPackages = [ pkgs.spice-gtk ];
+
+      systemd.services.libvirtd-config.restartTriggers =
+        mkIf (cfg.hooks != { }) (lib.attrValues cfg.hooks);
     }
   ]);
 }

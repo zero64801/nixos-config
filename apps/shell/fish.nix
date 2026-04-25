@@ -31,7 +31,7 @@ in
 
   config = lib.mkIf cfg.enable {
     users.users.root.shell = pkgs.fish;
-    documentation.man.generateCaches = false;
+    documentation.man.cache.enable = false;
 
     programs.fish = {
       enable = true;

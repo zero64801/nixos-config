@@ -7,24 +7,36 @@
         ${lib.getExe pkgs.nushell} -c "
           let diff_closure = ${lib.getExe pkgs.nix} store diff-closures /run/current-system '$systemConfig';
           if \$diff_closure != \"\" {
-            \$diff_closure
-            | lines
-            | where \$it =~ KiB
-            | where \$it =~ →
-            | parse -r '^(?<Package>\S+): (?<Old_Version>[^,]+)(?:.*) → (?<New_Version>[^,]+)(?:.*, )(?<DiffBin>.*)$'
-            | insert Diff {
-              get DiffBin
-              | ansi strip
-              | str trim -l -c '+'
-              | into filesize
+            let parsed = \$diff_closure
+              | lines
+              | where \$it =~ KiB
+              | where \$it =~ →
+              | parse -r '^(?<Package>\S+): (?<Old_Version>[^,]+)(?:.*) → (?<New_Version>[^,]+)(?:.*, )(?<DiffBin>.*)$'
+              | insert Diff {
+                get DiffBin
+                | ansi strip
+                | str trim -l -c '+'
+                | into filesize
+              }
+              | reject DiffBin
+              | sort-by -r Diff;
+            if (\$parsed | is-not-empty) {
+              \$parsed | print
+              \$parsed | get Diff | math sum
             }
-            | reject DiffBin
-            | sort-by -r Diff
-            | tee { print }
-            | if (\$in | is-not-empty) { math sum } else { null }
           }
         "
       fi
+    '';
+  };
+
+  # Channels are disabled in nix.nix but stale dirs trigger warnings on each
+  # rebuild. Remove them once on activation if present.
+  system.activationScripts.purge-stale-channels = {
+    text = ''
+      ${pkgs.coreutils}/bin/rm -rf \
+        /root/.nix-defexpr/channels \
+        /nix/var/nix/profiles/per-user/root/channels
     '';
   };
 

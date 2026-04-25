@@ -171,5 +171,9 @@ in
     nyx.persistence.home.files = [
       ".config/zen/default/cookies.sqlite"
     ];
+
+    # Tell stylix which zen-browser profile to apply themes to.
+    # Matches the `profiles.default` attrset key set above.
+    hm.stylix.targets.zen-browser.profileNames = [ "default" ];
   };
 }
