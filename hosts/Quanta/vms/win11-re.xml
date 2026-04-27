@@ -1,11 +1,40 @@
 <domain xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0" type="kvm">
-  <name>win11</name>
-  <uuid>d5d6a062-bc92-41d8-b260-1b9f798a6daa</uuid>
+  <name>win11-re</name>
+  <uuid>953fb7fd-861b-4e99-9ec0-37e588f83730</uuid>
   <metadata>
     <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
       <libosinfo:os id="http://microsoft.com/win/11"/>
     </libosinfo:libosinfo>
   </metadata>
+  <sysinfo type="smbios">
+    <bios>
+      <entry name="vendor">American Megatrends International, LLC.</entry>
+      <entry name="version">7D70v1H</entry>
+      <entry name="date">09/12/2024</entry>
+    </bios>
+    <system>
+      <entry name="manufacturer">Micro-Star International Co., Ltd.</entry>
+      <entry name="product">MS-7D70</entry>
+      <entry name="version">1.0</entry>
+      <entry name="serial">SN-000348896002</entry>
+      <entry name="uuid">953fb7fd-861b-4e99-9ec0-37e588f83730</entry>
+      <entry name="sku">Default string</entry>
+      <entry name="family">MAG</entry>
+    </system>
+    <baseBoard>
+      <entry name="manufacturer">Micro-Star International Co., Ltd.</entry>
+      <entry name="product">MAG X670E TOMAHAWK WIFI (MS-7D70)</entry>
+      <entry name="version">1.0</entry>
+      <entry name="serial">MB-0000310880532</entry>
+    </baseBoard>
+    <chassis>
+      <entry name="manufacturer">Default string</entry>
+      <entry name="version">Default string</entry>
+      <entry name="serial">Default string</entry>
+      <entry name="asset">Default string</entry>
+      <entry name="sku">Default string</entry>
+    </chassis>
+  </sysinfo>
   <memory unit="KiB">33554432</memory>
   <currentMemory unit="KiB">33554432</currentMemory>
   <memoryBacking>
@@ -41,8 +70,9 @@
       <feature enabled="yes" name="secure-boot"/>
     </firmware>
     <loader readonly="yes" secure="yes" type="pflash" format="raw">/run/libvirt/nix-ovmf/edk2-x86_64-secure-code.fd</loader>
-    <nvram template="/run/libvirt/nix-ovmf/edk2-i386-vars.fd" templateFormat="raw" format="raw">/var/lib/libvirt/qemu/nvram/win11_VARS.fd</nvram>
+    <nvram template="/run/libvirt/nix-ovmf/edk2-i386-vars.fd" templateFormat="raw" format="raw">/var/lib/libvirt/qemu/nvram/win11-re_VARS.fd</nvram>
     <boot dev="hd"/>
+    <smbios mode="sysinfo"/>
   </os>
   <features>
     <acpi/>
@@ -93,8 +123,11 @@
     <emulator>/run/libvirt/nix-emulators/qemu-system-x86_64</emulator>
     <disk type="file" device="disk">
       <driver name="qemu" type="qcow2" cache="none" io="native" discard="unmap"/>
-      <source file="/mnt/storage/VMs/images/win11.qcow2"/>
+      <source file="/mnt/storage/VMs/images/win11-re.qcow2"/>
       <target dev="sda" bus="scsi"/>
+      <serial>S7B5NS08528820</serial>
+      <vendor>Samsung</vendor>
+      <product>SSD 980 PRO 2TB</product>
       <address type="drive" controller="0" bus="0" target="0" unit="0"/>
     </disk>
     <disk type="file" device="cdrom">
@@ -197,7 +230,7 @@
       <address type="pci" domain="0x0000" bus="0x04" slot="0x00" function="0x0"/>
     </controller>
     <interface type="network">
-      <mac address="52:54:00:12:e5:34"/>
+      <mac address="04:7c:16:88:2e:06"/>
       <source network="default"/>
       <model type="virtio"/>
       <driver name="vhost" queues="8"/>
@@ -253,7 +286,6 @@
     <redirdev bus="usb" type="spicevmc">
       <address type="usb" bus="0" port="3"/>
     </redirdev>
-    <watchdog model="itco" action="reset"/>
   </devices>
   <qemu:commandline>
     <qemu:arg value="-device"/>

@@ -99,12 +99,8 @@
             output.DP-3.enable output.DP-3.position.0,0 \
             output.DP-2.enable output.DP-2.position.2560,0 output.DP-2.primary
 
-          # DP-2 (primary, gaming) → VRR always: smooth gaming, no
-          # toggle-stutter when cursor crosses outputs.
-          # DP-3 (secondary, productivity) → VRR never: keeps desktop
-          # UI rendering at fixed full refresh, no plasmashell lag.
-          $KSCREEN output.DP-2.vrrpolicy.always
-          $KSCREEN output.DP-3.vrrpolicy.never
+          $KSCREEN output.DP-2.vrrpolicy.automatic
+          $KSCREEN output.DP-3.vrrpolicy.automatic
 
           for out in DP-5 DP-7; do
             $KSCREEN output.$out.disable 2>/dev/null || true

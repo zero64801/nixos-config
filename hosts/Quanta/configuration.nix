@@ -72,7 +72,8 @@ in
         };
 
         hooks = {
-          win11 = ./vms/hooks/win11.sh;
+          win11    = ./vms/hooks/win11.sh;
+          win11-re = ./vms/hooks/win11-re.sh;
         };
       };
 
@@ -86,6 +87,11 @@ in
         domains = [
           {
             definition = ./vms/win11.xml;
+            active = null;
+            restart = null;
+          }
+          {
+            definition = ./vms/win11-re.xml;
             active = null;
             restart = null;
           }
