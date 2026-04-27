@@ -26,6 +26,13 @@ let
         systemctl stop scx-manual 2>/dev/null || true
         echo "Schedulers disabled"
         ;;
+      host)
+        # Stop any transient override and bring back the system-managed
+        # scx.service (configured with services.scx.scheduler).
+        systemctl stop scx-manual 2>/dev/null || true
+        systemctl restart scx
+        echo "Restored host scheduler (system scx.service)"
+        ;;
       apply)
         systemctl stop scx 2>/dev/null || true
         systemctl stop scx-manual 2>/dev/null || true

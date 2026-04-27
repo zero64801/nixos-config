@@ -159,7 +159,15 @@ in
     })
 
     {
-      virtualisation.libvirtd.hooks.qemu = mkIf (cfg.hooks != { }) cfg.hooks;
+      # Wrap user-provided hook paths via writeShellScript so they're
+      # always executable regardless of the source file's mode bits.
+      # libvirt silently skips non-executable hooks ("Non-executable
+      # hook script" warning), which is a nasty failure mode.
+      virtualisation.libvirtd.hooks.qemu = mkIf (cfg.hooks != { }) (
+        lib.mapAttrs (name: src:
+          pkgs.writeShellScript "libvirt-hook-${name}" (builtins.readFile src)
+        ) cfg.hooks
+      );
       virtualisation.spiceUSBRedirection.enable = true;
       environment.systemPackages = [ pkgs.spice-gtk ];
 

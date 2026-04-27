@@ -119,8 +119,21 @@ let
       ) (builtins.attrNames config.home-manager.users)
     else [];
 
+  # Normalize a path entry to a plain string. Some sources (the
+  # environment.persistence schema, nyx.persistence) accept attrsets
+  # like `{ directory = "/path"; user = ...; mode = ...; }`. The CLI
+  # operates on path strings, so unwrap any attrset to its path field.
+  extractPath = x:
+    if builtins.isString x then x
+    else if builtins.isAttrs x then (x.directory or x.file or null)
+    else null;
+
   aggregate = type: lists:
-    lib.unique (lib.flatten (map (x: x.paths) (lib.filter (x: x.type == type) lists)));
+    lib.unique
+      (lib.filter (p: p != null)
+        (map extractPath
+          (lib.flatten
+            (map (x: x.paths) (lib.filter (x: x.type == type) lists)))));
 
   allPersistencePaths = localPersistence ++ nyxPersistence ++ hmPersistence;
 

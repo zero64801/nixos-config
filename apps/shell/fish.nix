@@ -3,7 +3,8 @@
 let
   cfg = config.nyx.apps.fish;
   inherit (config.networking) hostName;
-  rebuildCommand = "sudo nixos-rebuild --flake ~/nixos#${hostName}";
+  # nyx-rebuild auto-bootstraps any new substituters from the host config.
+  rebuildCommand = "nyx-rebuild";
 
   rosepine-fzf = [
     "fg:#908caa"

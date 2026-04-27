@@ -33,7 +33,7 @@ in
           switch = "${scxCfg.package}/bin/scx-switch";
         in lib.mkIf (scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null) {
           start = "/run/wrappers/bin/pkexec ${switch} apply ${scxCfg.gameScheduler} ${scxCfg.gameSchedulerFlags}";
-          end   = "/run/wrappers/bin/pkexec ${switch} apply ${scxCfg.hostScheduler}";
+          end   = "/run/wrappers/bin/pkexec ${switch} host";
         };
       };
 

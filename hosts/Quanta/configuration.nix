@@ -123,7 +123,9 @@ in
       fish.enable = true;
       git = {
         enable = true;
-        email = "";
+        email = "zero64801@gmail.com";
+        signing.enable = true;
+        github.enable = true;
       };
       direnv.enable = true;
       zeditor.enable = true;
@@ -135,6 +137,7 @@ in
       };
       llama-cpp = {
         enable = true;
+        cuda = true;
         vulkan = true;
       };
     };
