@@ -22,11 +22,21 @@ apply() {
   systemctl set-property --runtime -- init.scope   AllowedCPUs="$cpus"
 }
 
+VM_CPUS_LIST="8 9 10 11 12 13 14 15 24 25 26 27 28 29 30 31"
+set_epp() {
+  local pref="$1"
+  for c in $VM_CPUS_LIST; do
+    echo "$pref" > "/sys/devices/system/cpu/cpu$c/cpufreq/energy_performance_preference"
+  done
+}
+
 case "$HOOK_NAME/$STATE_NAME" in
   prepare/begin)
     apply "$HOST_CPUS"
+    set_epp performance
     ;;
   release/end)
     apply "$ALL_CPUS"
+    set_epp balance_performance
     ;;
 esac

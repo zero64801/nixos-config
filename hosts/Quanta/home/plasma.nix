@@ -102,10 +102,6 @@
           $KSCREEN output.DP-2.vrrpolicy.automatic
           $KSCREEN output.DP-3.vrrpolicy.automatic
 
-          for out in DP-5 DP-7; do
-            $KSCREEN output.$out.disable 2>/dev/null || true
-          done
-
           for out in DP-2 DP-3; do
             $KSCREEN output.$out.brightness.100
           done

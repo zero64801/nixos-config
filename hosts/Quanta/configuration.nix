@@ -140,6 +140,7 @@ in
       gaming = {
         enable = true;
         steam.enable = true;
+        x3dCacheBias = true;   # 9950X3D: bias to V-Cache CCD during gameplay
       };
       llama-cpp = {
         enable = true;
@@ -167,6 +168,7 @@ in
   };
 
   powerManagement.cpuFreqGovernor = "ondemand";
+
 
   services.fstrim.enable = lib.mkDefault true;
 

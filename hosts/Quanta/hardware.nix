@@ -21,6 +21,7 @@
     ];
     kernelParams = [
       "amd_pstate=active"
+      "transparent_hugepage=madvise"
     ];
     kernel.sysctl = {
       "vm.swappiness" = 100;

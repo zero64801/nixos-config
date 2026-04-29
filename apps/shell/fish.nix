@@ -117,6 +117,19 @@ in
             echo (path dirname $package_path | path dirname)
           end
         end
+
+        # Hot-attach/detach Flydigi Vader (XInput mode = 045e:028e) to the win11 VM.
+        function pad-on --description "Attach gamepad to win11 VM"
+          echo '<hostdev mode="subsystem" type="usb" managed="yes">
+            <source><vendor id="0x045e"/><product id="0x028e"/></source>
+          </hostdev>' | sudo virsh attach-device win11 /dev/stdin --live
+        end
+
+        function pad-off --description "Detach gamepad from win11 VM"
+          echo '<hostdev mode="subsystem" type="usb" managed="yes">
+            <source><vendor id="0x045e"/><product id="0x028e"/></source>
+          </hostdev>' | sudo virsh detach-device win11 /dev/stdin --live
+        end
       '';
     };
 

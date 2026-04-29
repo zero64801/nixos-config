@@ -60,8 +60,8 @@
     <vcpupin vcpu="13" cpuset="30"/>
     <vcpupin vcpu="14" cpuset="15"/>
     <vcpupin vcpu="15" cpuset="31"/>
-    <emulatorpin cpuset="0-7,16-23"/>
-    <iothreadpin iothread="1" cpuset="0-7,16-23"/>
+    <emulatorpin cpuset="0-1,16-17"/>
+    <iothreadpin iothread="1" cpuset="2,18"/>
   </cputune>
   <os firmware="efi">
     <type arch="x86_64" machine="pc-q35-9.2">hvm</type>
@@ -84,7 +84,11 @@
       <vpindex state="on"/>
       <runtime state="on"/>
       <synic state="on"/>
-      <stimer state="on"/>
+      <stimer state="on">
+        <direct state="on"/>
+      </stimer>
+      <reset state="on"/>
+      <reenlightenment state="on"/>
       <vendor_id state="on" value="AuthenticAMD"/>
       <frequencies state="on"/>
       <tlbflush state="on"/>
@@ -92,6 +96,8 @@
     </hyperv>
     <kvm>
       <hidden state="on"/>
+      <hint-dedicated state="on"/>
+      <poll-control state="on"/>
     </kvm>
     <vmport state="off"/>
     <smm state="on"/>
