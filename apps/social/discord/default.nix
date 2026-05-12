@@ -3,7 +3,9 @@
 let
   cfg = config.nyx.apps.discord;
   sources = (pkgs.util.importFlake ./sources).inputs;
-  plugins = (pkgs.util.importFlake ./plugins).inputs;
+  remotePlugins = (pkgs.util.importFlake ./plugins).inputs;
+  localPlugins = {};
+  plugins = remotePlugins // localPlugins;
   user = config.nyx.flake.user;
 in
 {
@@ -52,7 +54,7 @@ in
               loadingQuotes.enable = true;
               messageLinkEmbeds.enable = true;
               noBlockedMessages.enable = true;
-              normalizeMessageLinks.enable = true;
+              #normalizeMessageLinks.enable = true;
               replaceGoogleSearch = {
                 enable = true;
                 customEngineName = "DuckDuckGo";
@@ -76,7 +78,15 @@ in
             # https://github.com/ScattrdBlade/bigFileUpload/blob/main/index.tsx#L800
             BigFileUpload = {
               enabled = true;
+              fileUploader = "Catbox"; # Catbox, Litterbox, 0x0.st, tmpfiles.org, GoFile, buzzheavier.com, temp.sh, filebin.net, Custom
+              autoSend = "No";
               autoFormat = "Yes";
+              dragAndDropEnabled = "Yes";
+              pasteEnabled = "Yes";
+              respectNitroLimit = "Yes";
+              nitroType = "full";
+              disableFallbacks = "No";
+              loggingLevel = "errors";
             };
           };
         };

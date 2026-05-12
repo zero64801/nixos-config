@@ -72,8 +72,9 @@ in
         };
 
         hooks = {
-          win11    = ./vms/hooks/win11.sh;
-          win11-re = ./vms/hooks/win11-re.sh;
+          win11     = ./vms/hooks/win11.sh;
+          win11-re  = ./vms/hooks/win11-re.sh;
+          win11-x3d = ./vms/hooks/win11-x3d.sh;
         };
       };
 
@@ -92,6 +93,11 @@ in
           }
           {
             definition = ./vms/win11-re.xml;
+            active = null;
+            restart = null;
+          }
+          {
+            definition = ./vms/win11-x3d.xml;
             active = null;
             restart = null;
           }

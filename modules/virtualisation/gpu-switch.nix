@@ -1,8 +1,8 @@
 { config, lib, pkgs, ... }:
 
 let
-  inherit (lib) mkEnableOption mkIf mkOption concatStringsSep;
-  inherit (lib.types) enum;
+  inherit (lib) mkEnableOption mkIf mkMerge mkOption concatStringsSep;
+  inherit (lib.types) bool enum;
 
   cfg = config.nyx.virtualisation.gpuSwitch;
   vfioCfg = config.nyx.virtualisation.desktop.vfio;
@@ -101,6 +101,9 @@ let
       }
 
       any_vm_running() {
+        if [ "''${GPU_SWITCH_SKIP_VM_CHECK:-0}" = "1" ]; then
+          return 1
+        fi
         local out
         out="$(virsh list --state-running --name 2>/dev/null || true)"
         [ -n "$(echo "$out" | tr -d '[:space:]')" ]
@@ -298,6 +301,143 @@ let
       esac
     '';
   };
+
+  libvirtGpuVfioHook = pkgs.writeShellScript "libvirt-qemu-gpu-vfio-prepare" ''
+    set -euo pipefail
+
+    GUEST_NAME="''${1:-}"
+    HOOK_NAME="''${2:-}"
+    STATE_NAME="''${3:-}"
+
+    case "$HOOK_NAME/$STATE_NAME" in
+      prepare/begin) ;;
+      *) exit 0 ;;
+    esac
+
+    PCI_ADDRS=(${concatStringsSep " " (map (a: "\"${a}\"") vfioCfg.pciAddresses)})
+    GPU_SWITCH="${lib.getExe gpuSwitch}"
+    AWK="${lib.getExe pkgs.gawk}"
+    CAT="${lib.getExe' pkgs.coreutils "cat"}"
+    READLINK="${lib.getExe' pkgs.coreutils "readlink"}"
+
+    normalize_addr() {
+      case "$1" in
+        *:*:*.*) echo "$1" ;;
+        *)       echo "0000:$1" ;;
+      esac
+    }
+
+    hex_fixed() {
+      local width="$1" value="''${2#0x}"
+      printf "0x%0''${width}x" "0x$value"
+    }
+
+    hex_function() {
+      local value="''${1#0x}"
+      printf "0x%x" "0x$value"
+    }
+
+    current_driver() {
+      local addr="$1" driver_link driver_path
+      driver_link="/sys/bus/pci/devices/$addr/driver"
+      if [ -L "$driver_link" ]; then
+        driver_path="$("$READLINK" "$driver_link")"
+        echo "''${driver_path##*/}"
+      else
+        echo "none"
+      fi
+    }
+
+    domain_uses_addr() {
+      local addr="$1" domain rest bus slot fn
+      local domain_hex bus_hex slot_hex fn_hex
+
+      addr="$(normalize_addr "$addr")"
+      domain="''${addr%%:*}"
+      rest="''${addr#*:}"
+      bus="''${rest%%:*}"
+      rest="''${rest#*:}"
+      slot="''${rest%%.*}"
+      fn="''${rest#*.}"
+
+      domain_hex="$(hex_fixed 4 "$domain")"
+      bus_hex="$(hex_fixed 2 "$bus")"
+      slot_hex="$(hex_fixed 2 "$slot")"
+      fn_hex="$(hex_function "$fn")"
+
+      printf '%s\n' "$DOMAIN_XML" | "$AWK" \
+        -v want_domain="$domain_hex" \
+        -v want_bus="$bus_hex" \
+        -v want_slot="$slot_hex" \
+        -v want_function="$fn_hex" '
+          function attr(line, name, m) {
+            if (match(line, name "=[\"\047]([^\"\047]+)[\"\047]", m)) {
+              return m[1]
+            }
+            return ""
+          }
+
+          /<hostdev([[:space:]>]|$)/ { in_hostdev = 1 }
+          in_hostdev && /<source([[:space:]>]|$)/ { in_source = 1 }
+          in_hostdev && in_source && /<address[[:space:]]/ {
+            domain = attr($0, "domain")
+            bus = attr($0, "bus")
+            slot = attr($0, "slot")
+            fn = attr($0, "function")
+            if (domain == want_domain && bus == want_bus && slot == want_slot && fn == want_function) {
+              found = 1
+            }
+          }
+          in_hostdev && /<\/source>/ { in_source = 0 }
+          in_hostdev && /<\/hostdev>/ { in_hostdev = 0 }
+
+          END { exit(found ? 0 : 1) }
+        '
+    }
+
+    domain_uses_configured_gpu() {
+      local addr
+      for addr in "''${PCI_ADDRS[@]}"; do
+        if domain_uses_addr "$addr"; then
+          return 0
+        fi
+      done
+      return 1
+    }
+
+    all_devices_vfio() {
+      local addr
+      for addr in "''${PCI_ADDRS[@]}"; do
+        addr="$(normalize_addr "$addr")"
+        if [ "$(current_driver "$addr")" != "vfio-pci" ]; then
+          return 1
+        fi
+      done
+      return 0
+    }
+
+    DOMAIN_XML="$("$CAT" || true)"
+    if ! [[ "$DOMAIN_XML" =~ [^[:space:]] ]]; then
+      echo "gpu-vfio-hook: no domain XML for $GUEST_NAME; skipping GPU ownership check" >&2
+      exit 0
+    fi
+
+    if ! domain_uses_configured_gpu; then
+      exit 0
+    fi
+
+    if all_devices_vfio; then
+      exit 0
+    fi
+
+    echo "gpu-vfio-hook: $GUEST_NAME uses the configured passthrough GPU; switching it to vfio-pci" >&2
+    GPU_SWITCH_SKIP_VM_CHECK=1 "$GPU_SWITCH" vfio
+
+    if ! all_devices_vfio; then
+      echo "gpu-vfio-hook: failed to bind all configured passthrough devices to vfio-pci" >&2
+      exit 1
+    fi
+  '';
 in
 {
   options.nyx.virtualisation.gpuSwitch = {
@@ -308,9 +448,25 @@ in
       default = "vfio";
       description = "Driver mode the passthrough device(s) boot into.";
     };
+
+    libvirtHook.enable = mkOption {
+      type = bool;
+      default = true;
+      description = ''
+        Install a qemu libvirt hook that automatically switches configured
+        passthrough PCI devices to vfio-pci before a domain using them starts.
+      '';
+    };
   };
 
-  config = mkIf cfg.enable {
-    environment.systemPackages = [ gpuSwitch ];
-  };
+  config = mkIf cfg.enable (mkMerge [
+    {
+      environment.systemPackages = [ gpuSwitch ];
+    }
+
+    (mkIf (cfg.libvirtHook.enable && vfioCfg.enable && vfioCfg.pciAddresses != [ ]) {
+      virtualisation.libvirtd.hooks.qemu."00-gpu-vfio-prepare" = libvirtGpuVfioHook;
+      systemd.services.libvirtd-config.restartTriggers = [ libvirtGpuVfioHook ];
+    })
+  ]);
 }

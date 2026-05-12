@@ -42,6 +42,9 @@ in
           switch = "${scxCfg.package}/bin/scx-switch";
           scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
 
+          # X3D writes go directly — the sysfs file is chgrp'd to gamemode
+          # group at boot (see systemd.services.x3d-cache-bias-perms below)
+          # so no privilege escalation is needed for the toggle.
           x3dStart = lib.optionalString cfg.x3dCacheBias ''
             for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do
               echo cache > "$f" 2>/dev/null || true
@@ -53,21 +56,43 @@ in
             done
           '';
 
+          # SCX switch still needs root (calls systemctl), so wrap only that
+          # part in pkexec — keeps the X3D toggle privilege-free.
           startScript = pkgs.writeShellScript "gamemode-start" ''
             ${x3dStart}
             ${lib.optionalString scxEnabled
-              "${switch} apply ${scxCfg.gameScheduler} ${scxCfg.gameSchedulerFlags}"}
+              "/run/wrappers/bin/pkexec ${switch} apply ${scxCfg.gameScheduler} ${scxCfg.gameSchedulerFlags}"}
           '';
           endScript = pkgs.writeShellScript "gamemode-end" ''
             ${x3dEnd}
-            ${lib.optionalString scxEnabled "${switch} host"}
+            ${lib.optionalString scxEnabled "/run/wrappers/bin/pkexec ${switch} host"}
           '';
 
           anyHookEnabled = scxEnabled || cfg.x3dCacheBias;
         in lib.mkIf anyHookEnabled {
-          start = "/run/wrappers/bin/pkexec ${startScript}";
-          end   = "/run/wrappers/bin/pkexec ${endScript}";
+          start = "${startScript}";
+          end   = "${endScript}";
         };
+      };
+
+      # Make amd_x3d_mode writable by the gamemode group so the X3D toggle
+      # in the gamemode hook runs without pkexec. Only set up if x3dCacheBias
+      # is enabled. The glob handles any platform device id.
+      systemd.services.x3d-cache-bias-perms = lib.mkIf cfg.x3dCacheBias {
+        description = "Allow gamemode group to write amd_x3d_mode";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "systemd-modules-load.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          shopt -s nullglob
+          for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do
+            ${pkgs.coreutils}/bin/chgrp gamemode "$f" || true
+            ${pkgs.coreutils}/bin/chmod g+w "$f" || true
+          done
+        '';
       };
 
       programs.steam = lib.mkIf cfg.steam.enable {

@@ -118,17 +118,61 @@ in
           end
         end
 
-        # Hot-attach/detach Flydigi Vader (XInput mode = 045e:028e) to the win11 VM.
-        function pad-on --description "Attach gamepad to win11 VM"
-          echo '<hostdev mode="subsystem" type="usb" managed="yes">
+        # Hot-attach/detach Flydigi Vader (XInput mode = 045e:028e) to a VM.
+        function __pad_device_xml
+          printf '%s\n' '<hostdev mode="subsystem" type="usb" managed="yes">
             <source><vendor id="0x045e"/><product id="0x028e"/></source>
-          </hostdev>' | sudo virsh attach-device win11 /dev/stdin --live
+          </hostdev>'
         end
 
-        function pad-off --description "Detach gamepad from win11 VM"
-          echo '<hostdev mode="subsystem" type="usb" managed="yes">
-            <source><vendor id="0x045e"/><product id="0x028e"/></source>
-          </hostdev>' | sudo virsh detach-device win11 /dev/stdin --live
+        function __pad_state_file
+          if set -q XDG_RUNTIME_DIR
+            echo "$XDG_RUNTIME_DIR/pad-last-domain"
+          else
+            echo "/tmp/pad-last-domain-$USER"
+          end
+        end
+
+        function pad-on -a domain --description "Attach gamepad to VM domain"
+          if test -z "$domain"
+            echo "Usage: pad-on <domain>" >&2
+            return 2
+          end
+
+          __pad_device_xml | sudo virsh attach-device "$domain" /dev/stdin --live
+          set -l attach_status $status
+
+          if test $attach_status -eq 0
+            set -l state_file (__pad_state_file)
+            mkdir -p (path dirname "$state_file")
+            printf '%s\n' "$domain" > "$state_file"
+          end
+
+          return $attach_status
+        end
+
+        function pad-off --description "Detach gamepad from last VM domain used by pad-on"
+          set -l state_file (__pad_state_file)
+
+          if not test -s "$state_file"
+            echo "No previous pad-on domain recorded. Run pad-on <domain> first." >&2
+            return 1
+          end
+
+          read -l domain < "$state_file"
+          if test -z "$domain"
+            echo "No previous pad-on domain recorded. Run pad-on <domain> first." >&2
+            return 1
+          end
+
+          __pad_device_xml | sudo virsh detach-device "$domain" /dev/stdin --live
+          set -l detach_status $status
+
+          if test $detach_status -eq 0
+            rm -f "$state_file"
+          end
+
+          return $detach_status
         end
       '';
     };

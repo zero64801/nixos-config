@@ -2,6 +2,21 @@
 
 let
   cfg = config.nyx.apps.zen;
+  user = config.nyx.flake.user;
+  homeDir = config.users.users.${user}.home or "/home/${user}";
+  persistentPath = config.nyx.impermanence.persistentStoragePath or "/persist/local";
+  profilePath = ".config/zen/default";
+  profileFiles = [
+    "${profilePath}/containers.json"
+    "${profilePath}/cookies.sqlite"
+    "${profilePath}/cookies.sqlite-wal"
+    "${profilePath}/permissions.sqlite"
+    "${profilePath}/serviceworker.txt"
+    "${profilePath}/storage.sqlite"
+    "${profilePath}/storage.sqlite-wal"
+    "${profilePath}/webappsstore.sqlite"
+    "${profilePath}/webappsstore.sqlite-wal"
+  ];
 
   lock = x: {
     Value = x;
@@ -168,10 +183,13 @@ in
       };
     };
 
-    nyx.persistence.home.files = [
-      ".config/zen/default/cookies.sqlite"
-      ".config/zen/default/cookies.sqlite-wal"
+    # Modern auth state is split between cookies and origin storage
+    # (localStorage/IndexedDB/service workers), so cookies alone lose sessions.
+    nyx.persistence.home.directories = [
+      "${profilePath}/storage"
     ];
+
+    nyx.persistence.home.files = profileFiles;
 
     # Tell stylix which zen-browser profile to apply themes to.
     # Matches the `profiles.default` attrset key set above.
