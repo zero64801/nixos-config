@@ -15,13 +15,12 @@ in
 
     programs.yubikey-touch-detector.enable = true;
 
-    security.pam = {
-      services = {
-        login.u2fAuth = true;
-        sudo.u2fAuth = true;
-        polkit-1.u2fAuth = true;
+    security.pam.u2f = {
+      enable = true;
+      settings = {
+        authfile = "/etc/u2f_keys";
+        cue = true;
       };
-      u2f.settings.authfile = "/etc/u2f_keys";
     };
 
     nyx.persistence.files = [ "/etc/u2f_keys" ];

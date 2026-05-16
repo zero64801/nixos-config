@@ -55,6 +55,7 @@ in
       enableDefaultConfig = false;
       matchBlocks."github.com" = {
         identityFile = cfg.signing.keyFile |> lib.removeSuffix ".pub";
+        identityAgent = "none";
         identitiesOnly = true;
       };
     };

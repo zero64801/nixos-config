@@ -9,7 +9,9 @@ in
   config = lib.mkIf (cfg.enable && cfg.steam.enable && stylixEnabled) {
     hm.home.activation.updateSteamTheme =
       config.hm.lib.dag.entryAfter [ "writeBoundary" "dconfSettings" ] ''
-        ${lib.getExe pkgs.adwsteamgtk} -i
+        if ! ${pkgs.coreutils}/bin/timeout 20s ${lib.getExe pkgs.adwsteamgtk} -i; then
+          echo "Skipping Steam theme update: adwsteamgtk did not finish cleanly within 20s."
+        fi
       '';
 
     hm.dconf.settings."io/github/Foldex/AdwSteamGtk".prefs-install-custom-css = true;

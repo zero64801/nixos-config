@@ -163,9 +163,16 @@ in
   };
 
   environment.systemPackages = with pkgs; [
+    nvme-cli
+    pciutils
+    smartmontools
   ];
 
   services.lact.enable = true;
+  services.displayManager.autoLogin = {
+    enable = true;
+    user = username;
+  };
 
   security.tpm2 = {
     enable = true;
@@ -173,7 +180,7 @@ in
     tctiEnvironment.enable = true;
   };
 
-  powerManagement.cpuFreqGovernor = "ondemand";
+  powerManagement.cpuFreqGovernor = "powersave";
 
 
   services.fstrim.enable = lib.mkDefault true;
@@ -184,14 +191,13 @@ in
     fileSystems = [ "/" ];
   };
 
-  services.displayManager.autoLogin = {
-    enable = true;
-    user = username;
-  };
-
   systemd.services.NetworkManager-wait-online.enable = lib.mkDefault false;
 
   services.udev.extraRules = ''
+    # Gen5/high-end NVMe drives already handle deep queues well; avoid extra
+    # software scheduling overhead on the host and VM storage drives.
+    ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none"
+
     # Disable wakeup on PCIe ports
     ACTION=="add", SUBSYSTEM=="pci", DRIVER=="pcieport", ATTR{power/wakeup}="disabled"
 

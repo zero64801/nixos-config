@@ -1,7 +1,12 @@
-{ pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 {
-  hm.programs.plasma = {
+  nyx.desktop.plasma6.extraSpectacleOcrLanguages = [
+    "jpn"
+    "jpn_vert"
+  ];
+
+  hm.programs.plasma = lib.mkIf config.nyx.desktop.plasma6.enable {
     enable = true;
 
     workspace = {
@@ -28,7 +33,7 @@
 
     panels = [
       {
-        location = "bottom";
+        location = "top";
         screen = 0;
         widgets = [
           {
@@ -68,6 +73,24 @@
       edgeBarrier = 0;
       cornerBarrier = false;
     };
+
+    window-rules = [
+      {
+        description = "Open Discord on left monitor";
+        match = {
+          window-class = {
+            value = "discord";
+            type = "substring";
+            match-whole = false;
+          };
+          window-types = [ "normal" ];
+        };
+        apply.screen = {
+          value = 0;
+          apply = "initially";
+        };
+      }
+    ];
 
     configFile = {
       baloofilerc."Basic Settings"."Indexing-Enabled" = false;

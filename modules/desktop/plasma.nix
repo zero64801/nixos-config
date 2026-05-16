@@ -2,9 +2,21 @@
 
 let
   cfg = config.nyx.desktop.plasma6;
+  spectacleOcrLanguages = lib.unique ([ "eng" ] ++ cfg.extraSpectacleOcrLanguages);
+  spectacleWithOcr = pkgs.kdePackages.spectacle.override {
+    tesseractLanguages = spectacleOcrLanguages;
+  };
 in
 {
-  options.nyx.desktop.plasma6.enable = lib.mkEnableOption "Plasma 6 desktop environment";
+  options.nyx.desktop.plasma6 = {
+    enable = lib.mkEnableOption "Plasma 6 desktop environment";
+
+    extraSpectacleOcrLanguages = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Additional Tesseract language codes to include in Spectacle OCR. English is always included.";
+    };
+  };
 
   config = lib.mkIf cfg.enable {
     services = {
@@ -21,6 +33,7 @@ in
       kdePackages.kolourpaint
       kdePackages.ksystemlog
       kdePackages.sddm-kcm
+      spectacleWithOcr
       kdiff3
       wayland-utils
       wl-clipboard
@@ -33,10 +46,13 @@ in
       kdePackages.kmines
       kdePackages.konversation
       kdePackages.kpat
+      kdePackages.spectacle
       kdePackages.ksudoku
       kdePackages.ktorrent
       mpv
     ];
+
+    hm.programs.plasma.configFile.spectaclerc.General.ocrLanguages = lib.concatStringsSep "," spectacleOcrLanguages;
 
     services.xserver.excludePackages = [ pkgs.xterm ];
   };

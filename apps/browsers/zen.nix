@@ -93,7 +93,8 @@ in
 {
   options.nyx.apps.zen.enable = lib.mkEnableOption "Zen Browser";
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+  {
     hm = {
       imports = [
         inputs.zen-browser.homeModules.beta
@@ -191,8 +192,11 @@ in
 
     nyx.persistence.home.files = profileFiles;
 
+  }
+  (lib.mkIf (config.nyx.stylix.enable or false) {
     # Tell stylix which zen-browser profile to apply themes to.
     # Matches the `profiles.default` attrset key set above.
     hm.stylix.targets.zen-browser.profileNames = [ "default" ];
-  };
+  })
+  ]);
 }

@@ -4,7 +4,9 @@ let
   cfg = config.nyx.apps.discord;
   sources = (pkgs.util.importFlake ./sources).inputs;
   remotePlugins = (pkgs.util.importFlake ./plugins).inputs;
-  localPlugins = {};
+  localPlugins = {
+    MyServerRoles = ./local-plugins/myServerRoles;
+  };
   plugins = remotePlugins // localPlugins;
   user = config.nyx.flake.user;
 in
@@ -75,6 +77,8 @@ in
             };
           };
           extraConfig.plugins = {
+            AccountPanelServerProfile.enabled = false;
+            MyServerRoles.enabled = true;
             # https://github.com/ScattrdBlade/bigFileUpload/blob/main/index.tsx#L800
             BigFileUpload = {
               enabled = true;

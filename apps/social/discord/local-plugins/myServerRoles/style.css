@@ -1,0 +1,48 @@
+.vc-my-server-roles-title {
+    flex: 1;
+}
+
+.vc-my-server-roles-content {
+    padding: 16px;
+}
+
+.vc-my-server-roles-count {
+    display: block;
+    margin-bottom: 12px;
+}
+
+.vc-my-server-roles-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-my-server-roles-role {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--background-mod-subtle);
+}
+
+.vc-my-server-roles-dot {
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
+    border-radius: 50%;
+}
+
+.vc-my-server-roles-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-my-server-roles-managed {
+    margin-left: auto;
+    text-transform: uppercase;
+}
