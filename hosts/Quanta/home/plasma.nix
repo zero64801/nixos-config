@@ -80,13 +80,42 @@
         match = {
           window-class = {
             value = "discord";
-            type = "substring";
+            type = "exact";
             match-whole = false;
           };
-          window-types = [ "normal" ];
         };
         apply.screen = {
-          value = 0;
+          value = 1;
+          apply = "force";
+        };
+        apply.position = {
+          value = "0,0";
+          apply = "initially";
+        };
+        apply.size = {
+          value = "1256,1440";
+          apply = "initially";
+        };
+      }
+      {
+        description = "Open Zen on right side of left monitor";
+        match = {
+          window-class = {
+            value = "zen-beta";
+            type = "exact";
+            match-whole = false;
+          };
+        };
+        apply.screen = {
+          value = 1;
+          apply = "force";
+        };
+        apply.position = {
+          value = "1256,0";
+          apply = "initially";
+        };
+        apply.size = {
+          value = "1304,1440";
           apply = "initially";
         };
       }

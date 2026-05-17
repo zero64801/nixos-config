@@ -132,6 +132,7 @@ in
     apps = {
       zen.enable = true;
       discord.enable = true;
+      vlessProxy.enable = true;
       fish.enable = true;
       git = {
         enable = true;

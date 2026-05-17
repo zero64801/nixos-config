@@ -161,12 +161,12 @@ in
         name = "Default";
         search = {
           force = true;
-          default = "startpage";
+          default = "duckduckgo";
           engines = {
-            startpage = {
-              name = "Startpage";
+            duckduckgo = {
+              name = "DuckDuckGo";
               urls = [
-                { template = "https://www.startpage.com/sp/search?query={searchTerms}"; }
+                { template = "https://duckduckgo.com/?q={searchTerms}"; }
               ];
             };
           };
