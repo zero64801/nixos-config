@@ -49,7 +49,10 @@ in
     };
 
     virtualisation = {
-      base.enable = true;
+      base = {
+        enable = true;
+        #networkIsolation.allowedHostTCPPorts = [ 3000 ];
+      };
 
       desktop = {
         enable = true;
@@ -69,6 +72,11 @@ in
         looking-glass = {
           enable = true;
           staticSizeMb = 64;
+          extraClientConfig.win = {
+            autoResize = false;
+            allowResize = true;
+            noScreensaver = true;
+          };
         };
 
         hooks = {

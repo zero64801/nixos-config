@@ -154,7 +154,7 @@ let
     then config.stylix.fonts.sizes.desktop
     else 10;
   fallbackWallpaper = "${pkgs.kdePackages.plasma-workspace-wallpapers}/share/wallpapers/Elarun/contents/images/2560x1600.png";
-  dmsPrimaryOutput = "DP-2";
+  dmsPrimaryOutput = "DP-1";
   dmsWallpaper =
     if stylixEnabled && (config.nyx.stylix.wallpaper or null) != null
     then config.nyx.stylix.wallpaper
@@ -655,7 +655,7 @@ lib.mkIf config.nyx.desktop.niri.enable (lib.mkMerge [
 
     settings.mainBar = {
       layer = "top";
-      output = "DP-2";
+      output = "DP-1";
       position = "top";
       height = 34;
       margin-top = 0;
@@ -895,14 +895,14 @@ lib.mkIf config.nyx.desktop.niri.enable (lib.mkMerge [
 
       window-rule {
           match app-id="^looking-glass-client$"
-          open-on-output "DP-2"
+          open-on-output "DP-1"
           open-maximized-to-edges true
           default-column-width { proportion 1.0; }
           draw-border-with-background false
           variable-refresh-rate true
       }
 
-      output "DP-3" {
+      output "DP-2" {
           mode "2560x1440@179.960"
           scale 1
           transform "normal"
@@ -910,13 +910,21 @@ lib.mkIf config.nyx.desktop.niri.enable (lib.mkMerge [
           variable-refresh-rate
       }
 
-      output "DP-2" {
-          mode "2560x1440@179.960"
+      output "DP-1" {
+          mode "2560x1440@279.960"
           scale 1
           transform "normal"
           position x=2560 y=0
           variable-refresh-rate
           focus-at-startup
+      }
+
+      output "DP-3" {
+          mode "2560x1440@179.960"
+          scale 1
+          transform "normal"
+          position x=5120 y=0
+          variable-refresh-rate
       }
 
         ''

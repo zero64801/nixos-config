@@ -8,7 +8,7 @@
 
 let
   inherit (lib) mkEnableOption mkIf mkMerge mkOption concatStringsSep optional optionals optionalString;
-  inherit (lib.types) bool listOf str;
+  inherit (lib.types) bool listOf port str;
 
   cfg = config.nyx.virtualisation.base;
 in
@@ -79,6 +79,24 @@ in
           for maximum isolation; turn on if a VM needs e.g. SSH to host.
         '';
       };
+
+      allowedHostTCPPorts = mkOption {
+        type = listOf port;
+        default = [ ];
+        description = ''
+          Extra TCP ports on the host that VMs may reach while network
+          isolation is enabled. DHCP and DNS are always allowed.
+        '';
+      };
+
+      allowedHostUDPPorts = mkOption {
+        type = listOf port;
+        default = [ ];
+        description = ''
+          Extra UDP ports on the host that VMs may reach while network
+          isolation is enabled. DHCP and DNS are always allowed.
+        '';
+      };
     };
   };
 
@@ -126,7 +144,7 @@ in
       # If ON, virbr0 is NOT trusted; the explicit firewall rules below
       # provide DHCP/DNS access only and block everything else.
       networking.firewall.trustedInterfaces =
-        lib.optional (!cfg.networkIsolation.enable) cfg.networkIsolation.bridge;
+        lib.optional (!cfg.networkIsolation.enable || cfg.networkIsolation.allowHost) cfg.networkIsolation.bridge;
 
       networking.firewall.allowedTCPPorts = mkIf cfg.openSpicePort [ 5900 ];
 
@@ -138,8 +156,8 @@ in
       # libvirt dnsmasq still works. Anything else from VM to host gets
       # default-dropped — exactly what we want.
       networking.firewall.interfaces.${cfg.networkIsolation.bridge} = mkIf cfg.networkIsolation.enable {
-        allowedUDPPorts = [ 53 67 ];
-        allowedTCPPorts = [ 53 ];
+        allowedUDPPorts = [ 53 67 ] ++ cfg.networkIsolation.allowedHostUDPPorts;
+        allowedTCPPorts = [ 53 ] ++ cfg.networkIsolation.allowedHostTCPPorts;
       };
 
       # FORWARD side (VM → LAN, VM → DNAT'd host services):

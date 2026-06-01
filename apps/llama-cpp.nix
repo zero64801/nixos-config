@@ -27,6 +27,13 @@ in
       description = "Enable rocm support.";
       example = false;
     };
+
+    rpc = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Enable RPC support.";
+      example = false;
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -35,6 +42,7 @@ in
         vulkanSupport = cfg.vulkan;
         cudaSupport = cfg.cuda;
         rocmSupport = cfg.rocm;
+        rpcSupport = cfg.rpc;
       })
     ];
 

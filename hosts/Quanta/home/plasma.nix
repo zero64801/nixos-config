@@ -85,7 +85,7 @@
           };
         };
         apply.screen = {
-          value = 1;
+          value = 0;
           apply = "force";
         };
         apply.position = {
@@ -107,7 +107,7 @@
           };
         };
         apply.screen = {
-          value = 1;
+          value = 0;
           apply = "force";
         };
         apply.position = {
@@ -148,13 +148,12 @@
           KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
           $KSCREEN \
-            output.DP-3.enable output.DP-3.position.0,0 \
-            output.DP-2.enable output.DP-2.position.2560,0 output.DP-2.primary
+            output.DP-2.enable output.DP-2.position.0,0 \
+            output.DP-1.enable output.DP-1.position.2560,0 output.DP-1.primary \
+            output.DP-3.enable output.DP-3.position.5120,0
 
-          $KSCREEN output.DP-2.vrrpolicy.automatic
-          $KSCREEN output.DP-3.vrrpolicy.automatic
-
-          for out in DP-2 DP-3; do
+          for out in DP-1 DP-2 DP-3; do
+            $KSCREEN output.$out.vrrpolicy.automatic
             $KSCREEN output.$out.brightness.100
           done
         '';

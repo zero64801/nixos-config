@@ -19,13 +19,13 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "marinara-engine";
-  version = "1.5.9";
+  version = "1.6.1";
 
   src = fetchFromGitHub {
     owner = "Pasta-Devs";
     repo = "Marinara-Engine";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-SyWrRjeMjaZP9rJPn4fKukp3YT2bBZ2FmXZZsc4T8gQ=";
+    hash = "sha256-ZQfn9RnoJnr/vYI0IPm65KY44diA/YlSGrMOStMZIco=";
   };
 
   pnpmDeps = fetchPnpmDeps {
@@ -36,7 +36,7 @@ stdenv.mkDerivation (finalAttrs: {
       mkdir -p $out
       sed -i '/^store-dir=/d' .npmrc
     '';
-    hash = "sha256-/OKE4f4EXFfgBctX6zrQcmYQ2lo2dgJdRzkCzoIAfDA=";
+    hash = "sha256-JX0krR/QP/hjkQKYTjDLAn507S0P/PiShNXrY3K4GxY=";
   };
 
   nativeBuildInputs = [
@@ -64,15 +64,6 @@ stdenv.mkDerivation (finalAttrs: {
 
   postPatch = ''
     sed -i '/^store-dir=/d' .npmrc
-
-    substituteInPlace packages/server/src/config/runtime-config.ts \
-      --replace-fail 'export function getEnvFilePath() {
-  return resolve(MONOREPO_ROOT, ".env");
-}' 'export function getEnvFilePath() {
-  const raw = normalizeEnvValue(process.env.MARINARA_ENV_FILE);
-  if (raw) return isAbsolute(raw) ? raw : resolveFromServerRoot(raw);
-  return resolve(MONOREPO_ROOT, ".env");
-}'
 
     substituteInPlace packages/server/scripts/write-build-meta.mjs \
       --replace-fail 'builtAt: new Date().toISOString()' \
