@@ -58,6 +58,21 @@
     extraModulePackages = [ ];
   };
 
+  systemd.services.cpu-dma-latency = {
+    description = "PM-QoS: cap CPU wake latency at 100us (bans the 350us C3 idle exit)";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "simple";
+      Restart = "always";
+      RestartSec = 2;
+      ExecStart = pkgs.writeShellScript "cpu-dma-latency" ''
+        exec 3<> /dev/cpu_dma_latency
+        ${pkgs.coreutils}/bin/printf '\x64\x00\x00\x00' >&3
+        exec ${pkgs.coreutils}/bin/sleep infinity
+      '';
+    };
+  };
+
   zramSwap = {
     enable = true;
     algorithm = "zstd";
