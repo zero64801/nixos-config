@@ -2,7 +2,7 @@
 
 let
   user = config.nyx.flake.user;
-  storageDev = "/dev/disk/by-path/pci-0000:6e:00.0-nvme-1";
+  storageDev = "/dev/disk/by-id/nvme-WD_BLACK_SN850X_4000GB_25226M800213";
   storageMount = "/mnt/storage";
 in
 {
@@ -11,7 +11,7 @@ in
   disko.devices.disk = {
     main = {
       type = "disk";
-      device = "/dev/disk/by-path/pci-0000:04:00.0-nvme-1";
+      device = "/dev/disk/by-id/nvme-Corsair_MP700_PRO_A7GFB514003ALK";
       content = {
         type = "gpt";
         partitions = {
