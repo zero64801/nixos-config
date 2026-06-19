@@ -84,10 +84,9 @@
             match-whole = false;
           };
         };
-        apply.screen = {
-          value = 0;
-          apply = "force";
-        };
+        # No screen-index force: KWin numbers screens primary-first then by
+        # cable order, so the index isn't stable. The global position below
+        # lands on the left monitor (layout pins it to 0,0) regardless.
         apply.position = {
           value = "0,0";
           apply = "initially";
@@ -106,10 +105,9 @@
             match-whole = false;
           };
         };
-        apply.screen = {
-          value = 0;
-          apply = "force";
-        };
+        # No screen-index force: KWin numbers screens primary-first then by
+        # cable order, so the index isn't stable. The global position below
+        # lands on the left monitor (layout pins it to 0,0) regardless.
         apply.position = {
           value = "1256,0";
           apply = "initially";
@@ -145,17 +143,43 @@
     startup.startupScript = {
       displayLayout = {
         text = ''
+          # Lock the layout by each monitor's EDID id (stable per physical
+          # panel) instead of by connector name (DP-1/2/3 — those are assigned
+          # by cable order and shuffle whenever cables are reinserted). Now any
+          # monitor can go in any DP port and still lands in its assigned spot.
           KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
-          $KSCREEN \
-            output.DP-2.enable output.DP-2.position.0,0 \
-            output.DP-1.enable output.DP-1.position.2560,0 output.DP-1.primary \
-            output.DP-3.enable output.DP-3.position.5120,0
+          PRIMARY_ID=ff9d48bc-a563-47b9-87d9-718be4a50687   # 280Hz panel
+          fallback_x=7680   # unknown/new monitors get appended to the right
 
-          for out in DP-1 DP-2 DP-3; do
-            $KSCREEN output.$out.vrrpolicy.automatic
-            $KSCREEN output.$out.brightness.100
-          done
+          pos_for() {
+            case "$1" in
+              c4680d7a-fca1-4b7c-a753-ec22c83d96e3) echo "0,0" ;;      # 180Hz  -> left
+              ff9d48bc-a563-47b9-87d9-718be4a50687) echo "2560,0" ;;   # 280Hz  -> center (primary)
+              9b135a80-e57e-49a9-a7f9-1a8f188959ac) echo "5120,0" ;;   # 180Hz  -> right
+              *) echo "" ;;
+            esac
+          }
+
+          # Map current connectors -> EDID ids and build ONE atomic command:
+          # KWin re-normalizes the layout between separate invocations, so
+          # per-output calls collide everything at 0,0. Apply it all at once.
+          args=$("$KSCREEN" -o | sed 's/\x1b\[[0-9;]*m//g' \
+            | awk '/^Output:/ { print $3" "$4 }' \
+            | while read -r conn id; do
+                [ -n "$conn" ] || continue
+                pos=$(pos_for "$id")
+                if [ -z "$pos" ]; then
+                  pos="''${fallback_x},0"
+                  fallback_x=$((fallback_x + 2560))
+                fi
+                printf ' output.%s.enable output.%s.position.%s output.%s.vrrpolicy.automatic output.%s.brightness.100' \
+                  "$conn" "$conn" "$pos" "$conn" "$conn"
+                [ "$id" = "$PRIMARY_ID" ] && printf ' output.%s.primary' "$conn"
+              done)
+
+          # word-splitting on $args is intentional (each op is a separate arg)
+          [ -n "$args" ] && "$KSCREEN" $args
         '';
         priority = 1;
       };
