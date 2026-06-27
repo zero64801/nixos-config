@@ -6,6 +6,21 @@
     "jpn_vert"
   ];
 
+  # Pin KWin to the amdgpu device so it never enumerates the 5090's transient
+  # simpledrm "phantom" (the leftover firmware framebuffer). Without this, the
+  # first time a VFIO VM starts and the 5090 is rebound to vfio, that phantom
+  # DRM device disappears, KWin recomputes the layout, and primary reverts from
+  # the center monitor to the left one (the layout script only runs at login,
+  # not on hotplug). KWIN_DRM_DEVICES is honoured on Plasma < 6.7.
+  #
+  # card0 = simpledrm (registered early from the EFI fb), card1 = amdgpu (initrd)
+  # — stable as long as the firmware framebuffer still appears (fbcon=map:1
+  # setup). If that ever changes (e.g. initcall_blacklist=sysfb_init), amdgpu
+  # becomes card0 and this must be updated, or KWin will find no device.
+  hm.xdg.configFile."plasma-workspace/env/kwin-drm-devices.sh".text = ''
+    export KWIN_DRM_DEVICES=/dev/dri/card1
+  '';
+
   hm.programs.plasma = lib.mkIf config.nyx.desktop.plasma6.enable {
     enable = true;
 
@@ -143,40 +158,51 @@
     startup.startupScript = {
       displayLayout = {
         text = ''
-          # Lock the layout by each monitor's EDID id (stable per physical
-          # panel) instead of by connector name (DP-1/2/3 — those are assigned
-          # by cable order and shuffle whenever cables are reinserted). Now any
-          # monitor can go in any DP port and still lands in its assigned spot.
+          # Lay out the three monitors by CONNECTOR TYPE, not kscreen UUIDs
+          # (those regenerate every boot since impermanence wipes the kscreen
+          # state). The main display is routed through the single HDMI port ->
+          # center + primary; the two identical side panels are on DP-* and
+          # interchangeable -> left/right. (Refresh rate can no longer identify
+          # the main panel: over HDMI it's bandwidth-capped to 144Hz, BELOW the
+          # 180Hz side panels.) Built as ONE atomic kscreen-doctor call so KWin
+          # doesn't re-normalize and collide outputs at 0,0 between invocations.
           KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
-          PRIMARY_ID=ff9d48bc-a563-47b9-87d9-718be4a50687   # 280Hz panel
-          fallback_x=7680   # unknown/new monitors get appended to the right
+          # connector + its max refresh (Hz) for each connected output
+          data=$("$KSCREEN" -o | sed 's/\x1b\[[0-9;]*m//g' | awk '
+            /^Output:/ { if (conn!="") printf "%s %.0f\n", conn, maxr; conn=$3; maxr=0 }
+            /Modes:/ { for (i=1;i<=NF;i++){ p=index($i,"@"); if(p>0){ r=substr($i,p+1); gsub(/[^0-9.].*/,"",r); r=r+0; if(r>maxr)maxr=r } } }
+            END { if (conn!="") printf "%s %.0f\n", conn, maxr }
+          ')
 
-          pos_for() {
-            case "$1" in
-              c4680d7a-fca1-4b7c-a753-ec22c83d96e3) echo "0,0" ;;      # 180Hz  -> left
-              ff9d48bc-a563-47b9-87d9-718be4a50687) echo "2560,0" ;;   # 280Hz  -> center (primary)
-              9b135a80-e57e-49a9-a7f9-1a8f188959ac) echo "5120,0" ;;   # 180Hz  -> right
-              *) echo "" ;;
+          # Center/primary = the monitor on the unique HDMI port. Fall back to
+          # the highest-refresh DP if no HDMI output is present. (The phantom
+          # simpledrm "Unknown-1" output is neither DP nor HDMI, so it is never
+          # chosen here and gets disabled in the loop below.)
+          center_conn=$(printf '%s\n' "$data" | grep -E '^HDMI-' | head -1 | awk '{print $1}')
+          [ -z "$center_conn" ] && center_conn=$(printf '%s\n' "$data" | grep -E '^DP-' | sort -k2,2 -n | tail -1 | awk '{print $1}')
+
+          args=$(printf '%s\n' "$data" | { side_x=0; while read -r conn maxr; do
+            [ -n "$conn" ] || continue
+            case "$conn" in
+              DP-*|HDMI-*) ;;
+              *)
+                # Phantom output (e.g. the 5090's leftover simpledrm "Unknown-1"
+                # firmware framebuffer, present because nvidia_drm is blacklisted
+                # so the GOP fb is never evicted). Disable it so KWin stops
+                # enumerating it as a screen and rearranging the layout.
+                printf ' output.%s.disable' "$conn"
+                continue ;;
             esac
-          }
-
-          # Map current connectors -> EDID ids and build ONE atomic command:
-          # KWin re-normalizes the layout between separate invocations, so
-          # per-output calls collide everything at 0,0. Apply it all at once.
-          args=$("$KSCREEN" -o | sed 's/\x1b\[[0-9;]*m//g' \
-            | awk '/^Output:/ { print $3" "$4 }' \
-            | while read -r conn id; do
-                [ -n "$conn" ] || continue
-                pos=$(pos_for "$id")
-                if [ -z "$pos" ]; then
-                  pos="''${fallback_x},0"
-                  fallback_x=$((fallback_x + 2560))
-                fi
-                printf ' output.%s.enable output.%s.position.%s output.%s.vrrpolicy.automatic output.%s.brightness.100' \
-                  "$conn" "$conn" "$pos" "$conn" "$conn"
-                [ "$id" = "$PRIMARY_ID" ] && printf ' output.%s.primary' "$conn"
-              done)
+            if [ "$conn" = "$center_conn" ]; then
+              pos="2560,0"; extra=" output.$conn.primary"
+            else
+              pos="''${side_x},0"; extra=""
+              [ "$side_x" -eq 0 ] && side_x=5120
+            fi
+            printf ' output.%s.enable output.%s.position.%s output.%s.vrrpolicy.automatic output.%s.brightness.100%s' \
+              "$conn" "$conn" "$pos" "$conn" "$conn" "$extra"
+          done; })
 
           # word-splitting on $args is intentional (each op is a separate arg)
           [ -n "$args" ] && "$KSCREEN" $args

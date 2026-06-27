@@ -4,6 +4,78 @@ let
   user = config.nyx.flake.user;
   storageDev = "/dev/disk/by-id/nvme-WD_BLACK_SN850X_4000GB_25226M800213";
   storageMount = "/mnt/storage";
+
+  tachyonDev = "/dev/disk/by-id/nvme-Samsung_SSD_9100_PRO_8TB_S7YHNJ0L101775M";
+  tachyonMount = "/mnt/tachyon";
+
+  # FIDO2-only LUKS2 + btrfs initialiser. Prompts before wiping a non-blank
+  # disk, and prompts whether to mount at the end.
+  mkDiskInit = { name, device, mount, cryptName, label, partLabel }:
+    pkgs.writeShellApplication {
+      name = "${name}-init";
+      runtimeInputs = with pkgs; [ gptfdisk cryptsetup util-linux systemd btrfs-progs coreutils ];
+      text = ''
+        DEV=${device}
+        PART=${device}-part1
+
+        if [ "$(id -u)" -ne 0 ]; then echo "${name}-init: run as root" >&2; exit 1; fi
+
+        if blkid "$DEV" >/dev/null 2>&1 || [ "$(lsblk -rno NAME "$DEV" | wc -l)" -gt 1 ]; then
+          echo "$DEV is not blank:" >&2
+          lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS "$DEV" >&2 || true
+          printf 'Type ERASE to wipe and reinitialise, anything else to abort: ' >&2
+          read -r ans || ans=""
+          [ "$ans" = "ERASE" ] || { echo "aborted" >&2; exit 1; }
+          umount "${mount}" 2>/dev/null || true
+          cryptsetup close ${cryptName} 2>/dev/null || true
+          wipefs -a "$DEV"
+        fi
+
+        sgdisk --zap-all "$DEV"
+        sgdisk -n 1:0:0 -t 1:8309 -c 1:${partLabel} "$DEV"
+        udevadm settle
+        [ -e "$PART" ] || { echo "${name}-init: $PART did not appear" >&2; exit 1; }
+
+        # luksFormat needs an initial key; use a throwaway, enroll fido2, then
+        # drop the throwaway so fido2 is the only keyslot.
+        KEY=$(mktemp)
+        trap 'rm -f "$KEY"' EXIT
+        head -c 512 /dev/urandom > "$KEY"
+
+        cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEY" "$PART"
+        cryptsetup open --key-file "$KEY" "$PART" ${cryptName}
+        mkfs.btrfs -L ${label} /dev/mapper/${cryptName}
+
+        echo "Enrolling FIDO2 — touch the key when it blinks."
+        systemd-cryptenroll --unlock-key-file="$KEY" --fido2-device=auto "$PART"
+        cryptsetup luksRemoveKey "$PART" "$KEY"
+
+        printf 'Mount ${name} at ${mount} now? [Y/n] '
+        read -r m || m=""
+        case "$m" in
+          ""|y|Y)
+            mkdir -p "${mount}"
+            mount /dev/mapper/${cryptName} "${mount}"
+            chown ${user}:users "${mount}"
+            chmod 0755 "${mount}"
+            echo "mounted at ${mount}, owned by ${user}" ;;
+          *)
+            cryptsetup close ${cryptName} ;;
+        esac
+
+        echo "${name} ready (FIDO2-only). Run 'nixos-rebuild switch' for boot auto-mount."
+        echo "No passphrase fallback: losing the FIDO2 key means the data is unrecoverable."
+      '';
+    };
+
+  tachyonInit = mkDiskInit {
+    name = "tachyon"; device = tachyonDev; mount = tachyonMount;
+    cryptName = "crypttachyon"; label = "tachyon"; partLabel = "tachyon_luks";
+  };
+  storageInit = mkDiskInit {
+    name = "storage"; device = storageDev; mount = storageMount;
+    cryptName = "cryptstorage"; label = "storage"; partLabel = "storage_luks";
+  };
 in
 {
   imports = [ inputs.disko.nixosModules.disko ];
@@ -125,7 +197,39 @@ in
         };
       };
     };
+
+    tachyon = {
+      type = "disk";
+      device = tachyonDev;
+      destroy = false;
+      content = {
+        type = "gpt";
+        partitions = {
+          luks = {
+            size = "100%";
+            label = "tachyon_luks";
+            content = {
+              type = "luks";
+              name = "crypttachyon";
+              extraFormatArgs = [ "--type luks2" ];
+              settings = {
+                allowDiscards = true;
+                crypttabExtraOpts = [ "fido2-device=auto" ];
+              };
+              content = {
+                type = "btrfs";
+                extraArgs = [ "-L tachyon" ];
+                mountpoint = tachyonMount;
+                mountOptions = [ "noatime" "nodiratime" "compress=zstd" "ssd" "nofail" ];
+              };
+            };
+          };
+        };
+      };
+    };
   };
+
+  environment.systemPackages = [ tachyonInit storageInit ];
 
   fileSystems = {
     "/persist/local".neededForBoot = true;
@@ -134,5 +238,6 @@ in
 
   systemd.tmpfiles.rules = [
     "d ${storageMount} 0755 ${user} users -"
+    "d ${tachyonMount} 0755 ${user} users -"
   ];
 }

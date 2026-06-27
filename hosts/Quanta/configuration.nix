@@ -88,7 +88,7 @@ in
 
       gpuSwitch = {
         enable = true;
-        defaultMode = "vfio";
+        defaultMode = "host";
       };
 
       nixvirt = {

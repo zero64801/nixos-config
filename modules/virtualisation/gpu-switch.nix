@@ -7,15 +7,29 @@ let
   cfg = config.nyx.virtualisation.gpuSwitch;
   vfioCfg = config.nyx.virtualisation.desktop.vfio;
 
+  # nvidia-smi, only when an nvidia host driver is actually configured. Used to
+  # enable persistence mode after binding the host driver: Blackwell/50-series
+  # cards spin fans at idle unless a driver keeps the GPU initialized, and
+  # persistence mode provides exactly that with no client attached. The flag
+  # lives with the loaded module, so rmmod (on the way to vfio) wipes it
+  # automatically — no conflict with passthrough. (lib.optionalString is lazy,
+  # so non-nvidia hosts never pull the driver package into their closure.)
+  nvidiaEnabled = lib.elem "nvidia" config.services.xserver.videoDrivers;
+  nvidiaSmi = lib.optionalString nvidiaEnabled "${config.hardware.nvidia.package.bin}/bin/nvidia-smi";
+
   gpuSwitch = pkgs.writeShellApplication {
     name = "gpu-switch";
 
     runtimeInputs = with pkgs; [
+      bash      # unbind_device runs `timeout 5 bash -c …`; without it the
+                # per-device sysfs unbind fails and falls back to rmmod, which
+                # can't detach the shared snd_hda_intel audio function.
       kmod
       pciutils
       libvirt
       coreutils
       gnugrep
+      gnused      # show_status pipes lspci through sed
       gawk
       psmisc
     ];
@@ -25,6 +39,7 @@ let
 
       PCI_ADDRS=(${concatStringsSep " " (map (a: "\"${a}\"") vfioCfg.pciAddresses)})
       DEFAULT_MODE="${cfg.defaultMode}"
+      NVIDIA_SMI="${nvidiaSmi}"
 
       if [ "''${#PCI_ADDRS[@]}" -eq 0 ]; then
         echo "gpu-switch: no PCI addresses configured (nyx.virtualisation.desktop.vfio.pciAddresses)" >&2
@@ -211,6 +226,12 @@ let
         local addr
         local -a addrs
         mapfile -t addrs < <(normalized_addrs)
+        # Drop persistence mode first so the nvidia driver de-initializes the
+        # GPU; otherwise it can stay busy and the unbind below burns its 5s
+        # timeout before falling back to rmmod.
+        if [ -n "$NVIDIA_SMI" ] && lsmod | awk '{print $1}' | grep -qx nvidia; then
+          "$NVIDIA_SMI" -pm 0 >/dev/null 2>&1 || true
+        fi
         release_compositor_holds "''${addrs[@]}"
         for addr in "''${addrs[@]}"; do
           unbind_device "$addr"
@@ -255,6 +276,7 @@ let
         if [ "''${#native_mods[@]}" -gt 0 ]; then
           load_modules "''${native_mods[@]}"
         fi
+        local bound_nvidia=0
         for addr in "''${addrs[@]}"; do
           target="$(native_driver_for "$addr")"
           if [ -z "$target" ]; then
@@ -262,7 +284,16 @@ let
             continue
           fi
           bind_device "$addr" "$target"
+          [ "$target" = "nvidia" ] && bound_nvidia=1
         done
+        # Keep the (Blackwell) GPU initialized at idle so its fan stays at
+        # zero-RPM. Persistence mode is the lightweight "driver attached, no
+        # client" state; it is wiped when the module unloads for vfio, so it
+        # never blocks passthrough.
+        if [ "$bound_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ]; then
+          echo "  enabling nvidia persistence mode (idle zero-RPM fan)"
+          "$NVIDIA_SMI" -pm 1 >/dev/null 2>&1 || echo "  (nvidia-smi -pm 1 failed; fan may spin at idle)"
+        fi
         echo "done."
       }
 
@@ -309,8 +340,12 @@ let
     HOOK_NAME="''${2:-}"
     STATE_NAME="''${3:-}"
 
+    # prepare/begin: bind the GPU to vfio-pci before the guest starts.
+    # release/end:   bind it back to the host (nvidia) after the guest stops,
+    #                so the native driver re-enables zero-RPM idle and the fan
+    #                stops (vfio-pci leaves fans at the vBIOS default).
     case "$HOOK_NAME/$STATE_NAME" in
-      prepare/begin) ;;
+      prepare/begin|release/end) ;;
       *) exit 0 ;;
     esac
 
@@ -319,6 +354,12 @@ let
     AWK="${lib.getExe pkgs.gawk}"
     CAT="${lib.getExe' pkgs.coreutils "cat"}"
     READLINK="${lib.getExe' pkgs.coreutils "readlink"}"
+    LOGGER="${lib.getExe' pkgs.util-linux "logger"}"
+
+    # Record which phase fired. libvirt only surfaces hook output when the hook
+    # exits non-zero, so successful release-phase runs were previously invisible
+    # in the journal; this makes them observable via `journalctl -t gpu-vfio-hook`.
+    "$LOGGER" -t gpu-vfio-hook "phase=$HOOK_NAME/$STATE_NAME guest=$GUEST_NAME"
 
     normalize_addr() {
       case "$1" in
@@ -416,27 +457,67 @@ let
       return 0
     }
 
+    # True if ANY configured device is still on vfio-pci. Used to verify the
+    # host-restore actually released the GPU (a leftover vfio-pci bind on the
+    # VGA function is what leaves the fan spinning).
+    any_device_vfio() {
+      local addr
+      for addr in "''${PCI_ADDRS[@]}"; do
+        addr="$(normalize_addr "$addr")"
+        if [ "$(current_driver "$addr")" = "vfio-pci" ]; then
+          return 0
+        fi
+      done
+      return 1
+    }
+
     DOMAIN_XML="$("$CAT" || true)"
     if ! [[ "$DOMAIN_XML" =~ [^[:space:]] ]]; then
+      "$LOGGER" -t gpu-vfio-hook "no domain XML for $GUEST_NAME ($HOOK_NAME/$STATE_NAME); skipping"
       echo "gpu-vfio-hook: no domain XML for $GUEST_NAME; skipping GPU ownership check" >&2
       exit 0
     fi
 
     if ! domain_uses_configured_gpu; then
+      "$LOGGER" -t gpu-vfio-hook "$GUEST_NAME does not use the configured GPU ($HOOK_NAME/$STATE_NAME); skipping"
       exit 0
     fi
 
-    if all_devices_vfio; then
-      exit 0
-    fi
-
-    echo "gpu-vfio-hook: $GUEST_NAME uses the configured passthrough GPU; switching it to vfio-pci" >&2
-    GPU_SWITCH_SKIP_VM_CHECK=1 "$GPU_SWITCH" vfio
-
-    if ! all_devices_vfio; then
-      echo "gpu-vfio-hook: failed to bind all configured passthrough devices to vfio-pci" >&2
-      exit 1
-    fi
+    case "$HOOK_NAME/$STATE_NAME" in
+      prepare/begin)
+        if all_devices_vfio; then
+          exit 0
+        fi
+        echo "gpu-vfio-hook: $GUEST_NAME uses the configured passthrough GPU; switching it to vfio-pci" >&2
+        GPU_SWITCH_SKIP_VM_CHECK=1 "$GPU_SWITCH" vfio
+        if ! all_devices_vfio; then
+          echo "gpu-vfio-hook: failed to bind all configured passthrough devices to vfio-pci" >&2
+          exit 1
+        fi
+        ;;
+      release/end)
+        # The guest has stopped; reclaim the card for the host driver so the
+        # fan returns to zero-RPM. We skip gpu-switch's any-vm-running guard:
+        # at release/end the just-stopped domain can still transiently register
+        # as running, which made `gpu-switch host` bail out. The domain_uses
+        # check above already confirmed THIS guest owned the GPU, and only one
+        # VM can hold it, so no other VM is using it — skipping is safe.
+        # Non-fatal: a stop-phase hook can't undo the shutdown, so on failure we
+        # warn rather than error. Output is teed to the journal for visibility.
+        "$LOGGER" -t gpu-vfio-hook "release/end: restoring host driver for $GUEST_NAME"
+        echo "gpu-vfio-hook: $GUEST_NAME released the passthrough GPU; restoring host driver" >&2
+        GPU_SWITCH_SKIP_VM_CHECK=1 "$GPU_SWITCH" host 2>&1 | "$LOGGER" -t gpu-vfio-hook || true
+        if any_device_vfio; then
+          "$LOGGER" -t gpu-vfio-hook "WARNING: GPU still on vfio-pci after host restore"
+          echo "gpu-vfio-hook: WARNING: GPU still bound to vfio-pci after host restore;" \
+               "fan may keep spinning. If no other VM is using it, run" \
+               "'sudo gpu-switch host' to retry." >&2
+        else
+          "$LOGGER" -t gpu-vfio-hook "GPU returned to host driver"
+          echo "gpu-vfio-hook: GPU returned to host driver." >&2
+        fi
+        ;;
+    esac
   '';
 in
 {
@@ -467,6 +548,35 @@ in
     (mkIf (cfg.libvirtHook.enable && vfioCfg.enable && vfioCfg.pciAddresses != [ ]) {
       virtualisation.libvirtd.hooks.qemu."00-gpu-vfio-prepare" = libvirtGpuVfioHook;
       systemd.services.libvirtd-config.restartTriggers = [ libvirtGpuVfioHook ];
+    })
+
+    # When the GPU rests on the host nvidia driver at boot (defaultMode=host),
+    # it binds via normal driver autoprobe — not through `gpu-switch host` — so
+    # nothing sets persistence mode and the Blackwell idle fan would spin. This
+    # oneshot enables it at boot. It is a no-op if the card is on vfio (nvidia-
+    # smi finds no device), so it never interferes with passthrough boots.
+    (mkIf (nvidiaEnabled && cfg.defaultMode == "host") {
+      systemd.services.nvidia-idle-persistence = {
+        description = "Enable NVIDIA persistence mode so the idle GPU keeps zero-RPM fan (Blackwell idle-fan workaround)";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "systemd-modules-load.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          # Retry to ride out boot-time driver/device-node settling.
+          ExecStart = pkgs.writeShellScript "nvidia-idle-persistence" ''
+            for _ in 1 2 3 4 5; do
+              if ${nvidiaSmi} -pm 1 >/dev/null 2>&1; then
+                echo "nvidia persistence mode enabled"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "nvidia-idle-persistence: GPU not on nvidia (likely vfio); skipping" >&2
+            exit 0
+          '';
+        };
+      };
     })
   ]);
 }
