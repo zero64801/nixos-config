@@ -158,14 +158,13 @@
     startup.startupScript = {
       displayLayout = {
         text = ''
-          # Lay out the three monitors by CONNECTOR TYPE, not kscreen UUIDs
-          # (those regenerate every boot since impermanence wipes the kscreen
-          # state). The main display is routed through the single HDMI port ->
-          # center + primary; the two identical side panels are on DP-* and
-          # interchangeable -> left/right. (Refresh rate can no longer identify
-          # the main panel: over HDMI it's bandwidth-capped to 144Hz, BELOW the
-          # 180Hz side panels.) Built as ONE atomic kscreen-doctor call so KWin
-          # doesn't re-normalize and collide outputs at 0,0 between invocations.
+          # Identify monitors by REFRESH-RATE capability (a stable hardware
+          # trait), not connector name (cable order) nor kscreen UUIDs (those
+          # regenerate every boot since impermanence wipes the kscreen state).
+          # The single 280Hz panel -> center + primary; the two identical 180Hz
+          # panels -> left/right (interchangeable). Built as ONE atomic
+          # kscreen-doctor call so KWin doesn't re-normalize and collide outputs
+          # at 0,0 between separate invocations.
           KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
           # connector + its max refresh (Hz) for each connected output
@@ -175,12 +174,10 @@
             END { if (conn!="") printf "%s %.0f\n", conn, maxr }
           ')
 
-          # Center/primary = the monitor on the unique HDMI port. Fall back to
-          # the highest-refresh DP if no HDMI output is present. (The phantom
-          # simpledrm "Unknown-1" output is neither DP nor HDMI, so it is never
-          # chosen here and gets disabled in the loop below.)
-          center_conn=$(printf '%s\n' "$data" | grep -E '^HDMI-' | head -1 | awk '{print $1}')
-          [ -z "$center_conn" ] && center_conn=$(printf '%s\n' "$data" | grep -E '^DP-' | sort -k2,2 -n | tail -1 | awk '{print $1}')
+          # Highest-refresh real connector (the 280Hz panel) -> center + primary.
+          # The phantom simpledrm output is neither DP- nor HDMI-, so it's never
+          # chosen here and gets disabled in the loop below.
+          center_conn=$(printf '%s\n' "$data" | grep -E '^(DP|HDMI)-' | sort -k2,2 -n | tail -1 | awk '{print $1}')
 
           args=$(printf '%s\n' "$data" | { side_x=0; while read -r conn maxr; do
             [ -n "$conn" ] || continue
