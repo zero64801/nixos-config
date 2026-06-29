@@ -97,17 +97,17 @@ in
           {
             definition = ./vms/win11.xml;
             active = null;
-            restart = null;
+            restart = false;
           }
           {
             definition = ./vms/win11-re.xml;
             active = null;
-            restart = null;
+            restart = false;
           }
           {
             definition = ./vms/win11-x3d.xml;
             active = null;
-            restart = null;
+            restart = false;
           }
         ];
       };
