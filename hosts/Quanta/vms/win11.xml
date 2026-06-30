@@ -59,7 +59,7 @@
       </stimer>
       <reset state="on"/>
       <reenlightenment state="on"/>
-      <vendor_id state="on" value="AuthenticAMD"/>
+      <vendor_id state="on" value="Microsoft Hv"/>
       <frequencies state="on"/>
       <tlbflush state="on"/>
       <ipi state="on"/>
