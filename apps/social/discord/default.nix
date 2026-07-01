@@ -18,7 +18,6 @@ in
       ".config/discord"
     ];
 
-    # User-level Home Manager configuration
     hm.imports = [
       ({ config, pkgs, ... }: {
         imports = [
@@ -56,7 +55,6 @@ in
               loadingQuotes.enable = true;
               messageLinkEmbeds.enable = true;
               noBlockedMessages.enable = true;
-              #normalizeMessageLinks.enable = true;
               replaceGoogleSearch = {
                 enable = true;
                 customEngineName = "DuckDuckGo";
@@ -79,10 +77,9 @@ in
           extraConfig.plugins = {
             AccountPanelServerProfile.enabled = false;
             MyServerRoles.enabled = true;
-            # https://github.com/ScattrdBlade/bigFileUpload/blob/main/index.tsx#L800
             BigFileUpload = {
               enabled = true;
-              fileUploader = "Catbox"; # Catbox, Litterbox, 0x0.st, tmpfiles.org, GoFile, buzzheavier.com, temp.sh, filebin.net, Custom
+              fileUploader = "Catbox";
               autoSend = "No";
               autoFormat = "Yes";
               dragAndDropEnabled = "Yes";

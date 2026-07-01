@@ -8,12 +8,10 @@ let
     WPCTL=${lib.getExe' pkgs.wireplumber "wpctl"}
     GREP=${lib.getExe pkgs.gnugrep}
 
-    # Wait for device to appear
     until $WPCTL status | $GREP -q "FIIO KA15 Analog Stereo"; do
       sleep 1
     done
 
-    # Extract ID — brittle, parses UI text
     SINK_ID=$($WPCTL status | \
       $GREP -A 2 "FIIO KA15 Analog Stereo" | \
       $GREP -oP '\d+(?=\.)' | \
@@ -51,7 +49,6 @@ in
     virtualisation = {
       base = {
         enable = true;
-        #networkIsolation.allowedHostTCPPorts = [ 3000 ];
       };
 
       desktop = {
@@ -89,6 +86,12 @@ in
       gpuSwitch = {
         enable = true;
         defaultMode = "host";
+      };
+
+      sambaShare = {
+        enable = true;
+        dropPath = "/mnt/storage/VMs/share/drop";
+        exchangePath = "/mnt/storage/VMs/share/exchange";
       };
 
       nixvirt = {
@@ -155,7 +158,7 @@ in
       gaming = {
         enable = true;
         steam.enable = true;
-        x3dCacheBias = true;   # 9950X3D: bias to V-Cache CCD during gameplay
+        x3dCacheBias = true;
       };
       llama-cpp = {
         enable = true;
@@ -200,11 +203,30 @@ in
     fileSystems = [ "/" ];
   };
 
+  fileSystems."/var/lib/samba" = {
+    device = "/mnt/storage/samba";
+    fsType = "none";
+    options = [ "bind" "nofail" ];
+    depends = [ "/mnt/storage" ];
+  };
+
+  systemd.services.samba-statedir-init = {
+    description = "Create the /mnt/storage bind source for /var/lib/samba";
+    after = [ "mnt-storage.mount" ];
+    before = [ "var-lib-samba.mount" ];
+    requiredBy = [ "var-lib-samba.mount" ];
+    unitConfig.DefaultDependencies = false;
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.coreutils}/bin/mkdir -p /mnt/storage/samba";
+    };
+  };
+
   systemd.services.NetworkManager-wait-online.enable = lib.mkDefault false;
 
   services.udev.extraRules = ''
-    # Gen5/high-end NVMe drives already handle deep queues well; avoid extra
-    # software scheduling overhead on the host and VM storage drives.
+    # High-end NVMe controllers (Gen4 SN850X, Gen5 9100 Pro/MP700 Pro) already
+    # handle deep queues internally; avoid extra software scheduling overhead.
     ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none"
 
     # Disable wakeup on PCIe ports

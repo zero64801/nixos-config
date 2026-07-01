@@ -39,12 +39,10 @@ in
       generateCompletions = false;
 
       shellAbbrs = {
-        # Nix commands
         snw = rebuildCommand;
         nsh = "nix shell nixpkgs#";
         nrn = "nix run nixpkgs#";
 
-        # Git commands
         gaa = "git add --all";
         ga = "git add";
         gc = "git commit";
@@ -63,7 +61,6 @@ in
         glg = "git log --graph --abbrev-commit --decorate --format=format:'%C(bold blue)%h%C(reset) - %C(bold green)(%ar)%C(reset) %C(white)%s%C(reset) %C(dim white)- %an%C(reset)%C(auto)%d%C(reset)' --all";
         gl = "git log";
 
-        # Systemctl commands
         sy = "systemctl";
         sya = "systemctl start";
         syo = "systemctl stop";
@@ -94,7 +91,6 @@ in
           bind --mode insert alt-f 'fzf-file-widget'
         end
 
-        # Hydro prompt configuration
         set -g hydro_symbol_start ""
         set -U hydro_symbol_git_dirty "*"
         set -U fish_prompt_pwd_dir_length 0
@@ -110,7 +106,6 @@ in
         end
         update_nshell_indicator
 
-        # Get store path for a given executable
         function store_path -a package_name
           which $package_name 2>/dev/null | path resolve | read -l package_path
           if test -n "$package_path"
@@ -118,7 +113,6 @@ in
           end
         end
 
-        # Hot-attach/detach Flydigi Vader (XInput mode = 045e:028e) to a VM.
         function __pad_device_xml
           printf '%s\n' '<hostdev mode="subsystem" type="usb" managed="yes">
             <source><vendor id="0x045e"/><product id="0x028e"/></source>

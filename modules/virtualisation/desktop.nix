@@ -119,9 +119,6 @@ in
       environment.systemPackages = [ pkgs.looking-glass-client ];
 
       hm.xdg.configFile."looking-glass/client.ini".text =
-        # Note: do NOT persist ~/.config/looking-glass — bind mount would
-        # hide this HM-managed client.ini. The LG client's runtime files
-        # (imgui.ini, presets/) are trivial UI prefs that regenerate.
         let
           baseConfig = {
             app = {
@@ -159,10 +156,6 @@ in
     })
 
     {
-      # Wrap user-provided hook paths via writeShellScript so they're
-      # always executable regardless of the source file's mode bits.
-      # libvirt silently skips non-executable hooks ("Non-executable
-      # hook script" warning), which is a nasty failure mode.
       virtualisation.libvirtd.hooks.qemu = mkIf (cfg.hooks != { }) (
         lib.mapAttrs (name: src:
           pkgs.writeShellScript "libvirt-hook-${name}" (builtins.readFile src)

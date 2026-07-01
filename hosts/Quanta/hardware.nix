@@ -52,7 +52,6 @@
 
       kernelModules = [ "amdgpu" ];
 
-      # Required for btrfs rollback
       systemd.enable = true;
     };
 

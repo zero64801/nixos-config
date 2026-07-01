@@ -30,8 +30,6 @@
     '';
   };
 
-  # Channels are disabled in nix.nix but stale dirs trigger warnings on each
-  # rebuild. Remove them once on activation if present.
   system.activationScripts.purge-stale-channels = {
     text = ''
       ${pkgs.coreutils}/bin/rm -rf \

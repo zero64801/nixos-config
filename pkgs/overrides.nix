@@ -1,6 +1,3 @@
-# Each .nix file in ./overrides/ receives { inputs, final, prev } and returns
-# an attrset of package overrides. Patches can be referenced from ../patches/.
-
 inputs: final: prev:
 let
   inherit (prev) lib;

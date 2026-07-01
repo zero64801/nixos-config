@@ -5,11 +5,9 @@ let
   storageDev = "/dev/disk/by-id/nvme-WD_BLACK_SN850X_4000GB_25226M800213";
   storageMount = "/mnt/storage";
 
-  tachyonDev = "/dev/disk/by-id/nvme-Samsung_SSD_9100_PRO_8TB_S7YHNJ0L101775M";
-  tachyonMount = "/mnt/tachyon";
+  vaultDev = "/dev/disk/by-id/nvme-Samsung_SSD_9100_PRO_8TB_S7YHNJ0L101775M";
+  vaultMount = "/mnt/vault";
 
-  # FIDO2-only LUKS2 + btrfs initialiser. Prompts before wiping a non-blank
-  # disk, and prompts whether to mount at the end.
   mkDiskInit = { name, device, mount, cryptName, label, partLabel }:
     pkgs.writeShellApplication {
       name = "${name}-init";
@@ -36,8 +34,6 @@ let
         udevadm settle
         [ -e "$PART" ] || { echo "${name}-init: $PART did not appear" >&2; exit 1; }
 
-        # luksFormat needs an initial key; use a throwaway, enroll fido2, then
-        # drop the throwaway so fido2 is the only keyslot.
         KEY=$(mktemp)
         trap 'rm -f "$KEY"' EXIT
         head -c 512 /dev/urandom > "$KEY"
@@ -68,9 +64,9 @@ let
       '';
     };
 
-  tachyonInit = mkDiskInit {
-    name = "tachyon"; device = tachyonDev; mount = tachyonMount;
-    cryptName = "crypttachyon"; label = "tachyon"; partLabel = "tachyon_luks";
+  vaultInit = mkDiskInit {
+    name = "vault"; device = vaultDev; mount = vaultMount;
+    cryptName = "cryptvault"; label = "vault"; partLabel = "vault_luks";
   };
   storageInit = mkDiskInit {
     name = "storage"; device = storageDev; mount = storageMount;
@@ -198,19 +194,19 @@ in
       };
     };
 
-    tachyon = {
+    vault = {
       type = "disk";
-      device = tachyonDev;
+      device = vaultDev;
       destroy = false;
       content = {
         type = "gpt";
         partitions = {
           luks = {
             size = "100%";
-            label = "tachyon_luks";
+            label = "vault_luks";
             content = {
               type = "luks";
-              name = "crypttachyon";
+              name = "cryptvault";
               extraFormatArgs = [ "--type luks2" ];
               settings = {
                 allowDiscards = true;
@@ -218,8 +214,8 @@ in
               };
               content = {
                 type = "btrfs";
-                extraArgs = [ "-L tachyon" ];
-                mountpoint = tachyonMount;
+                extraArgs = [ "-L vault" ];
+                mountpoint = vaultMount;
                 mountOptions = [ "noatime" "nodiratime" "compress=zstd" "ssd" "nofail" ];
               };
             };
@@ -229,7 +225,7 @@ in
     };
   };
 
-  environment.systemPackages = [ tachyonInit storageInit ];
+  environment.systemPackages = [ vaultInit storageInit ];
 
   fileSystems = {
     "/persist/local".neededForBoot = true;
@@ -238,6 +234,6 @@ in
 
   systemd.tmpfiles.rules = [
     "d ${storageMount} 0755 ${user} users -"
-    "d ${tachyonMount} 0755 ${user} users -"
+    "d ${vaultMount} 0755 ${user} users -"
   ];
 }

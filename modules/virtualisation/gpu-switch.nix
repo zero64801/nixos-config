@@ -7,13 +7,15 @@ let
   cfg = config.nyx.virtualisation.gpuSwitch;
   vfioCfg = config.nyx.virtualisation.desktop.vfio;
 
-  # nvidia-smi, only when an nvidia host driver is actually configured. Used to
-  # enable persistence mode after binding the host driver: Blackwell/50-series
-  # cards spin fans at idle unless a driver keeps the GPU initialized, and
-  # persistence mode provides exactly that with no client attached. The flag
-  # lives with the loaded module, so rmmod (on the way to vfio) wipes it
-  # automatically — no conflict with passthrough. (lib.optionalString is lazy,
-  # so non-nvidia hosts never pull the driver package into their closure.)
+  /*
+  nvidia-smi, only when an nvidia host driver is actually configured. Used to
+  enable persistence mode after binding the host driver: Blackwell/50-series
+  cards spin fans at idle unless a driver keeps the GPU initialized, and
+  persistence mode provides exactly that with no client attached. The flag
+  lives with the loaded module, so rmmod (on the way to vfio) wipes it
+  automatically — no conflict with passthrough. (lib.optionalString is lazy,
+  so non-nvidia hosts never pull the driver package into their closure.)
+  */
   nvidiaEnabled = lib.elem "nvidia" config.services.xserver.videoDrivers;
   nvidiaSmi = lib.optionalString nvidiaEnabled "${config.hardware.nvidia.package.bin}/bin/nvidia-smi";
 
@@ -21,15 +23,18 @@ let
     name = "gpu-switch";
 
     runtimeInputs = with pkgs; [
-      bash      # unbind_device runs `timeout 5 bash -c …`; without it the
-                # per-device sysfs unbind fails and falls back to rmmod, which
-                # can't detach the shared snd_hda_intel audio function.
+      /*
+      unbind_device runs `timeout 5 bash -c …`; without it the per-device
+      sysfs unbind fails and falls back to rmmod, which can't detach the
+      shared snd_hda_intel audio function.
+      */
+      bash
       kmod
       pciutils
       libvirt
       coreutils
       gnugrep
-      gnused      # show_status pipes lspci through sed
+      gnused # show_status pipes lspci through sed
       gawk
       psmisc
     ];
@@ -195,18 +200,25 @@ let
       # both the card and its associated render node, so the subsequent
       # unbind completes normally. We also kill any remaining userspace
       # holding /dev/nvidia* (nvidia-smi leftovers, persistenced, etc.).
+      # Only acts on a card if something is actually holding its device node
+      # open (fuser check) — sending the remove uevent unconditionally made
+      # unrelated apps flash even when the compositor had nothing to release.
       release_compositor_holds() {
-        local addr card
+        local addr card devnode held=0
         for addr in "$@"; do
           if [ -d "/sys/bus/pci/devices/$addr/drm" ]; then
             for card in /sys/bus/pci/devices/"$addr"/drm/card*; do
-              if [ -e "$card/uevent" ]; then
-                echo "  notify remove $(basename "$card") ($addr)"
+              [ -e "$card/uevent" ] || continue
+              devnode="/dev/dri/$(basename "$card")"
+              if [ -e "$devnode" ] && fuser -s "$devnode" 2>/dev/null; then
+                echo "  notify remove $(basename "$card") ($addr) — held by a compositor"
                 echo -n remove > "$card/uevent" 2>/dev/null || true
+                held=1
               fi
             done
           fi
         done
+        [ "$held" -eq 1 ] || return 0
         sleep 0.5
         local dev
         for dev in /dev/nvidia0 /dev/nvidia1 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-modeset; do
@@ -550,11 +562,13 @@ in
       systemd.services.libvirtd-config.restartTriggers = [ libvirtGpuVfioHook ];
     })
 
-    # When the GPU rests on the host nvidia driver at boot (defaultMode=host),
-    # it binds via normal driver autoprobe — not through `gpu-switch host` — so
-    # nothing sets persistence mode and the Blackwell idle fan would spin. This
-    # oneshot enables it at boot. It is a no-op if the card is on vfio (nvidia-
-    # smi finds no device), so it never interferes with passthrough boots.
+    /*
+    When the GPU rests on the host nvidia driver at boot (defaultMode=host),
+    it binds via normal driver autoprobe — not through `gpu-switch host` — so
+    nothing sets persistence mode and the Blackwell idle fan would spin. This
+    oneshot enables it at boot. It is a no-op if the card is on vfio (nvidia-
+    smi finds no device), so it never interferes with passthrough boots.
+    */
     (mkIf (nvidiaEnabled && cfg.defaultMode == "host") {
       systemd.services.nvidia-idle-persistence = {
         description = "Enable NVIDIA persistence mode so the idle GPU keeps zero-RPM fan (Blackwell idle-fan workaround)";

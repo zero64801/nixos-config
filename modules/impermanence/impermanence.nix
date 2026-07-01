@@ -58,20 +58,18 @@ let
   allFiles       = (persistenceConfig.files or [ ])       ++ presetFiles;
   allUsers       = persistenceConfig.users or { };
 
-  # ---------------------------------------------------------------------------
-  # masterPersistence — used only by the nyx-persist CLI tool.
-  #
-  # Built exclusively from direct source inputs rather than reading back from
-  # config.environment.persistence (which this module writes to). Reading our
-  # own output during the NixOS module fixed-point evaluation causes the entire
-  # config block to fail to apply, breaking both rollback and bind mounts.
-  # ---------------------------------------------------------------------------
+  /*
+  masterPersistence — used only by the nyx-persist CLI tool.
 
-  # Resolve a path that may be relative (user-home-relative) to absolute.
+  Built exclusively from direct source inputs rather than reading back from
+  config.environment.persistence (which this module writes to). Reading our
+  own output during the NixOS module fixed-point evaluation causes the entire
+  config block to fail to apply, breaking both rollback and bind mounts.
+  */
+
   resolvePath = homeDir: p:
     if lib.hasPrefix "/" p then p else "${homeDir}/${p}";
 
-  # Paths from persist.json + presets (what this module feeds into environment.persistence directly).
   localPersistence =
     [ { type = "directories"; paths = allDirectories; }
       { type = "files";       paths = allFiles; }
@@ -86,9 +84,6 @@ let
       ]
     ) (builtins.attrNames allUsers);
 
-  #    Paths from nyx.persistence module (if it is loaded alongside this one).
-  #    Accessing config.nyx.persistence is safe — it has no dependency on
-  #    config.environment.persistence.
   nyxPersistence =
     if config.nyx ? persistence then
       let
@@ -103,8 +98,6 @@ let
       ]
     else [];
 
-  #    Paths from Home Manager persistence modules.
-  #    config.home-manager is also safe — independent of environment.persistence.
   hmPersistence =
     if (config ? home-manager) then
       lib.concatMap (user:
@@ -119,10 +112,6 @@ let
       ) (builtins.attrNames config.home-manager.users)
     else [];
 
-  # Normalize a path entry to a plain string. Some sources (the
-  # environment.persistence schema, nyx.persistence) accept attrsets
-  # like `{ directory = "/path"; user = ...; mode = ...; }`. The CLI
-  # operates on path strings, so unwrap any attrset to its path field.
   extractPath = x:
     if builtins.isString x then x
     else if builtins.isAttrs x then (x.directory or x.file or null)

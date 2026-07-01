@@ -42,9 +42,11 @@ in
           switch = "${scxCfg.package}/bin/scx-switch";
           scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
 
-          # X3D writes go directly — the sysfs file is chgrp'd to gamemode
-          # group at boot (see systemd.services.x3d-cache-bias-perms below)
-          # so no privilege escalation is needed for the toggle.
+          /*
+          X3D writes go directly — the sysfs file is chgrp'd to gamemode
+          group at boot (see systemd.services.x3d-cache-bias-perms below)
+          so no privilege escalation is needed for the toggle.
+          */
           x3dStart = lib.optionalString cfg.x3dCacheBias ''
             for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do
               echo cache > "$f" 2>/dev/null || true
@@ -56,8 +58,10 @@ in
             done
           '';
 
-          # SCX switch still needs root (calls systemctl), so wrap only that
-          # part in pkexec — keeps the X3D toggle privilege-free.
+          /*
+          SCX switch still needs root (calls systemctl), so wrap only that
+          part in pkexec — keeps the X3D toggle privilege-free.
+          */
           startScript = pkgs.writeShellScript "gamemode-start" ''
             ${x3dStart}
             ${lib.optionalString scxEnabled
@@ -75,9 +79,6 @@ in
         };
       };
 
-      # Make amd_x3d_mode writable by the gamemode group so the X3D toggle
-      # in the gamemode hook runs without pkexec. Only set up if x3dCacheBias
-      # is enabled. The glob handles any platform device id.
       systemd.services.x3d-cache-bias-perms = lib.mkIf cfg.x3dCacheBias {
         description = "Allow gamemode group to write amd_x3d_mode";
         wantedBy = [ "multi-user.target" ];

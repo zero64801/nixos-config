@@ -184,8 +184,6 @@ in
       };
     };
 
-    # Modern auth state is split between cookies and origin storage
-    # (localStorage/IndexedDB/service workers), so cookies alone lose sessions.
     nyx.persistence.home.directories = [
       "${profilePath}/storage"
     ];
@@ -194,8 +192,6 @@ in
 
   }
   (lib.mkIf (config.nyx.stylix.enable or false) {
-    # Tell stylix which zen-browser profile to apply themes to.
-    # Matches the `profiles.default` attrset key set above.
     hm.stylix.targets.zen-browser.profileNames = [ "default" ];
   })
   ]);

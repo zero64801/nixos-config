@@ -40,7 +40,6 @@ in
 
   config = mkIf (config.nyx.impermanence.enable or false) {
     environment.persistence.${persistentPath} = {
-      # Empty lists are fine — no need to guard with mkIf.
       directories = cfg.directories;
       files       = cfg.files;
 

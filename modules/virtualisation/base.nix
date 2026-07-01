@@ -140,32 +140,31 @@ in
         "/dev/dri/renderD128"
       ];
 
-      # If isolation is OFF, replicate libvirt's "trust the bridge" default.
-      # If ON, virbr0 is NOT trusted; the explicit firewall rules below
-      # provide DHCP/DNS access only and block everything else.
       networking.firewall.trustedInterfaces =
         lib.optional (!cfg.networkIsolation.enable || cfg.networkIsolation.allowHost) cfg.networkIsolation.bridge;
 
       networking.firewall.allowedTCPPorts = mkIf cfg.openSpicePort [ 5900 ];
 
-      # ── Network isolation: keep VM internet, block VM → LAN/host ──
-      #
-      # INPUT side (VM → host services):
-      # nixos-fw default-drops anything from virbr0 (since we removed it
-      # from trustedInterfaces). Just punch holes for DHCP + DNS so the
-      # libvirt dnsmasq still works. Anything else from VM to host gets
-      # default-dropped — exactly what we want.
+      /*
+      INPUT side (VM -> host services):
+      nixos-fw default-drops anything from virbr0 (since we removed it
+      from trustedInterfaces). Just punch holes for DHCP + DNS so the
+      libvirt dnsmasq still works. Anything else from VM to host gets
+      default-dropped — exactly what we want.
+      */
       networking.firewall.interfaces.${cfg.networkIsolation.bridge} = mkIf cfg.networkIsolation.enable {
         allowedUDPPorts = [ 53 67 ] ++ cfg.networkIsolation.allowedHostUDPPorts;
         allowedTCPPorts = [ 53 ] ++ cfg.networkIsolation.allowedHostTCPPorts;
       };
 
-      # FORWARD side (VM → LAN, VM → DNAT'd host services):
-      # nixos-fw forward chain has a built-in `ct status dnat accept`
-      # that whitelists ALL port-forwarded traffic — so VMs can reach
-      # any container/netns service via DNAT. To beat it, install our
-      # drop rules in a SEPARATE nftables table at HIGHER priority
-      # (lower number) so they run BEFORE nixos-fw's accept.
+      /*
+      FORWARD side (VM -> LAN, VM -> DNAT'd host services):
+      nixos-fw forward chain has a built-in `ct status dnat accept`
+      that whitelists ALL port-forwarded traffic — so VMs can reach
+      any container/netns service via DNAT. To beat it, install our
+      drop rules in a SEPARATE nftables table at HIGHER priority
+      (lower number) so they run BEFORE nixos-fw's accept.
+      */
       networking.nftables.enable = mkIf cfg.networkIsolation.enable true;
 
       networking.nftables.tables.vm-isolation = mkIf cfg.networkIsolation.enable {
@@ -191,13 +190,15 @@ in
         ${pkgs.libvirt}/bin/virsh net-start default || true
       '';
 
-      # libvirtd-config is Type=oneshot which exits immediately, becoming
-      # `inactive (dead)`. NixOS's switch-to-configuration only restarts
-      # ACTIVE units when restartTriggers change, so inactive oneshots
-      # are skipped — meaning hook/vhostUserPackages edits never apply.
-      #
-      # Fix: RemainAfterExit=yes keeps the unit "active" after success,
-      # so restartTriggers actually fire on rebuild.
+      /*
+      libvirtd-config is Type=oneshot which exits immediately, becoming
+      `inactive (dead)`. NixOS's switch-to-configuration only restarts
+      ACTIVE units when restartTriggers change, so inactive oneshots
+      are skipped — meaning hook/vhostUserPackages edits never apply.
+
+      Fix: RemainAfterExit=yes keeps the unit "active" after success,
+      so restartTriggers actually fire on rebuild.
+      */
       systemd.services.libvirtd-config = {
         serviceConfig.RemainAfterExit = true;
         restartTriggers =

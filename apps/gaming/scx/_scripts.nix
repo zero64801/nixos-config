@@ -27,8 +27,6 @@ let
         echo "Schedulers disabled"
         ;;
       host)
-        # Stop any transient override and bring back the system-managed
-        # scx.service (configured with services.scx.scheduler).
         systemctl stop scx-manual 2>/dev/null || true
         systemctl restart scx
         echo "Restored host scheduler (system scx.service)"
@@ -37,7 +35,6 @@ let
         systemctl stop scx 2>/dev/null || true
         systemctl stop scx-manual 2>/dev/null || true
 
-        # Handle full path or just name
         if [[ "$SCHEDULER" == /* ]]; then
             BINARY="$SCHEDULER"
         else
@@ -67,7 +64,6 @@ let
     pkgs.writers.writePython3Bin "scx-manager"
       {
         libraries = with pkgs.python3Packages; [ pyqt6 ];
-        # Added extra ignores (F401, E302, E701, E305) to allow the original code to build
         flakeIgnore = [ "E501" "F401" "E302" "E701" "E305" ];
       }
       ''

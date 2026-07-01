@@ -42,7 +42,6 @@ writeShellApplication {
     DIM='\x1b[2m'
     NC='\x1b[0m'
 
-    # ── helpers ────────────────────────────────────────────────────────
     die()  { echo -e "''${red}Error:''${reset} $*" >&2; exit 1; }
     info() { echo -e "''${blue}::''${reset} $*"; }
     ok()   { echo -e "''${green}✓''${reset} $*"; }
@@ -53,25 +52,20 @@ writeShellApplication {
       [[ -d "$FLAKE_PATH" ]]  || die "Flake directory not found: $FLAKE_PATH"
       [[ -f "$FLAKE_PATH/flake.lock" ]] || die "No flake.lock found in $FLAKE_PATH"
       [[ -n "$PINS_FILE" ]]   || die "PINS_FILE not set. Set nyx.pinning.pinsFile or NYX_PINS_FILE."
-      # Ensure pins file exists
       if [[ ! -f "$PINS_FILE" ]]; then
         mkdir -p "$(dirname "$PINS_FILE")"
         echo '{"pins":{}}' > "$PINS_FILE"
       fi
     }
 
-    # Read flake.lock and extract info for an input
     lock_file() { cat "$FLAKE_PATH/flake.lock"; }
 
-    # Get all top-level (direct) input names from flake.lock
     get_direct_inputs() {
       lock_file | jq -r '.nodes.root.inputs | keys[]' | sort
     }
 
-    # Get the locked node for an input
     get_locked_node() {
       local input="$1"
-      # Resolve indirect references (root.inputs may point to a key that differs)
       local node_key
       node_key=$(lock_file | jq -r --arg i "$input" '.nodes.root.inputs[$i] // empty')
       [[ -n "$node_key" ]] || return 1
@@ -97,7 +91,6 @@ writeShellApplication {
       get_locked_node "$input" | jq -r '.locked.narHash // empty'
     }
 
-    # Reconstruct a flake reference with a specific rev for override
     get_input_ref_with_rev() {
       local input="$1"
       local rev="$2"
@@ -138,12 +131,6 @@ writeShellApplication {
           echo "$ref_str"
           ;;
         tarball)
-          # For tarballs (like lix on forgejo/gitea), construct a new URL
-          # with the target rev substituted in. The locked URL contains
-          # the *current* rev in both the archive path and a `rev=` query
-          # param; we strip the query (narHash/rev) and swap any 40-char
-          # hex in the path with the target rev. Works for github/gitlab/
-          # gitea/forgejo archive endpoints.
           local url base new
           url=$(echo "$node" | jq -r '.locked.url // empty')
           [[ -n "$url" ]] || die "Cannot determine URL for tarball input '$input'"
@@ -165,7 +152,6 @@ writeShellApplication {
       esac
     }
 
-    # ── pins.json operations ───────────────────────────────────────────
     get_pin() {
       local input="$1"
       jq -r --arg i "$input" '.pins[$i] // empty' "$PINS_FILE"
@@ -216,8 +202,6 @@ writeShellApplication {
     get_all_pinned_inputs() {
       jq -r '.pins | keys[]' "$PINS_FILE" 2>/dev/null
     }
-
-    # ── commands ───────────────────────────────────────────────────────
 
     cmd_status() {
       ensure_paths
@@ -278,7 +262,6 @@ writeShellApplication {
       local input="''${1:-}"
       local reason=""
 
-      # Parse flags
       shift || true
       while [[ "$#" -gt 0 ]]; do
         case "$1" in
@@ -288,7 +271,6 @@ writeShellApplication {
       done
 
       if [[ -z "$input" ]]; then
-        # Interactive: pick from non-pinned inputs
         local candidates
         candidates=$(get_direct_inputs | while IFS= read -r i; do
           local pt
@@ -338,7 +320,6 @@ writeShellApplication {
         input=$(get_direct_inputs | fzf --prompt="Select input to pin: " --height=~20) || exit 0
       fi
 
-      # Validate input exists
       get_locked_node "$input" > /dev/null || die "Input '$input' not found in flake.lock"
 
       if [[ -z "$rev" ]]; then
@@ -359,7 +340,6 @@ writeShellApplication {
         read -r reason
       fi
 
-      # Actually lock the input to the specified rev
       info "Locking ''${bold}$input''${reset} to rev ''${cyan}''${rev:0:12}''${reset}..."
       local ref
       ref=$(get_input_ref_with_rev "$input" "$rev")
@@ -411,11 +391,9 @@ writeShellApplication {
         esac
       done
 
-      # Collect pinned/frozen inputs
       local pinned_inputs
       pinned_inputs=$(get_all_pinned_inputs)
 
-      # If specific inputs given, update only those; otherwise update all non-pinned
       if [[ ''${#specific_inputs[@]} -gt 0 ]]; then
         for inp in "''${specific_inputs[@]}"; do
           local pt
@@ -433,7 +411,6 @@ writeShellApplication {
           fi
         done
       else
-        # Build args: update all, then restore pins
         if [[ "$dry_run" == "true" ]]; then
           info "[dry-run] Would update all inputs..."
           if [[ -n "$pinned_inputs" ]]; then
@@ -449,7 +426,6 @@ writeShellApplication {
           return
         fi
 
-        # Save current pinned revisions before update
         declare -A saved_revs
         declare -A saved_types
         if [[ -n "$pinned_inputs" ]]; then
@@ -457,11 +433,6 @@ writeShellApplication {
             local pt
             pt=$(get_pin_type "$pi")
             saved_types["$pi"]="$pt"
-            # Both frozen and pinned use pins.json's rev — it's the
-            # authoritative record. If the lockfile drifted (e.g., the
-            # user ran vanilla `nix flake update` before), we still
-            # restore to the pin's rev, not whatever happens to be
-            # locked now.
             saved_revs["$pi"]=$(get_pin_rev "$pi")
           done <<< "$pinned_inputs"
         fi
@@ -470,7 +441,6 @@ writeShellApplication {
         nix flake update --flake "$FLAKE_PATH"
         ok "Flake inputs updated"
 
-        # Restore pinned/frozen inputs
         if [[ -n "$pinned_inputs" ]]; then
           echo
           info "Restoring pinned/frozen inputs..."
@@ -534,7 +504,6 @@ writeShellApplication {
         echo -e "  Reason:  ''${DIM}(none)''${NC}"
       fi
 
-      # Show current locked rev for comparison
       local locked_rev
       locked_rev=$(get_locked_rev "$input")
       if [[ "$locked_rev" != "$rev" ]]; then
@@ -628,7 +597,6 @@ writeShellApplication {
         echo -e "  ''${DIM}Run 'nyx-pin update' to restore pin, or 'nyx-pin unpin $input' to track latest.''${NC}"
       fi
 
-      # Try to show what latest would be by checking the original URL
       local node
       node=$(get_locked_node "$input")
       local orig_type
@@ -664,7 +632,6 @@ writeShellApplication {
         pin_rev=$(get_pin_rev "$input")
         locked_rev=$(get_locked_rev "$input")
 
-        # Check input still exists in flake.lock
         if [[ -z "$locked_rev" ]]; then
           echo -e "  ''${red}✗''${reset} ''${bold}$input''${reset} — not found in flake.lock (stale pin?)"
           all_ok=false
@@ -703,7 +670,6 @@ writeShellApplication {
         nix flake lock "$FLAKE_PATH" --override-input "$input" "$ref"
         ok "Restored $input"
       else
-        # Restore all pins
         local pinned_inputs
         pinned_inputs=$(get_all_pinned_inputs)
         [[ -n "$pinned_inputs" ]] || die "No inputs are pinned or frozen."
@@ -792,7 +758,6 @@ writeShellApplication {
       exit 0
     }
 
-    # ── main ───────────────────────────────────────────────────────────
     main() {
       if [[ "$#" == '0' ]]; then
         show_help

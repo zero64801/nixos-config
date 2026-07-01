@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Isolate CCD0 (host CPUs 0-7 + SMT siblings 16-23, the X3D V-Cache CCD) for
-# the win11-x3d VM. When the VM starts: shrink host cgroup slices to CCD1
-# only (8-15 + SMT 24-31), so nothing on the host competes with the pinned
-# vCPU threads. When the VM stops: restore host access to all 32 logical CPUs.
 
 set -euo pipefail
 
@@ -12,6 +8,10 @@ STATE_NAME="$3"
 
 [[ "$GUEST_NAME" == "win11-x3d" ]] || exit 0
 
+# Isolate CCD0 (host CPUs 0-7 + SMT siblings 16-23, the X3D V-Cache CCD) for
+# the win11-x3d VM. When the VM starts: shrink host cgroup slices to CCD1
+# only (8-15 + SMT 24-31), so nothing on the host competes with the pinned
+# vCPU threads. When the VM stops: restore host access to all 32 logical CPUs.
 ALL_CPUS="0-31"
 HOST_CPUS="8-15,24-31"
 

@@ -50,8 +50,6 @@ in
 
     hm.programs.ssh = lib.mkIf cfg.github.enable {
       enable = true;
-      # Opt out of HM's deprecated implicit "*" defaults; OpenSSH's built-in
-      # defaults are fine. Add an explicit "*" block here later if needed.
       enableDefaultConfig = false;
       matchBlocks."github.com" = {
         identityFile = cfg.signing.keyFile |> lib.removeSuffix ".pub";

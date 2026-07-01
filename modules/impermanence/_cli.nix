@@ -143,15 +143,12 @@ writeShellApplication {
       exit 0
     }
 
-    # Build a flat list of all absolute paths from persist.json
     get_local_paths() {
-      local type="$1"  # "directories" or "files"
+      local type="$1"
       if [[ ! -f "$PERSIST_JSON_FILE" ]]; then
         return
       fi
-      # Top-level system paths (already absolute)
       jq -r ".''${type}[]?" "$PERSIST_JSON_FILE"
-      # User paths (relative to their home dir)
       jq -r ".users // {} | to_entries[] | .key as \$user | .value.''${type}[]? | if startswith(\"/\") then . else (\"~\" + \$user + \"/\" + .) end" "$PERSIST_JSON_FILE" | while IFS= read -r p; do
         if [[ "$p" == "~"* ]]; then
           local username
@@ -235,7 +232,6 @@ writeShellApplication {
       local is_dir=true
       if [[ -f "$abs_path" ]]; then is_dir=false; fi
 
-      # rsync -aR preserves permissions, ownership and timestamps for the target
       local dest="''${PERSIST_PATH}''${abs_path}"
       if [[ -e "$abs_path" ]]; then
         echo -e "''${blue}Copying $abs_path → $dest...''${reset}"
@@ -245,19 +241,16 @@ writeShellApplication {
         echo -e "''${yellow}Warning: $abs_path does not exist on disk, skipping copy.''${reset}"
       fi
 
-      # --copy-only: seed storage only, leave persist.json untouched
       if [[ "$copy_only" == "true" ]]; then
         echo -e "''${DIM}--copy-only: persist.json was not modified.''${NC}"
         return
       fi
 
-      # Ensure persist.json exists
       if [[ ! -f "$PERSIST_JSON_FILE" ]]; then
         mkdir -p "$(dirname "$PERSIST_JSON_FILE")"
         echo '{"files": [], "directories": []}' > "$PERSIST_JSON_FILE"
       fi
 
-      # Detect if path belongs to a user's home directory
       local owner_user=""
       local owner_home=""
       while IFS=: read -r uname _ uid _ _ uhome _; do
@@ -272,7 +265,6 @@ writeShellApplication {
       tmp_json=$(mktemp)
 
       if [[ -n "$owner_user" ]]; then
-        # Store as relative path under users.<name>
         local rel_path="''${abs_path#"$owner_home/"}"
         if [[ "$is_dir" == "true" ]]; then
           jq --arg u "$owner_user" --arg p "$rel_path" '
@@ -285,7 +277,6 @@ writeShellApplication {
         fi
         echo -e "''${green}Added $rel_path to users.$owner_user in persist.json.''${reset}"
       else
-        # System path — existing behaviour
         if [[ "$is_dir" == "true" ]]; then
           jq --arg p "$abs_path" '.directories = (.directories + [$p] | unique | sort)' "$PERSIST_JSON_FILE" > "$tmp_json"
         else
@@ -309,7 +300,6 @@ writeShellApplication {
       local path="''${1:-}"
       if [[ -z "$path" ]]; then
         if command -v fzf &> /dev/null; then
-          # Include user paths expanded to absolute for display
           path=$(jq -r '
             .directories[],
             .files[],
@@ -333,7 +323,6 @@ writeShellApplication {
       local abs_path
       abs_path=$(realpath -m "$path")
 
-      # Detect if path belongs to a user home
       local owner_user=""
       local owner_home=""
       while IFS=: read -r uname _ uid _ _ uhome _; do

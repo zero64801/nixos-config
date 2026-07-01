@@ -220,8 +220,6 @@ in
         gtk.enable = cfg.targets.gtk.enable;
         qt.enable = cfg.targets.qt.enable;
         fontconfig.enable = cfg.targets.fontconfig.enable;
-        # Stylix's kmscon target still sets services.kmscon.{fonts,extraConfig},
-        # which nixpkgs removed. We don't use kmscon, so disable the target.
         kmscon.enable = false;
       };
 
