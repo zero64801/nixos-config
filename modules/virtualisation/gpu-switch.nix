@@ -136,9 +136,8 @@ let
           return
         fi
         echo "  unbind $addr (was $drv)"
-        # Userspace may be holding the device (pipewire on HDMI audio, or
-        # the nvidia driver during VRAM teardown). Use a timeout so we
-        # don't wedge, and fall back to module removal.
+        # Userspace may be holding the device (pipewire on HDMI audio, nvidia during VRAM teardown).
+        # Use a timeout so we don't wedge, and fall back to module removal.
         if ! timeout 5 bash -c "echo '$addr' > /sys/bus/pci/devices/$addr/driver/unbind"; then
           echo "  unbind $addr timed out — forcing via rmmod $drv"
           case "$drv" in
@@ -192,33 +191,21 @@ let
         done
       }
 
-      # KWin/Wayland compositors hold DRM refs on cards they enumerate,
-      # which wedges PCI unbind in an uninterruptible kernel wait. The
-      # workaround used by Bensikrac/VFIO-Nvidia-dynamic-unbind and
-      # various Level1Techs threads: send a fake `remove` uevent on the
-      # card's sysfs node. KWin watches these and releases its FDs on
-      # both the card and its associated render node, so the subsequent
-      # unbind completes normally. We also kill any remaining userspace
-      # holding /dev/nvidia* (nvidia-smi leftovers, persistenced, etc.).
-      # Only acts on a card if something is actually holding its device node
-      # open (fuser check) — sending the remove uevent unconditionally made
-      # unrelated apps flash even when the compositor had nothing to release.
+      # KWin/Wayland compositors hold DRM refs on cards they enumerate, which wedges PCI unbind in an uninterruptible kernel wait.
+      # Workaround from Bensikrac/VFIO-Nvidia-dynamic-unbind and Level1Techs threads: a fake `remove` uevent makes KWin release its FDs on the card and render node, so the unbind completes.
+      # Also kill any remaining userspace holding /dev/nvidia* (nvidia-smi leftovers, persistenced, etc.).
       release_compositor_holds() {
-        local addr card devnode held=0
+        local addr card
         for addr in "$@"; do
           if [ -d "/sys/bus/pci/devices/$addr/drm" ]; then
             for card in /sys/bus/pci/devices/"$addr"/drm/card*; do
-              [ -e "$card/uevent" ] || continue
-              devnode="/dev/dri/$(basename "$card")"
-              if [ -e "$devnode" ] && fuser -s "$devnode" 2>/dev/null; then
-                echo "  notify remove $(basename "$card") ($addr) — held by a compositor"
+              if [ -e "$card/uevent" ]; then
+                echo "  notify remove $(basename "$card") ($addr)"
                 echo -n remove > "$card/uevent" 2>/dev/null || true
-                held=1
               fi
             done
           fi
         done
-        [ "$held" -eq 1 ] || return 0
         sleep 0.5
         local dev
         for dev in /dev/nvidia0 /dev/nvidia1 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-modeset; do
@@ -238,9 +225,7 @@ let
         local addr
         local -a addrs
         mapfile -t addrs < <(normalized_addrs)
-        # Drop persistence mode first so the nvidia driver de-initializes the
-        # GPU; otherwise it can stay busy and the unbind below burns its 5s
-        # timeout before falling back to rmmod.
+        # Drop persistence mode first so the nvidia driver de-initializes the GPU; otherwise the unbind below burns its 5s timeout before falling back to rmmod.
         if [ -n "$NVIDIA_SMI" ] && lsmod | awk '{print $1}' | grep -qx nvidia; then
           "$NVIDIA_SMI" -pm 0 >/dev/null 2>&1 || true
         fi
@@ -248,12 +233,8 @@ let
         for addr in "''${addrs[@]}"; do
           unbind_device "$addr"
         done
-        # Only rmmod the nvidia stack — it leaves VRAM / firmware state
-        # after unbind that can keep vfio-pci from reclaiming the card.
-        # Don't touch snd_hda_intel (shared with motherboard audio,
-        # rmmod fails when other cards hold it) or amdgpu (almost always
-        # driving the primary display). driver_override pins our target
-        # to vfio-pci regardless.
+        # Only rmmod the nvidia stack — it leaves VRAM/firmware state after unbind that can keep vfio-pci from reclaiming the card.
+        # Don't touch snd_hda_intel (shared with motherboard audio) or amdgpu (driving the primary display); driver_override pins the target to vfio-pci regardless.
         local has_nvidia=0
         for addr in "''${addrs[@]}"; do
           if [ "$(read_sys "/sys/bus/pci/devices/$addr/vendor")" = "0x10de" ]; then
@@ -298,10 +279,8 @@ let
           bind_device "$addr" "$target"
           [ "$target" = "nvidia" ] && bound_nvidia=1
         done
-        # Keep the (Blackwell) GPU initialized at idle so its fan stays at
-        # zero-RPM. Persistence mode is the lightweight "driver attached, no
-        # client" state; it is wiped when the module unloads for vfio, so it
-        # never blocks passthrough.
+        # Keep the (Blackwell) GPU initialized at idle so its fan stays at zero-RPM.
+        # Persistence mode is the lightweight "driver attached, no client" state; it is wiped when the module unloads for vfio, so it never blocks passthrough.
         if [ "$bound_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ]; then
           echo "  enabling nvidia persistence mode (idle zero-RPM fan)"
           "$NVIDIA_SMI" -pm 1 >/dev/null 2>&1 || echo "  (nvidia-smi -pm 1 failed; fan may spin at idle)"
@@ -353,9 +332,7 @@ let
     STATE_NAME="''${3:-}"
 
     # prepare/begin: bind the GPU to vfio-pci before the guest starts.
-    # release/end:   bind it back to the host (nvidia) after the guest stops,
-    #                so the native driver re-enables zero-RPM idle and the fan
-    #                stops (vfio-pci leaves fans at the vBIOS default).
+    # release/end: bind it back to the host driver so zero-RPM idle returns (vfio-pci leaves fans at the vBIOS default).
     case "$HOOK_NAME/$STATE_NAME" in
       prepare/begin|release/end) ;;
       *) exit 0 ;;
@@ -368,9 +345,8 @@ let
     READLINK="${lib.getExe' pkgs.coreutils "readlink"}"
     LOGGER="${lib.getExe' pkgs.util-linux "logger"}"
 
-    # Record which phase fired. libvirt only surfaces hook output when the hook
-    # exits non-zero, so successful release-phase runs were previously invisible
-    # in the journal; this makes them observable via `journalctl -t gpu-vfio-hook`.
+    # Record which phase fired — libvirt only surfaces hook output on non-zero exit, so successful release runs were previously invisible.
+    # Observable via `journalctl -t gpu-vfio-hook`.
     "$LOGGER" -t gpu-vfio-hook "phase=$HOOK_NAME/$STATE_NAME guest=$GUEST_NAME"
 
     normalize_addr() {
@@ -469,9 +445,8 @@ let
       return 0
     }
 
-    # True if ANY configured device is still on vfio-pci. Used to verify the
-    # host-restore actually released the GPU (a leftover vfio-pci bind on the
-    # VGA function is what leaves the fan spinning).
+    # True if ANY configured device is still on vfio-pci.
+    # Used to verify the host-restore actually released the GPU — a leftover vfio-pci bind on the VGA function is what leaves the fan spinning.
     any_device_vfio() {
       local addr
       for addr in "''${PCI_ADDRS[@]}"; do
@@ -508,14 +483,10 @@ let
         fi
         ;;
       release/end)
-        # The guest has stopped; reclaim the card for the host driver so the
-        # fan returns to zero-RPM. We skip gpu-switch's any-vm-running guard:
-        # at release/end the just-stopped domain can still transiently register
-        # as running, which made `gpu-switch host` bail out. The domain_uses
-        # check above already confirmed THIS guest owned the GPU, and only one
-        # VM can hold it, so no other VM is using it — skipping is safe.
-        # Non-fatal: a stop-phase hook can't undo the shutdown, so on failure we
-        # warn rather than error. Output is teed to the journal for visibility.
+        # The guest has stopped; reclaim the card for the host driver so the fan returns to zero-RPM.
+        # We skip gpu-switch's any-vm-running guard: the just-stopped domain can still transiently register as running, which made `gpu-switch host` bail out.
+        # The domain_uses check above already confirmed THIS guest owned the GPU, and only one VM can hold it, so skipping is safe.
+        # Non-fatal: a stop-phase hook can't undo the shutdown, so on failure we warn rather than error; output is teed to the journal.
         "$LOGGER" -t gpu-vfio-hook "release/end: restoring host driver for $GUEST_NAME"
         echo "gpu-vfio-hook: $GUEST_NAME released the passthrough GPU; restoring host driver" >&2
         GPU_SWITCH_SKIP_VM_CHECK=1 "$GPU_SWITCH" host 2>&1 | "$LOGGER" -t gpu-vfio-hook || true
