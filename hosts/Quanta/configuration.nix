@@ -225,7 +225,7 @@ in
   systemd.services.NetworkManager-wait-online.enable = lib.mkDefault false;
 
   services.udev.extraRules = ''
-    # High-end NVMe controllers (Gen4 SN850X, Gen5 9100 Pro/MP700 Pro) handle deep queues internally; skip the software scheduler.
+    # High-end NVMe controllers handle deep queues internally; skip the software scheduler.
     ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none"
 
     # Disable wakeup on PCIe ports
