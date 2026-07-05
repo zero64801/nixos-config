@@ -149,6 +149,7 @@ in
       fish.enable = true;
       git = {
         enable = true;
+        name = "zero64801";
         email = "zero64801@gmail.com";
         signing.enable = true;
         github.enable = true;
