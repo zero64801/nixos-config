@@ -7,21 +7,14 @@
 
 let
   inherit (lib) mkEnableOption mkIf mkOption;
-  inherit (lib.types) nullOr path str;
+  inherit (lib.types) nullOr str;
 
   cfg = config.nyx.pinning;
 
-  pinsFilePath =
-    if cfg.pinsFile != null then
-      cfg.pinsFile
-    else if cfg.flakePath != null then
-      "${cfg.flakePath}/modules/pinning/pins.json"
-    else
-      null;
-
   nyx-pin = pkgs.callPackage ./_cli.nix {
     inherit (cfg) flakePath;
-    inherit pinsFilePath;
+    pinsFilePath = cfg.pinsFile;
+    hostName = config.networking.hostName;
   };
 
 in
@@ -39,19 +32,13 @@ in
       type    = nullOr str;
       default = null;
       description = ''
-        Path to the pins.json file. Defaults to <flakePath>/modules/pinning/pins.json.
+        Path to the pins.json file. Defaults to <flakePath>/hosts/<hostName>/pins.json,
+        committed per host alongside persist.json.
       '';
     };
   };
 
   config = mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.flakePath != null;
-        message   = "nyx.pinning.flakePath must be set when nyx.pinning is enabled.";
-      }
-    ];
-
     environment.systemPackages = [ nyx-pin ];
   };
 }

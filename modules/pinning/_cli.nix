@@ -1,15 +1,16 @@
 {
   writeShellApplication,
-  lib,
   coreutils,
   gnugrep,
   gnused,
   jq,
+  ncurses,
   nix,
   fzf,
   git,
   flakePath ? null,
   pinsFilePath ? null,
+  hostName ? null,
 }:
 
 writeShellApplication {
@@ -20,6 +21,7 @@ writeShellApplication {
     gnugrep
     gnused
     jq
+    ncurses
     nix
     fzf
     git
@@ -29,7 +31,11 @@ writeShellApplication {
     set -euo pipefail
 
     FLAKE_PATH="''${NYX_FLAKE_PATH:-${if flakePath != null then flakePath else ""}}"
+    HOST="''${NYX_HOST:-${if hostName != null then hostName else ""}}"
     PINS_FILE="''${NYX_PINS_FILE:-${if pinsFilePath != null then pinsFilePath else ""}}"
+    if [[ -z "$PINS_FILE" && -n "$FLAKE_PATH" && -n "$HOST" ]]; then
+      PINS_FILE="$FLAKE_PATH/hosts/$HOST/pins.json"
+    fi
 
     red=$(tput setaf 1 || echo "")
     green=$(tput setaf 2 || echo "")
@@ -51,7 +57,7 @@ writeShellApplication {
       [[ -n "$FLAKE_PATH" ]]  || die "FLAKE_PATH not set. Set nyx.pinning.flakePath or NYX_FLAKE_PATH."
       [[ -d "$FLAKE_PATH" ]]  || die "Flake directory not found: $FLAKE_PATH"
       [[ -f "$FLAKE_PATH/flake.lock" ]] || die "No flake.lock found in $FLAKE_PATH"
-      [[ -n "$PINS_FILE" ]]   || die "PINS_FILE not set. Set nyx.pinning.pinsFile or NYX_PINS_FILE."
+      [[ -n "$PINS_FILE" ]]   || die "PINS_FILE not set. Set nyx.pinning.pinsFile, NYX_PINS_FILE, or NYX_HOST."
       if [[ ! -f "$PINS_FILE" ]]; then
         mkdir -p "$(dirname "$PINS_FILE")"
         echo '{"pins":{}}' > "$PINS_FILE"
@@ -61,34 +67,30 @@ writeShellApplication {
     lock_file() { cat "$FLAKE_PATH/flake.lock"; }
 
     get_direct_inputs() {
-      lock_file | jq -r '.nodes.root.inputs | keys[]' | sort
+      lock_file | jq -r '.nodes[.root].inputs | keys[]' | sort
     }
 
     get_locked_node() {
       local input="$1"
       local node_key
-      node_key=$(lock_file | jq -r --arg i "$input" '.nodes.root.inputs[$i] // empty')
+      node_key=$(lock_file | jq -r --arg i "$input" '.nodes[.root].inputs[$i] // empty | strings')
       [[ -n "$node_key" ]] || return 1
       lock_file | jq --arg k "$node_key" '.nodes[$k]'
     }
 
+    # Stale pins: a missing lock node must yield empty output, not kill the script via set -e.
     get_locked_rev() {
       local input="$1"
-      get_locked_node "$input" | jq -r '.locked.rev // empty'
+      get_locked_node "$input" | jq -r '.locked.rev // empty' || true
     }
 
     get_locked_last_modified() {
       local input="$1"
       local ts
-      ts=$(get_locked_node "$input" | jq -r '.locked.lastModified // empty')
+      ts=$(get_locked_node "$input" | jq -r '.locked.lastModified // empty' || true)
       if [[ -n "$ts" ]]; then
         date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$ts"
       fi
-    }
-
-    get_locked_nar_hash() {
-      local input="$1"
-      get_locked_node "$input" | jq -r '.locked.narHash // empty'
     }
 
     get_input_ref_with_rev() {
@@ -259,13 +261,19 @@ writeShellApplication {
 
     cmd_freeze() {
       ensure_paths
-      local input="''${1:-}"
-      local reason=""
+      local input="" reason=""
 
-      shift || true
+      if [[ "$#" -gt 0 && "$1" != -* ]]; then
+        input="$1"
+        shift
+      fi
       while [[ "$#" -gt 0 ]]; do
         case "$1" in
-          -r|--reason) reason="$2"; shift 2 ;;
+          -r|--reason)
+            [[ "$#" -ge 2 ]] || die "--reason requires a value"
+            reason="$2"
+            shift 2
+            ;;
           *) reason="$*"; break ;;
         esac
       done
@@ -291,7 +299,7 @@ writeShellApplication {
 
       if [[ -z "$reason" ]]; then
         echo -n -e "''${DIM}Reason (optional, Enter to skip): ''${NC}"
-        read -r reason
+        read -r reason || true
       fi
 
       set_pin "$input" "frozen" "$rev" "$reason"
@@ -304,17 +312,24 @@ writeShellApplication {
 
     cmd_pin() {
       ensure_paths
-      local input="''${1:-}"
-      local rev="''${2:-}"
-      local reason=""
+      local input="" rev="" reason=""
+      local positional=()
 
-      shift 2 2>/dev/null || shift "$#"
       while [[ "$#" -gt 0 ]]; do
         case "$1" in
-          -r|--reason) reason="$2"; shift 2 ;;
-          *) reason="$*"; break ;;
+          -r|--reason)
+            [[ "$#" -ge 2 ]] || die "--reason requires a value"
+            reason="$2"
+            shift 2
+            ;;
+          *) positional+=("$1"); shift ;;
         esac
       done
+      input="''${positional[0]:-}"
+      rev="''${positional[1]:-}"
+      if [[ -z "$reason" && "''${#positional[@]}" -gt 2 ]]; then
+        reason="''${positional[*]:2}"
+      fi
 
       if [[ -z "$input" ]]; then
         input=$(get_direct_inputs | fzf --prompt="Select input to pin: " --height=~20) || exit 0
@@ -327,7 +342,7 @@ writeShellApplication {
         current_rev=$(get_locked_rev "$input")
         echo -e "Current rev: ''${cyan}''${current_rev:-unknown}''${reset}"
         echo -n -e "Enter revision to pin to (or Enter for current): "
-        read -r rev
+        read -r rev || true
         if [[ -z "$rev" ]]; then
           rev="$current_rev"
         fi
@@ -337,7 +352,7 @@ writeShellApplication {
 
       if [[ -z "$reason" ]]; then
         echo -n -e "''${DIM}Reason (optional, Enter to skip): ''${NC}"
-        read -r reason
+        read -r reason || true
       fi
 
       info "Locking ''${bold}$input''${reset} to rev ''${cyan}''${rev:0:12}''${reset}..."
@@ -449,7 +464,10 @@ writeShellApplication {
             local pin_type="''${saved_types[$pi]:-}"
             if [[ -n "$target_rev" ]]; then
               local ref
-              ref=$(get_input_ref_with_rev "$pi" "$target_rev")
+              if ! ref=$(get_input_ref_with_rev "$pi" "$target_rev"); then
+                warn "Skipping ''${bold}$pi''${reset}: could not construct a locked ref (stale pin?)"
+                continue
+              fi
               nix flake lock "$FLAKE_PATH" --override-input "$pi" "$ref"
               ok "Restored ''${bold}$pi''${reset} ($pin_type @ ''${target_rev:0:12})"
             else
@@ -506,7 +524,10 @@ writeShellApplication {
 
       local locked_rev
       locked_rev=$(get_locked_rev "$input")
-      if [[ "$locked_rev" != "$rev" ]]; then
+      if [[ -z "$locked_rev" ]]; then
+        echo -e "\n  ''${yellow}⚠ Not in flake.lock''${reset} (input removed from the flake?)"
+        echo -e "  ''${DIM}Run 'nyx-pin unpin $input' to drop the stale pin.''${NC}"
+      elif [[ "$locked_rev" != "$rev" ]]; then
         echo -e "\n  ''${yellow}⚠ Lock file rev differs:''${reset} ''${locked_rev:0:12}"
         echo -e "  ''${DIM}Run 'nyx-pin update' to reconcile.''${NC}"
       fi
@@ -530,7 +551,7 @@ writeShellApplication {
 
       if [[ -z "$reason" ]]; then
         echo -n "Enter reason: "
-        read -r reason
+        read -r reason || true
       fi
 
       local tmp
@@ -553,14 +574,21 @@ writeShellApplication {
       echo -e "''${bold}Pin History''${reset}"
       echo -e "''${DIM}Source: git log of $rel_pins''${NC}\n"
 
+      local out
       if [[ -n "$input" ]]; then
-        git -C "$FLAKE_PATH" log --oneline --follow -p -- "$rel_pins" 2>/dev/null | \
-          grep -A5 -B2 "\"$input\"" | head -60 || \
+        out=$(git -C "$FLAKE_PATH" log --oneline --follow -p -- "$rel_pins" 2>/dev/null | grep -A5 -B2 "\"$input\"" | head -60 || true)
+        if [[ -z "$out" ]]; then
           echo -e "''${DIM}No history found for '$input'.''${NC}"
+          return
+        fi
       else
-        git -C "$FLAKE_PATH" log --oneline --follow -- "$rel_pins" 2>/dev/null | head -30 || \
+        out=$(git -C "$FLAKE_PATH" log --oneline --follow -- "$rel_pins" 2>/dev/null | head -30 || true)
+        if [[ -z "$out" ]]; then
           echo -e "''${DIM}No history found for pins file.''${NC}"
+          return
+        fi
       fi
+      echo "$out"
     }
 
     cmd_diff() {
@@ -585,6 +613,11 @@ writeShellApplication {
 
       local locked_rev
       locked_rev=$(get_locked_rev "$input")
+      if [[ -z "$locked_rev" ]]; then
+        warn "'$input' is not in flake.lock (input removed from the flake?)."
+        echo -e "  ''${DIM}Run 'nyx-pin unpin $input' to drop the stale pin.''${NC}"
+        return 1
+      fi
 
       echo -e "''${bold}$input''${reset} ($pin_type)"
       echo -e "  Pinned rev: ''${cyan}''${pinned_rev:0:12}''${reset}"
@@ -681,7 +714,10 @@ writeShellApplication {
           pr=$(get_pin_rev "$pi")
           if [[ -n "$pr" ]]; then
             local ref
-            ref=$(get_input_ref_with_rev "$pi" "$pr")
+            if ! ref=$(get_input_ref_with_rev "$pi" "$pr"); then
+              warn "Skipping ''${bold}$pi''${reset}: could not construct a locked ref (stale pin?)"
+              continue
+            fi
             nix flake lock "$FLAKE_PATH" --override-input "$pi" "$ref"
             ok "Restored ''${bold}$pi''${reset} ($pt @ ''${pr:0:12})"
           fi

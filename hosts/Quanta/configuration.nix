@@ -35,6 +35,8 @@ in
       user = username;
     };
 
+    cli.enable = true;
+
     desktop = {
       enable = true;
       plasma6.enable = true;

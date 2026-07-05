@@ -2,8 +2,6 @@
 
 let
   cfg = config.nyx.apps.fish;
-  inherit (config.networking) hostName;
-  rebuildCommand = "sudo nixos-rebuild --flake ${config.nyx.flakePath}#${hostName}";
 
   rosepine-fzf = [
     "fg:#908caa"
@@ -39,7 +37,8 @@ in
       generateCompletions = false;
 
       shellAbbrs = {
-        snw = rebuildCommand;
+        ns = "nyx switch";
+        nu = "nyx update";
         nsh = "nix shell nixpkgs#";
         nrn = "nix run nixpkgs#";
 
@@ -72,10 +71,6 @@ in
       };
 
       shellAliases = {
-        snow = rebuildCommand;
-        snowboot = "${rebuildCommand} boot";
-        snowfall = "${rebuildCommand} switch";
-        snowtest = "${rebuildCommand} test";
         ls = "eza --icons --group-directories-first -1";
       };
 

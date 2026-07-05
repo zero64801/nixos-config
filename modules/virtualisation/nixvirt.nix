@@ -16,13 +16,37 @@ let
     name = "nixvirt-snapshot-fixup";
     runtimeInputs = [
       config.virtualisation.libvirtd.package
-      pkgs.virt-manager
       pkgs.xmlstarlet
       pkgs.gawk
+      pkgs.coreutils
     ];
     text = ''
       export LIBVIRT_DEFAULT_URI=qemu:///system
+
+      # virt-xml is avoided on purpose: it edits only <source> and leaves stale explicit <backingStore> elements behind.
+      # A stale backingStore left after repointing becomes self-referencing and the VM refuses to boot.
+      redefine_disk() {
+        local dom="$1" target="$2" file="$3" tmpf
+        tmpf=$(mktemp)
+        virsh dumpxml "$dom" --inactive --security-info \
+          | xmlstarlet ed \
+              -u "/domain/devices/disk[target/@dev='$target']/source/@file" -v "$file" \
+              -d "/domain/devices/disk[target/@dev='$target']/backingStore" \
+          > "$tmpf"
+        virsh define "$tmpf" >/dev/null
+        rm -f "$tmpf"
+      }
+
       for dom in $(virsh list --all --name); do
+        if virsh dumpxml "$dom" --inactive 2>/dev/null | grep -q "<backingStore"; then
+          echo "$dom: stripping stale explicit backingStore element(s)"
+          tmpf=$(mktemp)
+          virsh dumpxml "$dom" --inactive --security-info \
+            | xmlstarlet ed -d "/domain/devices/disk/backingStore" > "$tmpf"
+          virsh define "$tmpf" >/dev/null
+          rm -f "$tmpf"
+        fi
+
         cur=$(virsh snapshot-current --name "$dom" 2>/dev/null) || continue
         [ -n "$cur" ] || continue
         virsh snapshot-dumpxml "$dom" "$cur" \
@@ -33,7 +57,7 @@ let
               active=$(virsh domblklist "$dom" | awk -v t="$target" '$1 == t { print $2 }')
               if [ "$active" != "$file" ]; then
                 echo "$dom: repointing $target -> $file (snapshot $cur)"
-                virt-xml "$dom" --edit target="$target" --disk path="$file"
+                redefine_disk "$dom" "$target" "$file"
               fi
             done
       done
@@ -44,7 +68,6 @@ let
     name = "nixvirt-snapshot";
     runtimeInputs = [
       config.virtualisation.libvirtd.package
-      pkgs.virt-manager
       pkgs.qemu
       pkgs.xmlstarlet
       pkgs.coreutils
@@ -83,6 +106,20 @@ let
           y|Y|yes|YES) return 0 ;;
           *) echo "aborted; nothing was changed."; exit 0 ;;
         esac
+      }
+
+      # virt-xml is avoided on purpose: it edits only <source> and leaves stale explicit <backingStore> elements behind.
+      # A stale backingStore left after repointing becomes self-referencing and the VM refuses to boot.
+      repoint_disk() {
+        local tdev="$1" newpath="$2" tmpf
+        tmpf=$(mktemp)
+        virsh dumpxml "$dom" --inactive --security-info \
+          | xmlstarlet ed \
+              -u "/domain/devices/disk[target/@dev='$tdev']/source/@file" -v "$newpath" \
+              -d "/domain/devices/disk[target/@dev='$tdev']/backingStore" \
+          > "$tmpf"
+        virsh define "$tmpf" >/dev/null
+        rm -f "$tmpf"
       }
 
       assume_yes=0
@@ -399,10 +436,10 @@ let
             discard "$overlay"
             qemu-img create -f qcow2 -b "$base" -F qcow2 "$overlay" >/dev/null
             echo "$dom: $tdev fresh overlay $overlay (backed by $base)"
-            virt-xml "$dom" --edit "target=$tdev" --disk "path=$overlay"
+            repoint_disk "$tdev" "$overlay"
           else
             [ "$overlay" != "$base" ] && discard "$overlay"
-            virt-xml "$dom" --edit "target=$tdev" --disk "path=$base"
+            repoint_disk "$tdev" "$base"
           fi
         done
 
@@ -586,7 +623,7 @@ let
             fi
             rm -f "$overlay"
             echo "$dom: $target source -> $base"
-            virt-xml "$dom" --edit "target=$target" --disk "path=$base"
+            repoint_disk "$target" "$base"
           done
 
           for row in "''${plan[@]}"; do
@@ -597,7 +634,7 @@ let
               continue
             fi
             echo "$dom: leaving $target overlay in place (in use by the running VM): $overlay"
-            virt-xml "$dom" --edit "target=$target" --disk "path=$base"
+            repoint_disk "$target" "$base"
           done
         else
           for row in "''${plan[@]}"; do
@@ -616,7 +653,7 @@ let
             fi
 
             echo "$dom: $target source -> $base"
-            virt-xml "$dom" --edit "target=$target" --disk "path=$base"
+            repoint_disk "$target" "$base"
           done
         fi
 
