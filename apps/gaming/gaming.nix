@@ -22,10 +22,6 @@ in
     x3dCacheBias = lib.mkEnableOption ''
       Toggle amd_x3d_vcache driver to "cache" mode while a game is running
       via gamemode start/end hooks (and revert to "frequency" on exit).
-
-      Only meaningful on dual-CCD X3D parts (7900X3D, 7950X3D, 9900X3D,
-      9950X3D). Single-CCD X3D parts and non-X3D CPUs don't expose the
-      driver and this option is a no-op there.
     '';
   };
 
@@ -43,9 +39,9 @@ in
           scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
 
           /*
-          X3D writes go directly — the sysfs file is chgrp'd to gamemode
-          group at boot (see systemd.services.x3d-cache-bias-perms below)
-          so no privilege escalation is needed for the toggle.
+          X3D writes go directly — a udev rule chgrps the sysfs file to the
+          gamemode group when the driver binds, so no privilege escalation
+          is needed for the toggle.
           */
           x3dStart = lib.optionalString cfg.x3dCacheBias ''
             for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do
@@ -79,22 +75,9 @@ in
         };
       };
 
-      systemd.services.x3d-cache-bias-perms = lib.mkIf cfg.x3dCacheBias {
-        description = "Allow gamemode group to write amd_x3d_mode";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "systemd-modules-load.service" ];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''
-          shopt -s nullglob
-          for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do
-            ${pkgs.coreutils}/bin/chgrp gamemode "$f" || true
-            ${pkgs.coreutils}/bin/chmod g+w "$f" || true
-          done
-        '';
-      };
+      services.udev.extraRules = lib.mkIf cfg.x3dCacheBias ''
+        ACTION=="add|bind", DRIVER=="amd_x3d_vcache", RUN+="${pkgs.runtimeShell} -c '${pkgs.coreutils}/bin/chgrp gamemode /sys%p/amd_x3d_mode; ${pkgs.coreutils}/bin/chmod g+w /sys%p/amd_x3d_mode'"
+      '';
 
       programs.steam = lib.mkIf cfg.steam.enable {
         enable = true;

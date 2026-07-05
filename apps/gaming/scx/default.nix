@@ -24,6 +24,16 @@ in
       '';
     };
 
+    hostSchedulerFlags = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Extra flags passed to hostScheduler by services.scx. Flagless bpfland
+        matches the CachyOS auto profile; --preferred-idle-scan is available
+        here but no distro ships it by default.
+      '';
+    };
+
     gameScheduler = lib.mkOption {
       type = lib.types.str;
       default = "scx_lavd";
@@ -54,6 +64,7 @@ in
     services.scx = {
       enable = true;
       scheduler = cfg.hostScheduler;
+      extraArgs = cfg.hostSchedulerFlags;
     };
 
     security.polkit.extraConfig = ''

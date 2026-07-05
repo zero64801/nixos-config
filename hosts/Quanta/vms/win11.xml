@@ -9,6 +9,7 @@
   <memory unit="KiB">33554432</memory>
   <currentMemory unit="KiB">33554432</currentMemory>
   <memoryBacking>
+    <hugepages/>
     <source type="memfd"/>
     <allocation mode="immediate"/>
   </memoryBacking>

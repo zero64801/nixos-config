@@ -11,6 +11,10 @@ let
 
   cfg = config.nyx.virtualisation.desktop;
   gpuSwitchCfg = config.nyx.virtualisation.gpuSwitch;
+
+  hugepagesHook = pkgs.writeShellScript "libvirt-hook-hugepages" (
+    builtins.readFile ./_hugepages-hook.sh
+  );
 in
 {
   options.nyx.virtualisation.desktop = {
@@ -156,16 +160,18 @@ in
     })
 
     {
-      virtualisation.libvirtd.hooks.qemu = mkIf (cfg.hooks != { }) (
-        lib.mapAttrs (name: src:
+      virtualisation.libvirtd.hooks.qemu =
+        {
+          "10-hugepages" = hugepagesHook;
+        }
+        // lib.mapAttrs (name: src:
           pkgs.writeShellScript "libvirt-hook-${name}" (builtins.readFile src)
-        ) cfg.hooks
-      );
+        ) cfg.hooks;
       virtualisation.spiceUSBRedirection.enable = true;
       environment.systemPackages = [ pkgs.spice-gtk ];
 
       systemd.services.libvirtd-config.restartTriggers =
-        mkIf (cfg.hooks != { }) (lib.attrValues cfg.hooks);
+        [ hugepagesHook ] ++ lib.attrValues cfg.hooks;
     }
   ]);
 }

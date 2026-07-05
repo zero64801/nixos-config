@@ -52,7 +52,7 @@ let
                     $BINARY $FLAGS
         ;;
       *)
-        echo "Usage: scx-switch [apply|disable] <scheduler> [flags]"
+        echo "Usage: scx-switch [apply|host|disable] <scheduler> [flags]"
         exit 1
         ;;
     esac

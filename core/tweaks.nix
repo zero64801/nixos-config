@@ -12,6 +12,8 @@
               | where \$it =~ KiB
               | where \$it =~ →
               | parse -r '^(?<Package>\S+): (?<Old_Version>[^,]+)(?:.*) → (?<New_Version>[^,]+)(?:.*, )(?<DiffBin>.*)$'
+              | update Old_Version { if \$in == '∅' { 'new' } else { \$in } }
+              | update New_Version { if \$in == '∅' { 'removed' } else { \$in } }
               | insert Diff {
                 get DiffBin
                 | ansi strip
