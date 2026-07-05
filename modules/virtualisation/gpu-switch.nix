@@ -82,6 +82,15 @@ let
         fi
       }
 
+      # True while any PCI device is still bound to the driver (checked after the targets unbind, so hits mean a non-target card, e.g. a second same-vendor GPU or an APU).
+      driver_has_bound_devices() {
+        local dev
+        for dev in /sys/bus/pci/drivers/"$1"/????:??:??.?; do
+          [ -e "$dev" ] && return 0
+        done
+        return 1
+      }
+
       # Returns the native host driver to bind for a given PCI device.
       # Audio function is class 0x0403xx; GPU is 0x0300xx / 0x0302xx.
       native_driver_for() {
@@ -193,9 +202,9 @@ let
 
       # KWin/Wayland compositors hold DRM refs on cards they enumerate, which wedges PCI unbind in an uninterruptible kernel wait.
       # Workaround from Bensikrac/VFIO-Nvidia-dynamic-unbind and Level1Techs threads: a fake `remove` uevent makes KWin release its FDs on the card and render node, so the unbind completes.
-      # Also kill any remaining userspace holding /dev/nvidia* (nvidia-smi leftovers, persistenced, etc.).
+      # Then evict remaining userspace: holders of each target's own DRM nodes (amdgpu or nvidia_drm targets), plus /dev/nvidia* leftovers when an nvidia card is leaving.
       release_compositor_holds() {
-        local addr card
+        local addr card node has_nvidia=0
         for addr in "$@"; do
           if [ -d "/sys/bus/pci/devices/$addr/drm" ]; then
             for card in /sys/bus/pci/devices/"$addr"/drm/card*; do
@@ -205,14 +214,26 @@ let
               fi
             done
           fi
-        done
-        sleep 0.5
-        local dev
-        for dev in /dev/nvidia0 /dev/nvidia1 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-modeset; do
-          if [ -e "$dev" ]; then
-            fuser -k "$dev" >/dev/null 2>&1 || true
+          if [ "$(read_sys "/sys/bus/pci/devices/$addr/vendor")" = "0x10de" ]; then
+            has_nvidia=1
           fi
         done
+        sleep 0.5
+        for addr in "$@"; do
+          for node in /dev/dri/by-path/pci-"$addr"-*; do
+            if [ -e "$node" ]; then
+              fuser -k "$node" >/dev/null 2>&1 || true
+            fi
+          done
+        done
+        if [ "$has_nvidia" = 1 ]; then
+          local dev
+          for dev in /dev/nvidia0 /dev/nvidia1 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-modeset; do
+            if [ -e "$dev" ]; then
+              fuser -k "$dev" >/dev/null 2>&1 || true
+            fi
+          done
+        fi
         sleep 0.3
       }
 
@@ -225,25 +246,33 @@ let
         local addr
         local -a addrs
         mapfile -t addrs < <(normalized_addrs)
+        local has_nvidia=0 has_amdgpu=0
+        for addr in "''${addrs[@]}"; do
+          case "$(read_sys "/sys/bus/pci/devices/$addr/vendor")" in
+            0x10de) has_nvidia=1 ;;
+            0x1002)
+              case "$(read_sys "/sys/bus/pci/devices/$addr/class")" in
+                0x0403*) ;;
+                *) has_amdgpu=1 ;;
+              esac ;;
+          esac
+        done
         # Drop persistence mode first so the nvidia driver de-initializes the GPU; otherwise the unbind below burns its 5s timeout before falling back to rmmod.
-        if [ -n "$NVIDIA_SMI" ] && lsmod | awk '{print $1}' | grep -qx nvidia; then
+        if [ "$has_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ] && lsmod | awk '{print $1}' | grep -qx nvidia; then
           "$NVIDIA_SMI" -pm 0 >/dev/null 2>&1 || true
         fi
         release_compositor_holds "''${addrs[@]}"
         for addr in "''${addrs[@]}"; do
           unbind_device "$addr"
         done
-        # Only rmmod the nvidia stack — it leaves VRAM/firmware state after unbind that can keep vfio-pci from reclaiming the card.
-        # Don't touch snd_hda_intel (shared with motherboard audio) or amdgpu (driving the primary display); driver_override pins the target to vfio-pci regardless.
-        local has_nvidia=0
-        for addr in "''${addrs[@]}"; do
-          if [ "$(read_sys "/sys/bus/pci/devices/$addr/vendor")" = "0x10de" ]; then
-            has_nvidia=1
-            break
-          fi
-        done
-        if [ "$has_nvidia" = 1 ]; then
+        # Unload a GPU stack only when none of its devices remain bound — a same-vendor card still driving the host (second GPU, APU) keeps its driver.
+        # The unload matters because both stacks can leave VRAM/firmware state after unbind that keeps vfio-pci from reclaiming the card.
+        # snd_hda_intel is never rmmod'd (shared with motherboard audio); driver_override pins the target to vfio-pci regardless.
+        if [ "$has_nvidia" = 1 ] && ! driver_has_bound_devices nvidia; then
           unload_modules "''${NVIDIA_MODULES[@]}" || true
+        fi
+        if [ "$has_amdgpu" = 1 ] && ! driver_has_bound_devices amdgpu; then
+          unload_modules "''${AMDGPU_MODULES[@]}" || true
         fi
         load_modules "''${VFIO_MODULES[@]}"
         for addr in "''${addrs[@]}"; do

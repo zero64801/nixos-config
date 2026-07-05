@@ -27,6 +27,8 @@ in
         programs.nixcord = {
           enable = true;
           discord = {
+            # OpenAsar's moduleUpdater mkdirs inside the read-only store and hangs bootstrap before window creation (discord 1.0.137 pairing).
+            openASAR.enable = false;
             autoscroll.enable = true;
             vencord.package = sources.nixcord.packages.${pkgs.stdenv.hostPlatform.system}.vencord.overrideAttrs (old: {
               src = sources.vencord // {

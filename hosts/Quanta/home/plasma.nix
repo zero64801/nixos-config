@@ -1,13 +1,68 @@
 { config, lib, pkgs, ... }:
 
+let
+  # PCI address of the GPU that owns the desktop session; the kwin pin and the monitor layout script both key off it.
+  displayGpu = "0000:05:00.0";
+
+  layoutScript = pkgs.writeShellScript "display-layout" ''
+    KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
+
+    # Monitors are identified by EDID serial so the layout survives connector renumbering.
+    LEFT_SERIAL="J1FYHV3"
+    CENTER_SERIAL="GM0NNP3"
+    RIGHT_SERIAL="2S6YHV3"
+
+    # kwin's output management comes up slightly after the session target; poll briefly.
+    for _ in $(seq 1 30); do
+      "$KSCREEN" -o >/dev/null 2>&1 && break
+      sleep 0.5
+    done
+
+    args=""
+    for dev in /sys/class/drm/card*-*; do
+      [ -f "$dev/edid" ] || continue
+      [ "$(cat "$dev/status")" = "connected" ] || continue
+      # Only the display GPU's connectors: the same monitor may also be cabled to the passthrough card for direct output.
+      case "$(readlink -f "$dev/device/device")" in
+        */${displayGpu}) ;;
+        *) continue ;;
+      esac
+      name=''${dev##*/}
+      conn=''${name#*-}
+
+      if grep -aq "$LEFT_SERIAL" "$dev/edid"; then
+        pos="0,0"; extra=""
+      elif grep -aq "$CENTER_SERIAL" "$dev/edid"; then
+        pos="2560,0"; extra=" output.$conn.primary"
+      elif grep -aq "$RIGHT_SERIAL" "$dev/edid"; then
+        pos="5120,0"; extra=""
+      else
+        continue
+      fi
+
+      args="$args output.$conn.enable output.$conn.position.$pos output.$conn.vrrpolicy.automatic output.$conn.brightness.100$extra"
+    done
+
+    [ -n "$args" ] || exit 0
+    for _ in 1 2 3; do
+      if "$KSCREEN" $args; then
+        exit 0
+      fi
+      sleep 1
+    done
+    exit 1
+  '';
+in
 {
   nyx.desktop.plasma6.extraSpectacleOcrLanguages = [
     "jpn"
     "jpn_vert"
   ];
 
+  # Resolved from by-path at login: cardN shuffles between boots, but kwin only matches literal device nodes, not symlinks.
   hm.xdg.configFile."plasma-workspace/env/kwin-drm-devices.sh".text = ''
-    export KWIN_DRM_DEVICES=/dev/dri/card1
+    KWIN_DRM_DEVICES=$(readlink -f /dev/dri/by-path/pci-${displayGpu}-card)
+    export KWIN_DRM_DEVICES
   '';
 
   hm.programs.plasma = lib.mkIf config.nyx.desktop.plasma6.enable {
@@ -133,41 +188,19 @@
       };
     };
 
-    startup.startupScript = {
-      displayLayout = {
-        text = ''
-          KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
+  };
 
-          data=$("$KSCREEN" -o | sed 's/\x1b\[[0-9;]*m//g' | awk '
-            /^Output:/ { if (conn!="") printf "%s %.0f\n", conn, maxr; conn=$3; maxr=0 }
-            /Modes:/ { for (i=1;i<=NF;i++){ p=index($i,"@"); if(p>0){ r=substr($i,p+1); gsub(/[^0-9.].*/,"",r); r=r+0; if(r>maxr)maxr=r } } }
-            END { if (conn!="") printf "%s %.0f\n", conn, maxr }
-          ')
-
-          center_conn=$(printf '%s\n' "$data" | grep -E '^(DP|HDMI)-' | sort -k2,2 -n | tail -1 | awk '{print $1}')
-
-          args=$(printf '%s\n' "$data" | { side_x=0; while read -r conn maxr; do
-            [ -n "$conn" ] || continue
-            case "$conn" in
-              DP-*|HDMI-*) ;;
-              *)
-                printf ' output.%s.disable' "$conn"
-                continue ;;
-            esac
-            if [ "$conn" = "$center_conn" ]; then
-              pos="2560,0"; extra=" output.$conn.primary"
-            else
-              pos="''${side_x},0"; extra=""
-              [ "$side_x" -eq 0 ] && side_x=5120
-            fi
-            printf ' output.%s.enable output.%s.position.%s output.%s.vrrpolicy.automatic output.%s.brightness.100%s' \
-              "$conn" "$conn" "$pos" "$conn" "$conn" "$extra"
-          done; })
-
-          [ -n "$args" ] && "$KSCREEN" $args
-        '';
-        priority = 1;
-      };
+  # A user service instead of plasma-manager's startupScript: those only re-run when their
+  # content changes, so a regenerated kwin output config was never re-corrected on login.
+  hm.systemd.user.services.display-layout = {
+    Unit = {
+      Description = "Assert monitor layout and primary by EDID serial";
+      After = [ "plasma-workspace.target" ];
     };
+    Service = {
+      Type = "oneshot";
+      ExecStart = "${layoutScript}";
+    };
+    Install.WantedBy = [ "plasma-workspace.target" ];
   };
 }

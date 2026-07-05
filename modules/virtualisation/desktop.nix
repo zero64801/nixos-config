@@ -44,8 +44,6 @@ in
       };
     };
 
-    singleGpuPassthrough.enable = mkEnableOption "single-GPU passthrough mode";
-
     looking-glass = {
       enable = mkEnableOption "Looking Glass (kvmfr) support";
 

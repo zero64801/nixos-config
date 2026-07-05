@@ -11,6 +11,8 @@
       "networkmanager"
       "tss"
       "gamemode"
+      # nvscope: DRM master on the passthrough card's own connector needs rw on its /dev/dri node.
+      "video"
     ] ++ config.nyx.security.serviceAdminGroups;
 
     hashedPasswordFile = "/persist/local/secrets/passwd/dx";

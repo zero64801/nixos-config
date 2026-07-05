@@ -45,7 +45,10 @@ in
     graphics = {
       enable = true;
       backend = "amd";
-      nvidia.enable = true;
+      nvidia = {
+        enable = true;
+        drm.enable = true;
+      };
     };
 
     virtualisation = {
