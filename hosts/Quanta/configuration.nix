@@ -98,7 +98,6 @@ in
         dropPath = "/mnt/storage/VMs/share/drop";
         exchangePath = "/mnt/storage/VMs/share/exchange";
       };
-
       nixvirt = {
         enable = true;
         domains = [

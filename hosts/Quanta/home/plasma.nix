@@ -7,6 +7,19 @@ let
   layoutScript = pkgs.writeShellScript "display-layout" ''
     KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
+    # At login this races Plasma's env import into systemd --user; without WAYLAND_DISPLAY
+    # Qt falls back to xcb and aborts, so resolve the session socket directly.
+    export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    if [ -z "''${WAYLAND_DISPLAY:-}" ]; then
+      for s in "$XDG_RUNTIME_DIR"/wayland-*; do
+        [ -S "$s" ] || continue
+        WAYLAND_DISPLAY=''${s##*/}
+        export WAYLAND_DISPLAY
+        break
+      done
+    fi
+    export QT_QPA_PLATFORM=wayland
+
     # Monitors are identified by EDID serial so the layout survives connector renumbering.
     LEFT_SERIAL="J1FYHV3"
     CENTER_SERIAL="GM0NNP3"
@@ -18,7 +31,22 @@ let
       sleep 0.5
     done
 
+    current=$("$KSCREEN" -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+
+    # True when the connector already has the wanted position, vrr policy and (optionally) priority.
+    matches() {
+      printf '%s\n' "$current" | awk -v conn="$1" -v pos="$2" -v vrr="$3" -v prio="$4" '
+        $1 == "Output:" { cur = $3; next }
+        cur == conn && $1 == "Geometry:" && $2 == pos { g = 1 }
+        cur == conn && $1 == "Vrr:" && tolower($2) == vrr { v = 1 }
+        cur == conn && $1 == "priority" && (prio == "" || $2 == prio) { p = 1 }
+        END { exit !(g && v && p) }
+      '
+    }
+
     args=""
+    all_ok=1
+    primary_conn=""
     for dev in /sys/class/drm/card*-*; do
       [ -f "$dev/edid" ] || continue
       [ "$(cat "$dev/status")" = "connected" ] || continue
@@ -30,22 +58,29 @@ let
       name=''${dev##*/}
       conn=''${name#*-}
 
+      # VRR automatic only on the gaming display: Plasma 6.7's automatic engages for desktop windows and flickers the side panels.
       if grep -aq "$LEFT_SERIAL" "$dev/edid"; then
-        pos="0,0"; extra=""
+        pos="0,0"; vrr="automatic"; prio=""
       elif grep -aq "$CENTER_SERIAL" "$dev/edid"; then
-        pos="2560,0"; extra=" output.$conn.primary"
+        pos="2560,0"; vrr="automatic"; prio="1"; primary_conn=$conn
       elif grep -aq "$RIGHT_SERIAL" "$dev/edid"; then
-        pos="5120,0"; extra=""
+        pos="5120,0"; vrr="automatic"; prio=""
       else
         continue
       fi
 
-      args="$args output.$conn.enable output.$conn.position.$pos output.$conn.vrrpolicy.automatic output.$conn.brightness.100$extra"
+      matches "$conn" "$pos" "$vrr" "$prio" || all_ok=0
+      args="$args output.$conn.enable output.$conn.position.$pos output.$conn.vrrpolicy.$vrr output.$conn.brightness.100"
     done
 
     [ -n "$args" ] || exit 0
-    for _ in 1 2 3; do
+    # Reapplying an identical config still emits wl_output events to every client, which retriggers reflow-loop bugs in some apps (Zen). Only touch kwin on drift.
+    [ "$all_ok" = 1 ] && exit 0
+    for _ in $(seq 1 10); do
       if "$KSCREEN" $args; then
+        # Combined with enable/position args kwin renumbers priorities by connector order
+        # and drops the primary request, so it must go in its own transaction.
+        [ -z "$primary_conn" ] || "$KSCREEN" "output.$primary_conn.primary"
         exit 0
       fi
       sleep 1
@@ -189,6 +224,12 @@ in
     };
 
   };
+
+  # Output recreation (monitor sleep, input switch, replug) makes kwin re-derive priority
+  # from connector order, stealing primary from the center monitor; re-assert on DRM changes.
+  services.udev.extraRules = ''
+    ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="${pkgs.systemd}/bin/systemctl --no-block -M ${config.nyx.flake.user}@ --user start display-layout.service"
+  '';
 
   # A user service instead of plasma-manager's startupScript: those only re-run when their
   # content changes, so a regenerated kwin output config was never re-corrected on login.
