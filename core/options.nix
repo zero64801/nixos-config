@@ -13,18 +13,10 @@ in
 
     desktop.enable = mkEnableOption "desktop environment (disables GUI components when false)";
 
-    flake = {
-      host = mkOption {
-        description = "Hostname of the system";
-        type = str;
-        default = "Quanta";
-      };
-
-      user = mkOption {
-        description = "The primary user of the system";
-        type = str;
-        default = "dx";
-      };
+    flake.user = mkOption {
+      description = "The primary user of the system";
+      type = str;
+      default = "dx";
     };
 
     security.serviceAdminGroups = mkOption {

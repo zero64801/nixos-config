@@ -10,7 +10,9 @@
       variant = lib.mkDefault "";
     };
 
-    hardware.enableAllFirmware = lib.mkDefault true;
+    hardware.enableRedistributableFirmware = lib.mkDefault true;
     hardware.steam-hardware.enable = lib.mkDefault false;
+
+    environment.sessionVariables.NIXOS_OZONE_WL = "1";
   };
 }

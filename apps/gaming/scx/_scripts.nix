@@ -1,4 +1,4 @@
-{ pkgs, lib }:
+{ pkgs, lib, gameScheduler ? null, gameSchedulerFlags ? [ ] }:
 
 let
   scx-env =
@@ -7,23 +7,36 @@ let
     else
       pkgs.symlinkJoin {
         name = "scx-all-schedulers";
-        paths = lib.attrValues (lib.filterAttrs (n: v: lib.isDerivation v) pkgs.scx);
+        paths = lib.attrValues (lib.filterAttrs (_: v: lib.isDerivation v) pkgs.scx);
       };
 
+  /*
+  This runs passwordless via polkit for wheel, so nothing from argv may
+  reach root execution unvalidated: the game profile is baked in at build
+  time and apply only accepts basenames resolved inside scx-env.
+  */
   scx-switch = pkgs.writeShellScriptBin "scx-switch" ''
+    set -f
     if [ "$EUID" -ne 0 ]; then
       echo "Root required"
       exit 1
     fi
 
-    CMD="$1"
-    SCHEDULER="$2"
-    FLAGS="$3"
+    stop_all() {
+      systemctl stop scx 2>/dev/null || true
+      systemctl stop scx-manual 2>/dev/null || true
+    }
 
-    case "$CMD" in
+    run_manual() {
+      systemd-run --unit=scx-manual \
+                  --description="SCX Manager: $1" \
+                  --service-type=simple \
+                  "$@"
+    }
+
+    case "''${1:-}" in
       disable)
-        systemctl stop scx 2>/dev/null || true
-        systemctl stop scx-manual 2>/dev/null || true
+        stop_all
         echo "Schedulers disabled"
         ;;
       host)
@@ -31,28 +44,35 @@ let
         systemctl restart scx
         echo "Restored host scheduler (system scx.service)"
         ;;
+      game)
+        ${if gameScheduler == null || gameScheduler == "" then ''
+        echo "No game scheduler configured"
+        exit 1
+        '' else ''
+        stop_all
+        run_manual "${scx-env}/bin/${gameScheduler}" ${lib.escapeShellArgs gameSchedulerFlags}
+        ''}
+        ;;
       apply)
-        systemctl stop scx 2>/dev/null || true
-        systemctl stop scx-manual 2>/dev/null || true
-
-        if [[ "$SCHEDULER" == /* ]]; then
-            BINARY="$SCHEDULER"
-        else
-            BINARY="${scx-env}/bin/$SCHEDULER"
-        fi
-
+        SCHEDULER="''${2:-}"
+        case "$SCHEDULER" in
+          ""|*/*|.*)
+            echo "Scheduler must be a plain name from ${scx-env}/bin"
+            exit 1
+            ;;
+        esac
+        BINARY="${scx-env}/bin/$SCHEDULER"
         if [ ! -f "$BINARY" ]; then
           echo "Scheduler binary not found: $BINARY"
           exit 1
         fi
-
-        systemd-run --unit=scx-manual \
-                    --description="SCX Manager: $SCHEDULER" \
-                    --service-type=simple \
-                    $BINARY $FLAGS
+        # flags word-split intentionally: the GUI passes them as one string
+        FLAGS="''${*:3}"
+        stop_all
+        run_manual "$BINARY" $FLAGS
         ;;
       *)
-        echo "Usage: scx-switch [apply|host|disable] <scheduler> [flags]"
+        echo "Usage: scx-switch [game|host|disable|apply <scheduler> [flags]]"
         exit 1
         ;;
     esac

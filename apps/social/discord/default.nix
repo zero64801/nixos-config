@@ -1,4 +1,4 @@
-{ config, inputs, lib, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   cfg = config.nyx.apps.discord;
@@ -8,7 +8,6 @@ let
     MyServerRoles = ./local-plugins/myServerRoles;
   };
   plugins = remotePlugins // localPlugins;
-  user = config.nyx.flake.user;
 in
 {
   options.nyx.apps.discord.enable = lib.mkEnableOption "Discord (Nixcord + Vencord)";
@@ -53,6 +52,8 @@ in
               };
               fixImagesQuality.enable = true;
               fixYoutubeEmbeds.enable = true;
+              # nixcord warns iLoveSpam -> IloveSpam, but this rev only defines
+              # the old option name; rename here once the sub-flake updates.
               iLoveSpam.enable = true;
               loadingQuotes.enable = true;
               messageLinkEmbeds.enable = true;
@@ -100,14 +101,17 @@ in
             MINIMIZE_TO_TRAY = false;
           };
         in config.lib.dag.entryAfter [ "writeBoundary" ] ''
-          set -euo pipefail
-          mkdir -p "${config.programs.nixcord.discord.configDir}"
-          config_dir="${config.programs.nixcord.discord.configDir}"
-          if [ -f "$config_dir/settings.json" ]; then
-            ${pkgs.jq}/bin/jq '. + ${builtins.toJSON extraSettings}' "$config_dir/settings.json" > "$config_dir/settings.json.tmp" && mv "$config_dir/settings.json.tmp" "$config_dir/settings.json"
-          else
-            echo '${builtins.toJSON extraSettings}' > "$config_dir/settings.json"
-          fi
+          # Subshell keeps set -euo pipefail from leaking into later activation entries
+          (
+            set -euo pipefail
+            mkdir -p "${config.programs.nixcord.discord.configDir}"
+            config_dir="${config.programs.nixcord.discord.configDir}"
+            if [ -f "$config_dir/settings.json" ]; then
+              ${pkgs.jq}/bin/jq '. + ${builtins.toJSON extraSettings}' "$config_dir/settings.json" > "$config_dir/settings.json.tmp" && mv "$config_dir/settings.json.tmp" "$config_dir/settings.json"
+            else
+              echo '${builtins.toJSON extraSettings}' > "$config_dir/settings.json"
+            fi
+          )
         '';
       })
     ];

@@ -1,4 +1,4 @@
-{ config, inputs, lib, pkgs, ... }:
+{ config, inputs, pkgs, ... }:
 
 let
   user = config.nyx.flake.user;
@@ -92,7 +92,7 @@ in
               type = "filesystem";
               format = "vfat";
               mountpoint = "/boot";
-              mountOptions = [ "defaults" ];
+              mountOptions = [ "umask=0077" ];
             };
           };
           luks = {
@@ -131,23 +131,23 @@ in
                 subvolumes = {
                   "/root" = {
                     mountpoint = "/";
-                    mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                    mountOptions = [ "noatime" "ssd" "compress=zstd" ];
                   };
                   "/nix" = {
                     mountpoint = "/nix";
-                    mountOptions = [ "noatime" "nodiratime" "ssd" "compress=zstd" ];
+                    mountOptions = [ "noatime" "ssd" "compress=zstd" ];
                   };
                   "/snapshots" = {
                     mountpoint = "/snapshots";
-                    mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                    mountOptions = [ "noatime" "ssd" ];
                   };
                   "/persist_local" = {
                     mountpoint = "/persist/local";
-                    mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                    mountOptions = [ "noatime" "ssd" "compress=zstd" ];
                   };
                   "/persist_safe" = {
                     mountpoint = "/persist/safe";
-                    mountOptions = [ "noatime" "nodiratime" "ssd" ];
+                    mountOptions = [ "noatime" "ssd" "compress=zstd" ];
                   };
                 };
               };
@@ -183,9 +183,9 @@ in
                 mountpoint = storageMount;
                 mountOptions = [
                   "noatime"
-                  "nodiratime"
                   "compress=zstd"
                   "ssd"
+                  "nofail"
                 ];
               };
             };
@@ -216,7 +216,7 @@ in
                 type = "btrfs";
                 extraArgs = [ "-L vault" ];
                 mountpoint = vaultMount;
-                mountOptions = [ "noatime" "nodiratime" "compress=zstd" "ssd" "nofail" ];
+                mountOptions = [ "noatime" "compress=zstd" "ssd" "nofail" ];
               };
             };
           };

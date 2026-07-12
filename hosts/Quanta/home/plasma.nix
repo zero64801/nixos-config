@@ -60,11 +60,11 @@ let
 
       # VRR automatic only on the gaming display: Plasma 6.7's automatic engages for desktop windows and flickers the side panels.
       if grep -aq "$LEFT_SERIAL" "$dev/edid"; then
-        pos="0,0"; vrr="automatic"; prio=""
+        pos="0,0"; vrr="never"; prio=""
       elif grep -aq "$CENTER_SERIAL" "$dev/edid"; then
         pos="2560,0"; vrr="automatic"; prio="1"; primary_conn=$conn
       elif grep -aq "$RIGHT_SERIAL" "$dev/edid"; then
-        pos="5120,0"; vrr="automatic"; prio=""
+        pos="5120,0"; vrr="never"; prio=""
       else
         continue
       fi

@@ -20,7 +20,7 @@ in
         features = {
           copilot = true;
         };
-        context_servers = cfg.context_servers;
+        inherit (cfg) context_servers;
       };
     };
   };

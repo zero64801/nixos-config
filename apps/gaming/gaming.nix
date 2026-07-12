@@ -1,9 +1,8 @@
-{ config, lib, pkgs, options, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   cfg = config.nyx.apps.gaming;
   user = config.nyx.flake.user;
-  scxPackage = config.nyx.apps.scx.package;
   dwproton = pkgs.dwproton-bin;
 in
 {
@@ -60,8 +59,7 @@ in
           */
           startScript = pkgs.writeShellScript "gamemode-start" ''
             ${x3dStart}
-            ${lib.optionalString scxEnabled
-              "/run/wrappers/bin/pkexec ${switch} apply ${scxCfg.gameScheduler} ${scxCfg.gameSchedulerFlags}"}
+            ${lib.optionalString scxEnabled "/run/wrappers/bin/pkexec ${switch} game"}
           '';
           endScript = pkgs.writeShellScript "gamemode-end" ''
             ${x3dEnd}

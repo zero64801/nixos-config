@@ -9,8 +9,8 @@ in
   config = mkIf config.nyx.security.yubikey.enable {
     services.pcscd.enable = true;
 
-    environment.systemPackages = with pkgs; [
-      yubioath-flutter
+    environment.systemPackages = mkIf config.nyx.desktop.enable [
+      pkgs.yubioath-flutter
     ];
 
     programs.yubikey-touch-detector.enable = true;

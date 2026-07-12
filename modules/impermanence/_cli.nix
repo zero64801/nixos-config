@@ -1,6 +1,6 @@
 {
   writeShellApplication,
-  lib,
+  util,
   coreutils,
   util-linux,
   findutils,
@@ -45,17 +45,7 @@ writeShellApplication {
     PERSIST_JSON_FILE="${if persistenceConfigPath != null then persistenceConfigPath else ""}"
     MASTER_JSON="${if masterPersistenceJson != null then masterPersistenceJson else ""}"
 
-    red=$(tput setaf 1 || echo "")
-    green=$(tput setaf 2 || echo "")
-    yellow=$(tput setaf 3 || echo "")
-    blue=$(tput setaf 4 || echo "")
-    cyan=$(tput setaf 6 || echo "")
-    reset=$(tput sgr0 || echo "")
-    bold=$(tput bold || echo "")
-
-    DIM='\x1b[2m'
-    NC='\x1b[0m'
-    MAGENTA='\x1b[0;35m'
+    ${util.cliPrelude}
 
     main() {
       if [[ "$#" == '0' ]]; then
@@ -246,7 +236,7 @@ writeShellApplication {
         return
       fi
 
-      if [[ ! -f "$PERSIST_JSON_FILE" ]]; then
+      if [[ ! -s "$PERSIST_JSON_FILE" ]]; then
         mkdir -p "$(dirname "$PERSIST_JSON_FILE")"
         echo '{"files": [], "directories": []}' > "$PERSIST_JSON_FILE"
       fi
@@ -286,7 +276,6 @@ writeShellApplication {
       fi
 
       mv "$tmp_json" "$PERSIST_JSON_FILE"
-      chown root:root "$PERSIST_JSON_FILE"
       chmod 644 "$PERSIST_JSON_FILE"
       echo -e "''${yellow}Note:''${reset} Run nixos-rebuild to activate the bind-mount."
     }
@@ -338,9 +327,12 @@ writeShellApplication {
 
       if [[ -n "$owner_user" ]]; then
         local rel_path="''${abs_path#"$owner_home/"}"
+        # Guard against a missing user entry: jq cannot iterate null with |=
         jq --arg u "$owner_user" --arg p "$rel_path" '
-          .users[$u].directories |= map(select(. != $p)) |
-          .users[$u].files       |= map(select(. != $p))
+          if (.users[$u] | type) == "object" then
+            .users[$u].directories = ((.users[$u].directories // []) | map(select(. != $p))) |
+            .users[$u].files       = ((.users[$u].files       // []) | map(select(. != $p)))
+          else . end
         ' "$PERSIST_JSON_FILE" > "$tmp_json"
         echo -e "''${yellow}Removed $rel_path from users.$owner_user in persist.json.''${reset}"
       else
@@ -352,7 +344,6 @@ writeShellApplication {
       fi
 
       mv "$tmp_json" "$PERSIST_JSON_FILE"
-      chown root:root "$PERSIST_JSON_FILE"
       chmod 644 "$PERSIST_JSON_FILE"
 
       local dest="''${PERSIST_PATH}''${abs_path}"
@@ -380,6 +371,17 @@ writeShellApplication {
       jq -r '.directories[]?, .files[]?' "$MASTER_JSON" | sort -u
     }
 
+    # Literal prefix match: does any master path live under system_path?
+    master_has_child() {
+      local system_path="$1" master_paths="$2" mp
+      while IFS= read -r mp; do
+        case "$mp" in
+          "$system_path"/*) return 0 ;;
+        esac
+      done <<< "$master_paths"
+      return 1
+    }
+
     junk_list() {
       echo -e "''${bold}Orphaned items in $PERSIST_PATH''${reset}"
       echo -e "''${DIM}These exist in storage but are not tracked by any persistence config.''${NC}\n"
@@ -405,11 +407,11 @@ writeShellApplication {
       local system_path="$2"
       local master_paths="$3"
 
-      if echo "$master_paths" | grep -qxF "$system_path"; then
+      if echo "$master_paths" | grep -qxF -- "$system_path"; then
         return
       fi
 
-      if echo "$master_paths" | grep -qF "$system_path/"; then
+      if master_has_child "$system_path" "$master_paths"; then
         if [[ -d "$storage_path" ]]; then
           find "$storage_path" -mindepth 1 -maxdepth 1 | sort | while read -r child; do
             local child_rel="''${child#"$PERSIST_PATH"}"
@@ -470,11 +472,11 @@ writeShellApplication {
       local system_path="$2"
       local master_paths="$3"
 
-      if echo "$master_paths" | grep -qxF "$system_path"; then
+      if echo "$master_paths" | grep -qxF -- "$system_path"; then
         return
       fi
 
-      if echo "$master_paths" | grep -qF "$system_path/"; then
+      if master_has_child "$system_path" "$master_paths"; then
         if [[ -d "$storage_path" ]]; then
           find "$storage_path" -mindepth 1 -maxdepth 1 | sort | while read -r child; do
             local child_rel="''${child#"$PERSIST_PATH"}"

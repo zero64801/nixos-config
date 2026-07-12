@@ -9,15 +9,11 @@
         enable = true;
         wifi = {
           powersave = false;
-          macAddress = "random";
+          macAddress = "stable";
         };
       };
 
-      firewall = {
-        enable = true;
-        allowedTCPPortRanges = [ ];
-        allowedUDPPortRanges = [ ];
-      };
+      firewall.enable = true;
     };
   };
 }

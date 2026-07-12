@@ -203,7 +203,7 @@ in
     stylix = {
       enable = true;
       base16Scheme = "${schemes}/base16/${cfg.scheme}.yaml";
-      polarity = cfg.polarity;
+      inherit (cfg) polarity;
 
       image = lib.mkIf (cfg.wallpaper != null) cfg.wallpaper;
 

@@ -2,7 +2,10 @@
 
 let
   cfg = config.nyx.apps.scx;
-  scripts = import ./_scripts.nix { inherit pkgs lib; };
+  scripts = import ./_scripts.nix {
+    inherit pkgs lib;
+    inherit (cfg) gameScheduler gameSchedulerFlags;
+  };
   inherit (scripts) scx-env scx-switch scx-gui scx-desktop-item;
 in
 {
@@ -35,17 +38,17 @@ in
     };
 
     gameScheduler = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
       default = "scx_lavd";
       description = ''
         Scheduler activated by gamemode while a game is running.
-        Set to null/empty to skip per-game switching.
+        Set to null to skip per-game switching.
       '';
     };
 
     gameSchedulerFlags = lib.mkOption {
-      type = lib.types.str;
-      default = "--performance";
+      type = lib.types.listOf lib.types.str;
+      default = [ "--performance" ];
       description = "Extra flags passed to gameScheduler at game start.";
     };
   };
@@ -71,7 +74,7 @@ in
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.policykit.exec" &&
             action.lookup("command_line") &&
-            action.lookup("command_line").indexOf("${scx-switch}/bin/scx-switch") === 0 &&
+            action.lookup("command_line").indexOf("${cfg.package}/bin/scx-switch") === 0 &&
             subject.isInGroup("wheel")) {
           return polkit.Result.YES;
         }

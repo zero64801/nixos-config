@@ -1,45 +1,25 @@
 {
-  lib,
-  stdenvNoCC,
-  fetchzip,
+  util,
   writeScript,
   steamDisplayName ? "dwproton",
 }:
-stdenvNoCC.mkDerivation rec {
-  pname = "dwproton-bin";
+let
   version = "dwproton-10.0-15";
+in
+util.mkProtonBin {
+  pname = "dwproton-bin";
+  inherit version steamDisplayName;
 
-  src = fetchzip {
-    url = "https://dawn.wine/dawn-winery/dwproton/releases/download/${version}/${version}-x86_64.tar.xz";
-    hash = "sha256-Z59F/iLFM4CG7VAmGg74H7dpFhA4QveZgnXrkkUtwTI=";
-  };
+  url = "https://dawn.wine/dawn-winery/dwproton/releases/download/${version}/${version}-x86_64.tar.xz";
+  hash = "sha256-Z59F/iLFM4CG7VAmGg74H7dpFhA4QveZgnXrkkUtwTI=";
+  vdfInternalName = "${version}-x86_64";
 
-  dontUnpack = true;
-  dontConfigure = true;
-  dontBuild = true;
+  description = ''
+    Compatibility tool for Steam Play based on Wine and additional components.
 
-  outputs = [
-    "out"
-    "steamcompattool"
-  ];
-
-  installPhase = ''
-    runHook preInstall
-
-    echo "${pname} should not be installed into environments. Please use programs.steam.extraCompatPackages instead." > $out
-
-    mkdir $steamcompattool
-    ln -s $src/* $steamcompattool
-    rm $steamcompattool/compatibilitytool.vdf
-    cp $src/compatibilitytool.vdf $steamcompattool
-
-    runHook postInstall
+    (This is intended for use in the `programs.steam.extraCompatPackages` option only.)
   '';
-
-  preFixup = ''
-    substituteInPlace "$steamcompattool/compatibilitytool.vdf" \
-      --replace-fail "${version}-x86_64" "${steamDisplayName}"
-  '';
+  homepage = "https://dawn.wine/dawn-winery/dwproton";
 
   /*
   We use the created releases, and not the tags, for the update script as nix-update loads releases.atom
@@ -56,19 +36,4 @@ stdenvNoCC.mkDerivation rec {
     version="$(curl -sL "$repo" | jq -r '.tag_name')"
     update-source-version dwproton-bin "$version"
   '';
-
-  meta = {
-    description = ''
-      Compatibility tool for Steam Play based on Wine and additional components.
-
-      (This is intended for use in the `programs.steam.extraCompatPackages` option only.)
-    '';
-    homepage = "https://dawn.wine/dawn-winery/dwproton";
-    license = lib.licenses.bsd3;
-    maintainers = with lib.maintainers; [
-      dx
-    ];
-    platforms = ["x86_64-linux"];
-    sourceProvenance = [lib.sourceTypes.binaryNativeCode];
-  };
 }

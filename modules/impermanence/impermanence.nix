@@ -4,6 +4,7 @@
   lib,
   pkgs,
   options,
+  utils,
   ...
 }:
 
@@ -20,13 +21,15 @@ let
     else
       null;
 
+  emptyPersistence = { directories = [ ]; files = [ ]; users = { }; };
+
+  # tmpfiles bootstraps persist.json, so tolerate an empty file on first boot.
   persistenceConfig =
     if cfg.persistenceConfigFile != null && builtins.pathExists cfg.persistenceConfigFile then
-      builtins.fromJSON (builtins.readFile cfg.persistenceConfigFile)
-    else if persistenceConfigPath != null && builtins.pathExists persistenceConfigPath then
-      builtins.fromJSON (builtins.readFile persistenceConfigPath)
+      let raw = builtins.readFile cfg.persistenceConfigFile; in
+      if raw == "" then emptyPersistence else builtins.fromJSON raw
     else
-      { directories = [ ]; files = [ ]; users = { }; };
+      emptyPersistence;
 
   presetDirectories =
     optionals cfg.presets.system [
@@ -153,7 +156,13 @@ let
       mount ${device} /mnt
 
       echo "impermanence: cleaning up nested subvolumes under ${rootSubvolume}"
-      btrfs subvolume list -o /mnt${rootSubvolume} | cut -f9 -d' ' | while read subvolume; do
+      # Full list (not -o: grandchildren too), sed keeps paths with spaces,
+      # reverse sort deletes children before their parents.
+      btrfs subvolume list /mnt \
+        | sed 's/^.* path //' \
+        | { grep '^${lib.removePrefix "/" rootSubvolume}/' || true; } \
+        | sort -r \
+        | while IFS= read -r subvolume; do
         echo "impermanence: deleting /$subvolume"
         btrfs subvolume delete "/mnt/$subvolume"
       done
@@ -254,23 +263,36 @@ in
 
       environment.systemPackages = [ nyx-persist ];
 
+      warnings = optional (cfg.persistenceConfigFile == null)
+        "nyx.impermanence: persistenceConfigFile is unset; persist.json cannot be read under pure evaluation, so only presets apply. Set persistenceConfigFile = ./persist.json;";
+
+      # Owned by the flake user: the file lives in their git working tree.
       systemd.tmpfiles.rules =
         lib.optionals (persistenceConfigPath != null) [
-          "f ${persistenceConfigPath} 0644 root root -"
+          ''f ${persistenceConfigPath} 0644 ${config.nyx.flake.user} users - {"directories":[],"files":[],"users":{}}''
         ];
     }
 
     (mkIf cfg.btrfs.enable {
-      boot.initrd.systemd.services.impermanence-rollback = {
-        description = "Rollback btrfs root to blank snapshot";
-        wantedBy    = [ "initrd.target" ];
-        before      = [ "sysroot.mount" ];
-        after       = optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
-        requires    = optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
-        unitConfig.DefaultDependencies = "no";
-        serviceConfig.Type = "oneshot";
-        script = rollbackScript;
-      };
+      boot.initrd.systemd.services.impermanence-rollback =
+        let
+          # Wait for the backing device itself, not just the unlocker; without
+          # this the mount can race udev when unlockDevice is unset.
+          deviceUnit = "${utils.escapeSystemdPath cfg.btrfs.device}.device";
+        in
+        {
+          description = "Rollback btrfs root to blank snapshot";
+          wantedBy    = [ "initrd.target" ];
+          before      = [ "sysroot.mount" ];
+          # requiredBy makes a failed rollback stop the boot instead of
+          # silently coming up on the stale root.
+          requiredBy  = [ "sysroot.mount" ];
+          after       = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
+          requires    = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
+          unitConfig.DefaultDependencies = "no";
+          serviceConfig.Type = "oneshot";
+          script = rollbackScript;
+        };
     })
   ]);
 }

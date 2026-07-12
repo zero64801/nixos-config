@@ -1,0 +1,3 @@
+# repeated_keys wants flat `foo.bar = ...;` lines merged into nested blocks;
+# flat keys are deliberate here (more readable, diff-friendly host configs).
+disabled = ["repeated_keys"]

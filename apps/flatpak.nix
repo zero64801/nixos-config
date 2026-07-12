@@ -18,11 +18,19 @@ in
   config = lib.mkIf cfg.enable {
     services.flatpak.enable = true;
 
-    xdg.portal.enable = true;
+    # Portals need an implementation; headless hosts fail eval with a bare enable.
+    xdg.portal.enable = lib.mkIf config.nyx.desktop.enable (lib.mkDefault true);
 
     systemd.services.flatpak-repo = lib.mkIf cfg.addFlathub {
       wantedBy = [ "multi-user.target" ];
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ];
       path = [ pkgs.flatpak ];
+      serviceConfig = {
+        Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = "30s";
+      };
       script = ''
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       '';

@@ -261,6 +261,7 @@
       <address type="usb" bus="0" port="3"/>
     </redirdev>
     <watchdog model="itco" action="reset"/>
+    <memballoon model="none"/>
   </devices>
   <qemu:commandline>
     <qemu:arg value="-device"/>

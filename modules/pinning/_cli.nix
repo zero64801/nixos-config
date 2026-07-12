@@ -1,6 +1,8 @@
 {
   writeShellApplication,
+  util,
   coreutils,
+  findutils,
   gnugrep,
   gnused,
   jq,
@@ -18,6 +20,7 @@ writeShellApplication {
 
   runtimeInputs = [
     coreutils
+    findutils
     gnugrep
     gnused
     jq
@@ -37,21 +40,7 @@ writeShellApplication {
       PINS_FILE="$FLAKE_PATH/hosts/$HOST/pins.json"
     fi
 
-    red=$(tput setaf 1 || echo "")
-    green=$(tput setaf 2 || echo "")
-    yellow=$(tput setaf 3 || echo "")
-    blue=$(tput setaf 4 || echo "")
-    cyan=$(tput setaf 6 || echo "")
-    reset=$(tput sgr0 || echo "")
-    bold=$(tput bold || echo "")
-
-    DIM='\x1b[2m'
-    NC='\x1b[0m'
-
-    die()  { echo -e "''${red}Error:''${reset} $*" >&2; exit 1; }
-    info() { echo -e "''${blue}::''${reset} $*"; }
-    ok()   { echo -e "''${green}✓''${reset} $*"; }
-    warn() { echo -e "''${yellow}⚠''${reset} $*"; }
+    ${util.cliPrelude}
 
     ensure_paths() {
       [[ -n "$FLAKE_PATH" ]]  || die "FLAKE_PATH not set. Set nyx.pinning.flakePath or NYX_FLAKE_PATH."
@@ -203,6 +192,26 @@ writeShellApplication {
 
     get_all_pinned_inputs() {
       jq -r '.pins | keys[]' "$PINS_FILE" 2>/dev/null
+    }
+
+    restore_pinned_inputs() {
+      local pinned_inputs="$1"
+      while IFS= read -r pi; do
+        local pt pr
+        pt=$(get_pin_type "$pi")
+        pr=$(get_pin_rev "$pi")
+        if [[ -z "$pr" ]]; then
+          warn "Could not restore $pi — no saved revision"
+          continue
+        fi
+        local ref
+        if ! ref=$(get_input_ref_with_rev "$pi" "$pr"); then
+          warn "Skipping ''${bold}$pi''${reset}: could not construct a locked ref (stale pin?)"
+          continue
+        fi
+        nix flake lock "$FLAKE_PATH" --override-input "$pi" "$ref"
+        ok "Restored ''${bold}$pi''${reset} ($pt @ ''${pr:0:12})"
+      done <<< "$pinned_inputs"
     }
 
     cmd_status() {
@@ -441,17 +450,6 @@ writeShellApplication {
           return
         fi
 
-        declare -A saved_revs
-        declare -A saved_types
-        if [[ -n "$pinned_inputs" ]]; then
-          while IFS= read -r pi; do
-            local pt
-            pt=$(get_pin_type "$pi")
-            saved_types["$pi"]="$pt"
-            saved_revs["$pi"]=$(get_pin_rev "$pi")
-          done <<< "$pinned_inputs"
-        fi
-
         info "Updating all flake inputs..."
         nix flake update --flake "$FLAKE_PATH"
         ok "Flake inputs updated"
@@ -459,21 +457,7 @@ writeShellApplication {
         if [[ -n "$pinned_inputs" ]]; then
           echo
           info "Restoring pinned/frozen inputs..."
-          while IFS= read -r pi; do
-            local target_rev="''${saved_revs[$pi]:-}"
-            local pin_type="''${saved_types[$pi]:-}"
-            if [[ -n "$target_rev" ]]; then
-              local ref
-              if ! ref=$(get_input_ref_with_rev "$pi" "$target_rev"); then
-                warn "Skipping ''${bold}$pi''${reset}: could not construct a locked ref (stale pin?)"
-                continue
-              fi
-              nix flake lock "$FLAKE_PATH" --override-input "$pi" "$ref"
-              ok "Restored ''${bold}$pi''${reset} ($pin_type @ ''${target_rev:0:12})"
-            else
-              warn "Could not restore $pi — no saved revision"
-            fi
-          done <<< "$pinned_inputs"
+          restore_pinned_inputs "$pinned_inputs"
         fi
       fi
 
@@ -656,6 +640,7 @@ writeShellApplication {
 
       if [[ -z "$pinned_inputs" ]]; then
         echo -e "''${green}No pins defined — nothing to check.''${reset}"
+        report_subflakes
         return
       fi
 
@@ -685,6 +670,36 @@ writeShellApplication {
       else
         warn "Some pins are out of sync. Run ''${bold}nyx-pin update''${reset} to reconcile."
       fi
+
+      report_subflakes
+    }
+
+    # Report-only: sub-flakes pin their inputs through their own committed
+    # flake.lock, outside pins.json and `nyx-pin update`. Listing them here
+    # keeps check honest about what it does not manage.
+    report_subflakes() {
+      local lock dir line
+      local found=false
+      while IFS= read -r lock; do
+        [[ -n "$lock" ]] || continue
+        if [[ "$found" == "false" ]]; then
+          echo -e "\n''${bold}Sub-flakes (report only — update with 'nix flake update' in their directory)''${reset}"
+          found=true
+        fi
+        dir=$(dirname "$lock")
+        echo -e "  ''${blue}''${dir#"$FLAKE_PATH"/}''${reset}"
+        while IFS= read -r line; do
+          [[ -n "$line" ]] || continue
+          echo "    $line"
+        done < <(jq -r '
+            . as $lock
+            | .nodes[.root].inputs // {} | to_entries[]
+            | select(.value | type == "string")
+            | .key as $name
+            | $lock.nodes[.value] as $node
+            | "\($name)  \(($node.locked.rev // $node.locked.narHash // "?")[0:12])  (\(($node.locked.lastModified // 0) | strftime("%Y-%m-%d")))"
+          ' "$lock" 2>/dev/null)
+      done < <(find "$FLAKE_PATH" -mindepth 2 -name flake.lock -not -path '*/.git/*' 2>/dev/null | sort)
     }
 
     cmd_restore() {
@@ -708,20 +723,7 @@ writeShellApplication {
         [[ -n "$pinned_inputs" ]] || die "No inputs are pinned or frozen."
 
         info "Restoring all pinned/frozen inputs..."
-        while IFS= read -r pi; do
-          local pt pr
-          pt=$(get_pin_type "$pi")
-          pr=$(get_pin_rev "$pi")
-          if [[ -n "$pr" ]]; then
-            local ref
-            if ! ref=$(get_input_ref_with_rev "$pi" "$pr"); then
-              warn "Skipping ''${bold}$pi''${reset}: could not construct a locked ref (stale pin?)"
-              continue
-            fi
-            nix flake lock "$FLAKE_PATH" --override-input "$pi" "$ref"
-            ok "Restored ''${bold}$pi''${reset} ($pt @ ''${pr:0:12})"
-          fi
-        done <<< "$pinned_inputs"
+        restore_pinned_inputs "$pinned_inputs"
       fi
     }
 

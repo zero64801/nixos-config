@@ -3,7 +3,7 @@
 let
   cfg = config.nyx.apps.vlessProxy;
 
-  vlessLinkToOutbound = pkgs.writeShellScriptBin "quanta-vless-link-to-outbound" ''
+  vlessLinkToOutbound = pkgs.writeShellScriptBin "vless-link-to-outbound" ''
     exec ${pkgs.python3}/bin/python3 - "$@" <<'PY'
 import json
 import re
@@ -22,7 +22,7 @@ def truthy(value):
 
 def main():
     if len(sys.argv) != 2:
-        die("usage: quanta-vless-link-to-outbound 'vless://...'")
+        die("usage: vless-link-to-outbound 'vless://...'")
 
     link = sys.argv[1].strip()
     if not link.startswith("vless://"):
@@ -249,7 +249,6 @@ in
 
       systemd.user.services.sing-box-vless-socks = {
         description = "Local SOCKS5 proxy to VLESS via sing-box";
-        after = [ "network.target" ];
 
         unitConfig.ConditionPathExists = cfg.outboundFile;
 

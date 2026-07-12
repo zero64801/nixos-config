@@ -3,7 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    stable.url = "github:NixOS/nixpkgs/nixos-24.11";
     impermanence.url = "github:nix-community/impermanence";
     disko.url = "github:nix-community/disko";
 
@@ -60,7 +59,7 @@
     };
   };
 
-  outputs = { ... }@inputs: {
+  outputs = inputs: {
     nixosConfigurations = import ./hosts.nix { inherit inputs; };
   };
 }

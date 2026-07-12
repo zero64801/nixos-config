@@ -78,7 +78,7 @@ in
         set sponge_purge_only_on_exit true
         set fish_greeting
         set fish_cursor_insert line blink
-        set -Ux FZF_DEFAULT_OPTS "${fzf-options}"
+        set -gx FZF_DEFAULT_OPTS "${fzf-options}"
         fish_vi_key_bindings
 
         function fish_user_key_bindings
@@ -87,8 +87,8 @@ in
         end
 
         set -g hydro_symbol_start ""
-        set -U hydro_symbol_git_dirty "*"
-        set -U fish_prompt_pwd_dir_length 0
+        set -gx hydro_symbol_git_dirty "*"
+        set -gx fish_prompt_pwd_dir_length 0
 
         function fish_mode_prompt; end
 

@@ -1,4 +1,4 @@
-{ pkgs, config, lib, ... }:
+{ pkgs, config, ... }:
 
 {
   users.users.dx = {
@@ -16,10 +16,6 @@
     ] ++ config.nyx.security.serviceAdminGroups;
 
     hashedPasswordFile = "/persist/local/secrets/passwd/dx";
-    
-    packages = with pkgs; [
-      git
-    ];
   };
 
   hm.home.packages = with pkgs; [

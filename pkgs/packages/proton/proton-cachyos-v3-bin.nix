@@ -1,58 +1,22 @@
 {
-  lib,
-  stdenvNoCC,
-  fetchzip,
-  writeScript,
+  util,
   steamDisplayName ? "proton-cachyos-v3",
 }:
-stdenvNoCC.mkDerivation rec {
-  pname = "proton-cachyo-v3-bin";
-  version = "cachyos-10.0-20260207-slr";
+let
+  version = "cachyos-11.0-20260602-slr";
+in
+util.mkProtonBin {
+  pname = "proton-cachyos-v3-bin";
+  inherit version steamDisplayName;
 
-  src = fetchzip {
-    url = "https://github.com/CachyOS/proton-cachyos/releases/download/${version}/proton-${version}-x86_64_v3.tar.xz";
-    hash = "sha256-LWiW601Dy5BMDQqjU+FnEl70a+9SoVjsJDWcCEUNij8=";
-  };
+  url = "https://github.com/CachyOS/proton-cachyos/releases/download/${version}/proton-${version}-x86_64_v3.tar.xz";
+  hash = "sha256-SVJSIqd7SEjtl2FcsCHOUgYYSDMn3cedA2GTGUNmDQM=";
+  vdfInternalName = "proton-${version}-x86_64_v3";
 
-  dontUnpack = true;
-  dontConfigure = true;
-  dontBuild = true;
+  description = ''
+    Compatibility tool for Steam Play based on Wine and additional components.
 
-  outputs = [
-    "out"
-    "steamcompattool"
-  ];
-
-  installPhase = ''
-    runHook preInstall
-
-    echo "${pname} should not be installed into environments. Please use programs.steam.extraCompatPackages instead." > $out
-
-    mkdir $steamcompattool
-    ln -s $src/* $steamcompattool
-    rm $steamcompattool/compatibilitytool.vdf
-    cp $src/compatibilitytool.vdf $steamcompattool
-
-    runHook postInstall
+    (This is intended for use in the `programs.steam.extraCompatPackages` option only.)
   '';
-
-  preFixup = ''
-    substituteInPlace "$steamcompattool/compatibilitytool.vdf" \
-      --replace-fail "proton-${version}-x86_64_v3" "${steamDisplayName}"
-  '';
-
-  meta = {
-    description = ''
-      Compatibility tool for Steam Play based on Wine and additional components.
-
-      (This is intended for use in the `programs.steam.extraCompatPackages` option only.)
-    '';
-    homepage = "https://github.com/CachyOS/proton-cachyos";
-    license = lib.licenses.bsd3;
-    maintainers = with lib.maintainers; [
-      dx
-    ];
-    platforms = ["x86_64-linux"];
-    sourceProvenance = [lib.sourceTypes.binaryNativeCode];
-  };
+  homepage = "https://github.com/CachyOS/proton-cachyos";
 }

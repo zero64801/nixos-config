@@ -1,5 +1,6 @@
 {
   writeShellApplication,
+  util,
   coreutils,
   ncurses,
   nix,
@@ -24,18 +25,7 @@ writeShellApplication {
     FLAKE_PATH="''${NYX_FLAKE_PATH:-${if flakePath != null then flakePath else ""}}"
     HOST="''${NYX_HOST:-${if hostName != null then hostName else ""}}"
 
-    red=$(tput setaf 1 || echo "")
-    green=$(tput setaf 2 || echo "")
-    yellow=$(tput setaf 3 || echo "")
-    blue=$(tput setaf 4 || echo "")
-    reset=$(tput sgr0 || echo "")
-    bold=$(tput bold || echo "")
-
-    DIM='\x1b[2m'
-    NC='\x1b[0m'
-
-    die()  { echo -e "''${red}Error:''${reset} $*" >&2; exit 1; }
-    info() { echo -e "''${blue}::''${reset} $*"; }
+    ${util.cliPrelude}
 
     ensure_flake() {
       [[ -n "$FLAKE_PATH" ]] || die "FLAKE_PATH not set. Set nyx.flakePath or NYX_FLAKE_PATH."
@@ -49,7 +39,12 @@ writeShellApplication {
       ensure_flake
       if [[ "$verb" == "build" ]]; then
         info "Building ''${bold}$HOST''${reset}..."
-        nixos-rebuild build --flake "$FLAKE_PATH#$HOST" "$@"
+        # nixos-rebuild has no --out-link, so build in a temp dir to keep ./result out of the caller's cwd
+        local build_tmp flake_abs
+        build_tmp=$(mktemp -d)
+        trap 'rm -rf "$build_tmp"' EXIT
+        flake_abs=$(realpath "$FLAKE_PATH")
+        (cd "$build_tmp" && nixos-rebuild build --flake "$flake_abs#$HOST" "$@")
       else
         info "Running nixos-rebuild ''${bold}$verb''${reset} for ''${bold}$HOST''${reset}..."
         sudo nixos-rebuild "$verb" --flake "$FLAKE_PATH#$HOST" "$@"
@@ -76,7 +71,10 @@ writeShellApplication {
       local older_than="7d"
       while [[ "$#" -gt 0 ]]; do
         case "$1" in
-          --older-than) older_than="$2"; shift 2 ;;
+          --older-than)
+            [[ "$#" -ge 2 ]] || die "--older-than requires a value. Usage: nyx clean [--older-than 7d]"
+            older_than="$2"; shift 2 ;;
+          -*) die "Unknown flag: $1. Usage: nyx clean [--older-than 7d]" ;;
           *) older_than="$1"; shift ;;
         esac
       done

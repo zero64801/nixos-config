@@ -2,21 +2,7 @@
 
 let
   cfg = config.nyx.apps.zen;
-  user = config.nyx.flake.user;
-  homeDir = config.users.users.${user}.home or "/home/${user}";
-  persistentPath = config.nyx.impermanence.persistentStoragePath or "/persist/local";
   profilePath = ".config/zen/default";
-  profileFiles = [
-    "${profilePath}/containers.json"
-    "${profilePath}/cookies.sqlite"
-    "${profilePath}/cookies.sqlite-wal"
-    "${profilePath}/permissions.sqlite"
-    "${profilePath}/serviceworker.txt"
-    "${profilePath}/storage.sqlite"
-    "${profilePath}/storage.sqlite-wal"
-    "${profilePath}/webappsstore.sqlite"
-    "${profilePath}/webappsstore.sqlite-wal"
-  ];
 
   lock = x: {
     Value = x;
@@ -184,11 +170,11 @@ in
       };
     };
 
+    # Persist the whole profile: SQLite -wal files and rename-replaced json/txt
+    # break under per-file bind mounts.
     nyx.persistence.home.directories = [
-      "${profilePath}/storage"
+      profilePath
     ];
-
-    nyx.persistence.home.files = profileFiles;
 
   }
   (lib.mkIf (config.nyx.stylix.enable or false) {

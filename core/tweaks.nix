@@ -12,8 +12,8 @@
               | where \$it =~ KiB
               | where \$it =~ →
               | parse -r '^(?<Package>\S+): (?<Old_Version>[^,]+)(?:.*) → (?<New_Version>[^,]+)(?:.*, )(?<DiffBin>.*)$'
-              | update Old_Version { if \$in == '∅' { 'new' } else { \$in } }
-              | update New_Version { if \$in == '∅' { 'removed' } else { \$in } }
+              | update Old_Version { if \$in == '∅' { 'new' } else if \$in == 'ε' { '-' } else { \$in } }
+              | update New_Version { if \$in == '∅' { 'removed' } else if \$in == 'ε' { '-' } else { \$in } }
               | insert Diff {
                 get DiffBin
                 | ansi strip
@@ -43,8 +43,10 @@
   system.activationScripts.create-bash-symlink = {
     deps = [ "binsh" "usrbinenv" ];
     text = ''
-      ${pkgs.coreutils}/bin/ln -sf /run/current-system/sw/bin/bash /bin/bash
-      ${pkgs.coreutils}/bin/ln -sf /run/current-system/sw/bin/bash /usr/bin/bash
+      ${pkgs.coreutils}/bin/ln -sfn /run/current-system/sw/bin/bash /bin/.bash.tmp
+      ${pkgs.coreutils}/bin/mv -f /bin/.bash.tmp /bin/bash
+      ${pkgs.coreutils}/bin/ln -sfn /run/current-system/sw/bin/bash /usr/bin/.bash.tmp
+      ${pkgs.coreutils}/bin/mv -f /usr/bin/.bash.tmp /usr/bin/bash
     '';
   };
 }

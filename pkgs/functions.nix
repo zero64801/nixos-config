@@ -6,55 +6,82 @@ in
   util = {
     importFlake = path:
       (import inputs.flake-compat { src = path; }).defaultNix;
-  };
 
-  wrapPackage = pkg: scriptFn:
-    let
-      exe = lib.getExe pkg;
-      name = pkg.pname or pkg.name or (builtins.parseDrvName pkg.name).name;
-    in final.writeShellScriptBin name (scriptFn exe);
+    # Shared scaffold for the nyx CLI scripts. SC2034/SC2329 disabled because
+    # not every script uses every color or helper.
+    cliPrelude = ''
+      # shellcheck disable=SC2034,SC2329
+      {
+        red=$(tput setaf 1 || echo "")
+        green=$(tput setaf 2 || echo "")
+        yellow=$(tput setaf 3 || echo "")
+        blue=$(tput setaf 4 || echo "")
+        cyan=$(tput setaf 6 || echo "")
+        reset=$(tput sgr0 || echo "")
+        bold=$(tput bold || echo "")
 
-  aliasToPackage = aliases:
-    let
-      scripts = lib.mapAttrsToList (name: command:
-        final.writeShellScriptBin name command
-      ) aliases;
-    in final.symlinkJoin {
-      name = "aliases";
-      paths = scripts;
-    };
+        DIM='\x1b[2m'
+        NC='\x1b[0m'
+        MAGENTA='\x1b[0;35m'
 
-  matchPackageCommand = pkg: command:
-    let
-      name = lib.getName pkg;
-    in ''
-      if command -v ${lib.getExe pkg} &>/dev/null; then
-        ${command} "$@"
-      else
-        command ${name} "$@"
-      fi
+        die()  { echo -e "''${red}Error:''${reset} $*" >&2; exit 1; }
+        info() { echo -e "''${blue}::''${reset} $*"; }
+        ok()   { echo -e "''${green}✓''${reset} $*"; }
+        warn() { echo -e "''${yellow}⚠''${reset} $*"; }
+      }
     '';
 
-  wrapEnv = pkg: envVars:
-    let
-      name = pkg.pname or pkg.name or (builtins.parseDrvName pkg.name).name;
-      envFlags = lib.concatStringsSep " "
-        (lib.mapAttrsToList (k: v: "--set ${k} ${lib.escapeShellArg v}") envVars);
-    in final.runCommand name {
-      nativeBuildInputs = [ final.makeWrapper ];
-    } ''
-      mkdir -p $out/bin
-      for bin in ${pkg}/bin/*; do
-        makeWrapper "$bin" "$out/bin/$(basename "$bin")" ${envFlags}
-      done
+    mkProtonBin =
+      {
+        pname,
+        version,
+        url,
+        hash,
+        vdfInternalName,
+        description,
+        homepage,
+        steamDisplayName,
+        passthru ? { },
+      }:
+      final.stdenvNoCC.mkDerivation {
+        inherit pname version passthru;
 
-      if [ -d "${pkg}/share" ]; then
-        ln -s ${pkg}/share $out/share
-      fi
-    '';
+        src = final.fetchzip { inherit url hash; };
 
-  pkgs-stable = import inputs.stable {
-    inherit (prev) config;
-    inherit (prev.stdenv.hostPlatform) system;
+        dontUnpack = true;
+        dontConfigure = true;
+        dontBuild = true;
+
+        outputs = [
+          "out"
+          "steamcompattool"
+        ];
+
+        installPhase = ''
+          runHook preInstall
+
+          echo "${pname} should not be installed into environments. Please use programs.steam.extraCompatPackages instead." > $out
+
+          mkdir $steamcompattool
+          ln -s $src/* $steamcompattool
+          rm $steamcompattool/compatibilitytool.vdf
+          cp $src/compatibilitytool.vdf $steamcompattool
+
+          runHook postInstall
+        '';
+
+        preFixup = ''
+          substituteInPlace "$steamcompattool/compatibilitytool.vdf" \
+            --replace-fail "${vdfInternalName}" "${steamDisplayName}"
+        '';
+
+        meta = {
+          inherit description homepage;
+          license = lib.licenses.bsd3;
+          maintainers = [ ];
+          platforms = ["x86_64-linux"];
+          sourceProvenance = [lib.sourceTypes.binaryNativeCode];
+        };
+      };
   };
 }

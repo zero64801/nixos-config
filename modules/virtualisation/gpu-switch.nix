@@ -19,6 +19,26 @@ let
   nvidiaEnabled = lib.elem "nvidia" config.services.xserver.videoDrivers;
   nvidiaSmi = lib.optionalString nvidiaEnabled "${config.hardware.nvidia.package.bin}/bin/nvidia-smi";
 
+  # Shared by the CLI and the libvirt hook; both need coreutils on PATH.
+  pciHelpers = ''
+    normalize_addr() {
+      case "$1" in
+        *:*:*.*) echo "$1" ;;
+        *)       echo "0000:$1" ;;
+      esac
+    }
+
+    current_driver() {
+      local link="/sys/bus/pci/devices/$1/driver" path
+      if [ -L "$link" ]; then
+        path="$(readlink "$link")"
+        echo "''${path##*/}"
+      else
+        echo "none"
+      fi
+    }
+  '';
+
   gpuSwitch = pkgs.writeShellApplication {
     name = "gpu-switch";
 
@@ -62,24 +82,10 @@ let
         fi
       }
 
-      normalize_addr() {
-        case "$1" in
-          0000:*) echo "$1" ;;
-          *)      echo "0000:$1" ;;
-        esac
-      }
+      ${pciHelpers}
 
       read_sys() {
         cat "$1" 2>/dev/null || echo ""
-      }
-
-      current_driver() {
-        local addr="$1"
-        if [ -L "/sys/bus/pci/devices/$addr/driver" ]; then
-          basename "$(readlink "/sys/bus/pci/devices/$addr/driver")"
-        else
-          echo "none"
-        fi
       }
 
       # True while any PCI device is still bound to the driver (checked after the targets unbind, so hits mean a non-target card, e.g. a second same-vendor GPU or an APU).
@@ -257,6 +263,17 @@ let
               esac ;;
           esac
         done
+        # Refuse to silently SIGKILL CUDA work (llama.cpp serving etc). The
+        # eviction below is indiscriminate; make the caller decide.
+        if [ "$has_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ] && [ "''${GPU_SWITCH_FORCE:-0}" != 1 ]; then
+          compute_apps="$("$NVIDIA_SMI" --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true)"
+          if [ -n "$compute_apps" ]; then
+            echo "gpu-switch: compute workloads hold the GPU and would be killed:" >&2
+            echo "$compute_apps" >&2
+            echo "gpu-switch: stop them first, or rerun with GPU_SWITCH_FORCE=1 to evict anyway." >&2
+            exit 1
+          fi
+        fi
         # Drop persistence mode first so the nvidia driver de-initializes the GPU; otherwise the unbind below burns its 5s timeout before falling back to rmmod.
         if [ "$has_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ] && lsmod | awk '{print $1}' | grep -qx nvidia; then
           "$NVIDIA_SMI" -pm 0 >/dev/null 2>&1 || true
@@ -370,20 +387,14 @@ let
     PCI_ADDRS=(${concatStringsSep " " (map (a: "\"${a}\"") vfioCfg.pciAddresses)})
     GPU_SWITCH="${lib.getExe gpuSwitch}"
     AWK="${lib.getExe pkgs.gawk}"
-    CAT="${lib.getExe' pkgs.coreutils "cat"}"
-    READLINK="${lib.getExe' pkgs.coreutils "readlink"}"
     LOGGER="${lib.getExe' pkgs.util-linux "logger"}"
+    export PATH="${lib.makeBinPath [ pkgs.coreutils ]}:$PATH"
 
     # Record which phase fired — libvirt only surfaces hook output on non-zero exit, so successful release runs were previously invisible.
     # Observable via `journalctl -t gpu-vfio-hook`.
     "$LOGGER" -t gpu-vfio-hook "phase=$HOOK_NAME/$STATE_NAME guest=$GUEST_NAME"
 
-    normalize_addr() {
-      case "$1" in
-        *:*:*.*) echo "$1" ;;
-        *)       echo "0000:$1" ;;
-      esac
-    }
+    ${pciHelpers}
 
     hex_fixed() {
       local width="$1" value="''${2#0x}"
@@ -393,17 +404,6 @@ let
     hex_function() {
       local value="''${1#0x}"
       printf "0x%x" "0x$value"
-    }
-
-    current_driver() {
-      local addr="$1" driver_link driver_path
-      driver_link="/sys/bus/pci/devices/$addr/driver"
-      if [ -L "$driver_link" ]; then
-        driver_path="$("$READLINK" "$driver_link")"
-        echo "''${driver_path##*/}"
-      else
-        echo "none"
-      fi
     }
 
     domain_uses_addr() {
@@ -487,7 +487,7 @@ let
       return 1
     }
 
-    DOMAIN_XML="$("$CAT" || true)"
+    DOMAIN_XML="$(cat || true)"
     if ! [[ "$DOMAIN_XML" =~ [^[:space:]] ]]; then
       "$LOGGER" -t gpu-vfio-hook "no domain XML for $GUEST_NAME ($HOOK_NAME/$STATE_NAME); skipping"
       echo "gpu-vfio-hook: no domain XML for $GUEST_NAME; skipping GPU ownership check" >&2

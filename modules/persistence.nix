@@ -5,7 +5,7 @@ let
 
   cfg  = config.nyx.persistence;
   user = config.nyx.flake.user;
-  persistentPath = config.nyx.impermanence.persistentStoragePath or "/persist/local";
+  persistentPath = config.nyx.impermanence.persistentStoragePath;
 
   hasHomeEntries = cfg.home.directories != [] || cfg.home.files != [];
 in
@@ -38,10 +38,9 @@ in
     };
   };
 
-  config = mkIf (config.nyx.impermanence.enable or false) {
+  config = mkIf config.nyx.impermanence.enable {
     environment.persistence.${persistentPath} = {
-      directories = cfg.directories;
-      files       = cfg.files;
+      inherit (cfg) directories files;
 
       users.${user} = mkIf hasHomeEntries {
         inherit (cfg.home) directories files;

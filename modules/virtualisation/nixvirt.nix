@@ -187,6 +187,25 @@ let
           echo "another nixvirt-snapshot operation is already running for '$dom'" >&2
           exit 1
         fi
+
+        # Seatbelt: another defined domain may reference the same disk image
+        # (offline qemu-img/nbd surgery bypasses QEMU's runtime write lock).
+        while read -r src; do
+          [ -n "$src" ] || continue
+          while read -r other; do
+            [ -n "$other" ] && [ "$other" != "$dom" ] || continue
+            if virsh domblklist "$other" 2>/dev/null | awk '{print $2}' | grep -qxF "$src"; then
+              ostate=$(virsh domstate "$other" 2>/dev/null || true)
+              case "$ostate" in
+                running|paused)
+                  echo "domain '$other' ($ostate) uses the same disk image: $src" >&2
+                  echo "shut it down before operating on '$dom'" >&2
+                  exit 1
+                  ;;
+              esac
+            fi
+          done < <(virsh list --all --name)
+        done < <(virsh domblklist "$dom" --details 2>/dev/null | tail -n +3 | awk '$1=="file" && $2=="disk" {print $4}')
       fi
 
       if [ "$sub" = "list" ]; then
@@ -999,6 +1018,24 @@ let
         echo "$dom must be shut off to mount its disks read-only (state: $state)" >&2
         exit 1
       fi
+
+      # Seatbelt: refuse if any other defined domain sharing an image is live.
+      while read -r src; do
+        [ -n "$src" ] || continue
+        while read -r other; do
+          [ -n "$other" ] && [ "$other" != "$dom" ] || continue
+          if virsh domblklist "$other" 2>/dev/null | awk '{print $2}' | grep -qxF "$src"; then
+            ostate=$(virsh domstate "$other" 2>/dev/null || true)
+            case "$ostate" in
+              running|paused)
+                echo "domain '$other' ($ostate) uses the same disk image: $src" >&2
+                echo "shut it down before mounting '$dom'" >&2
+                exit 1
+                ;;
+            esac
+          fi
+        done < <(virsh list --all --name)
+      done < <(virsh domblklist "$dom" --details 2>/dev/null | tail -n +3 | awk '$1=="file" && $2=="disk" {print $4}')
       if [ -d "$base" ] && findmnt -rno TARGET 2>/dev/null | grep -qF "$base/"; then
         echo "$dom already mounted under $base — run: sudo nixvirt-mount -u $dom" >&2
         exit 1

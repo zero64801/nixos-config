@@ -49,8 +49,8 @@ in
       settings = {
         alias.ignore-local = ''!sh -c 'printf "%s\n" "$@" >> "$(git rev-parse --git-dir)/info/exclude"' _'';
         user = {
-          name = cfg.name;
-          email = cfg.email;
+          inherit (cfg) name;
+          inherit (cfg) email;
           signingkey = lib.mkIf cfg.signing.enable cfg.signing.keyFile;
         };
         safe.directory = "~/nixos";
@@ -66,7 +66,7 @@ in
     hm.programs.ssh = lib.mkIf cfg.github.enable {
       enable = true;
       enableDefaultConfig = false;
-      matchBlocks."github.com" = {
+      settings."github.com" = {
         identityFile = cfg.signing.keyFile |> lib.removeSuffix ".pub";
         identityAgent = "none";
         identitiesOnly = true;

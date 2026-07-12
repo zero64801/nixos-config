@@ -3,7 +3,6 @@
 let
   cfg = config.nyx.apps.gaming;
   stylixEnabled = config.nyx.stylix.enable;
-  user = config.nyx.flake.user;
 in
 {
   config = lib.mkIf (cfg.enable && cfg.steam.enable && stylixEnabled) {
@@ -24,8 +23,8 @@ in
       ''
         :root
         {
-          --adw-accent-bg-rbg: ${base0D-rgb-r}, ${base0D-rgb-g}, ${base0D-rgb-b};
-          --adw-accent-fg-rbg: ${base00-rgb-r}, ${base00-rgb-g}, ${base00-rgb-b};
+          --adw-accent-bg-rgb: ${base0D-rgb-r}, ${base0D-rgb-g}, ${base0D-rgb-b};
+          --adw-accent-fg-rgb: ${base00-rgb-r}, ${base00-rgb-g}, ${base00-rgb-b};
           --adw-accent-rgb: ${base0D-rgb-r}, ${base0D-rgb-g}, ${base0D-rgb-b};
 
           --adw-destructive-bg-rgb: ${base08-rgb-r}, ${base08-rgb-g}, ${base08-rgb-b};
