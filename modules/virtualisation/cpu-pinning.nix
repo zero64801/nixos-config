@@ -31,6 +31,9 @@ let
   running claims instead of assuming it owns the whole machine.
   */
   helpers = ''
+    # libvirt's hook PATH has no util-linux (flock)
+    export PATH="${lib.makeBinPath [ pkgs.util-linux pkgs.coreutils ]}:$PATH"
+
     STATE_DIR=/var/lib/nyx/vm-mode
     OVERRIDE_DIR=/run/nyx/vm-mode
     RUN_DIR=/run/nyx/vm-cpus

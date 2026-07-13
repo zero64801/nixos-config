@@ -13,7 +13,11 @@ let
   gpuSwitchCfg = config.nyx.virtualisation.gpuSwitch;
 
   hugepagesHook = pkgs.writeShellScript "libvirt-hook-hugepages" (
-    builtins.readFile ./_hugepages-hook.sh
+    ''
+      # libvirt's hook PATH has no util-linux (flock)
+      export PATH="${lib.makeBinPath [ pkgs.util-linux ]}:$PATH"
+    ''
+    + builtins.readFile ./_hugepages-hook.sh
   );
 in
 {
