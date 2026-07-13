@@ -1,11 +1,15 @@
-inputs: final: prev:
+_inputs: final: prev:
 let
   inherit (prev) lib;
 in
 {
   util = {
-    importFlake = path:
-      (import inputs.flake-compat { src = path; }).defaultNix;
+    # Content pins (plain source trees) from a sources.json next to the
+    # consuming module; managed by `nyx-pin sources`.
+    importPins = path:
+      lib.mapAttrs
+        (_: pin: final.fetchFromGitHub { inherit (pin) owner repo rev hash; })
+        (builtins.fromJSON (builtins.readFile path));
 
     # Shared scaffold for the nyx CLI scripts. SC2034/SC2329 disabled because
     # not every script uses every color or helper.

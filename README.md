@@ -23,7 +23,7 @@ nixos/
 - **`nyx.apps.*`** — Each app has an explicit enable toggle
 - **`nyx.persistence`** — Unified system + home persistence (used with impermanence)
 - **`hm.*`** — Alias for `home-manager.users.<primary user>` via `mkAliasOptionModule`
-- **`pkgs.util.importFlake`** — Wrapper for `flake-compat` to load sub-flake inputs
+- **`pkgs.util.importPins`** — Load content pins from a module's `sources.json` (managed by `nyx-pin sources`)
 
 ## Host: Quanta
 

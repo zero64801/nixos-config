@@ -1,0 +1,14 @@
+{
+  "vencord": {
+    "owner": "Vendicated",
+    "repo": "Vencord",
+    "rev": "94cc541e38905063988094249a40e618f83a12e4",
+    "hash": "sha256-X+q8itQWPRjUNTS23KPANg36sbl4M9jtT6SL22+RtMc="
+  },
+  "bigFileUpload": {
+    "owner": "ScattrdBlade",
+    "repo": "bigFileUpload",
+    "rev": "5b5699c17036d80e312c66c5dad8977540bcc9a7",
+    "hash": "sha256-76ZcxVKpIWr5PRcTZMoMOdF/kHxUt2Y1EquV+fcX9kg="
+  }
+}

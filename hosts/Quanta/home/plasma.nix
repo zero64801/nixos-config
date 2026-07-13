@@ -100,8 +100,27 @@ in
     export KWIN_DRM_DEVICES
   '';
 
+  # Sandboxed VSCode from ~/Projects/dev/shell.nix; direnv exec replays the
+  # cached nix-direnv env so no terminal or manual nix-shell is needed.
+  hm.xdg.desktopEntries.dev-workspace = {
+    name = "Dev Workspace";
+    genericName = "Code Editor";
+    comment = "VSCode in the sandboxed dev environment";
+    exec = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+    icon = "code";
+    terminal = false;
+    categories = [ "Development" "IDE" ];
+    settings.StartupWMClass = "Code";
+  };
+
   hm.programs.plasma = lib.mkIf config.nyx.desktop.plasma6.enable {
     enable = true;
+
+    hotkeys.commands.dev-workspace = {
+      name = "Open Dev Workspace";
+      key = "Meta+C";
+      command = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+    };
 
     workspace = {
       clickItemTo = "open";
@@ -139,6 +158,7 @@ in
                 "applications:org.kde.dolphin.desktop"
                 "applications:org.kde.konsole.desktop"
                 "applications:zen-beta.desktop"
+                "applications:dev-workspace.desktop"
               ];
             };
           }

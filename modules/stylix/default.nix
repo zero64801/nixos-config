@@ -2,7 +2,7 @@
 
 let
   cfg = config.nyx.stylix;
-  schemes = (pkgs.util.importFlake ./sources).inputs.schemes;
+  inherit (pkgs.util.importPins ./sources.json) schemes;
 in
 {
   imports = [

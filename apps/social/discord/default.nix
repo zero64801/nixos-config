@@ -1,9 +1,11 @@
-{ config, lib, pkgs, ... }:
+{ config, inputs, lib, pkgs, ... }:
 
 let
   cfg = config.nyx.apps.discord;
-  sources = (pkgs.util.importFlake ./sources).inputs;
-  remotePlugins = (pkgs.util.importFlake ./plugins).inputs;
+  sources = pkgs.util.importPins ./sources.json;
+  remotePlugins = {
+    inherit (sources) bigFileUpload;
+  };
   localPlugins = {
     MyServerRoles = ./local-plugins/myServerRoles;
   };
@@ -20,7 +22,7 @@ in
     hm.imports = [
       ({ config, pkgs, ... }: {
         imports = [
-          sources.nixcord.homeModules.nixcord
+          inputs.nixcord.homeModules.nixcord
         ];
 
         programs.nixcord = {
@@ -28,8 +30,9 @@ in
           discord = {
             # OpenAsar's moduleUpdater mkdirs inside the read-only store and hangs bootstrap before window creation (discord 1.0.137 pairing).
             openASAR.enable = false;
-            autoscroll.enable = true;
-            vencord.package = sources.nixcord.packages.${pkgs.stdenv.hostPlatform.system}.vencord.overrideAttrs (old: {
+            commandLineArgs = [ "--enable-blink-features=MiddleClickAutoscroll" ];
+            vencord.enable = true;
+            vencord.package = inputs.nixcord.packages.${pkgs.stdenv.hostPlatform.system}.vencord.overrideAttrs (old: {
               src = sources.vencord // {
                 inherit (old.src) owner repo;
               };
@@ -45,15 +48,13 @@ in
             plugins = {
               betterSettings.enable = true;
               betterUploadButton.enable = true;
-              ClearURLs.enable = true;
+              clearUrls.enable = true;
               fakeNitro = {
                 enable = true;
                 transformCompoundSentence = true;
               };
               fixImagesQuality.enable = true;
               fixYoutubeEmbeds.enable = true;
-              # nixcord warns iLoveSpam -> IloveSpam, but this rev only defines
-              # the old option name; rename here once the sub-flake updates.
               iLoveSpam.enable = true;
               loadingQuotes.enable = true;
               messageLinkEmbeds.enable = true;
@@ -61,7 +62,7 @@ in
               replaceGoogleSearch = {
                 enable = true;
                 customEngineName = "DuckDuckGo";
-                customEngineURL = "https://duckduckgo.com/";
+                customEngineUrl = "https://duckduckgo.com/";
               };
               silentTyping = {
                 enable = true;

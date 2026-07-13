@@ -732,6 +732,98 @@ writeShellApplication {
       jq '.' "$PINS_FILE"
     }
 
+    # Content pins: sources.json files next to modules, consumed via
+    # pkgs.util.importPins. Entries: {owner, repo, rev, hash, ref?, frozen?}.
+    sources_files() {
+      git -C "$FLAKE_PATH" ls-files --cached --others --exclude-standard -- '*sources.json' 2>/dev/null \
+        | while IFS= read -r f; do echo "$FLAKE_PATH/$f"; done
+    }
+
+    cmd_sources_list() {
+      ensure_paths
+      echo -e "''${bold}Content Pins (sources.json)''${reset}\n"
+      local f found=false
+      while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        found=true
+        echo -e "  ''${blue}''${f#"$FLAKE_PATH"/}''${reset}"
+        jq -r 'to_entries[] | "\(.key)\t\(.value.owner)/\(.value.repo)\t\(.value.rev[0:12])\t\(.value.frozen // "")"' "$f" \
+          | while IFS=$'\t' read -r name repo rev frozen; do
+            if [[ -n "$frozen" ]]; then
+              printf "    %-18s %-32s %-14s ''${cyan}frozen''${reset} ''${DIM}%s''${NC}\n" "$name" "$repo" "$rev" "$frozen"
+            else
+              printf "    %-18s %-32s %s\n" "$name" "$repo" "$rev"
+            fi
+          done
+      done < <(sources_files)
+      [[ "$found" == "true" ]] || echo -e "  ''${DIM}No sources.json files found.''${NC}"
+    }
+
+    cmd_sources_update() {
+      ensure_paths
+      local force=false
+      local targets=()
+      while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+          --force|-f) force=true; shift ;;
+          *) targets+=("$1"); shift ;;
+        esac
+      done
+
+      local f name updated=0
+      while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        while IFS= read -r name; do
+          if [[ ''${#targets[@]} -gt 0 ]]; then
+            local wanted=false t
+            for t in "''${targets[@]}"; do [[ "$t" == "$name" ]] && wanted=true; done
+            [[ "$wanted" == "true" ]] || continue
+          fi
+
+          local owner repo old_rev ref frozen
+          owner=$(jq -r --arg n "$name" '.[$n].owner' "$f")
+          repo=$(jq -r --arg n "$name" '.[$n].repo' "$f")
+          old_rev=$(jq -r --arg n "$name" '.[$n].rev' "$f")
+          ref=$(jq -r --arg n "$name" '.[$n].ref // empty' "$f")
+          frozen=$(jq -r --arg n "$name" '.[$n].frozen // empty' "$f")
+
+          if [[ -n "$frozen" && "$force" != "true" ]]; then
+            warn "Skipping ''${bold}$name''${reset} (frozen: $frozen). Use --force to override."
+            continue
+          fi
+
+          local ls_ref="HEAD"
+          [[ -n "$ref" ]] && ls_ref="refs/heads/$ref"
+          local new_rev
+          new_rev=$(git ls-remote "https://github.com/$owner/$repo" "$ls_ref" | head -1 | cut -f1)
+          if [[ -z "$new_rev" ]]; then
+            warn "Could not resolve $ls_ref for ''${bold}$name''${reset} ($owner/$repo)"
+            continue
+          fi
+
+          if [[ "$new_rev" == "$old_rev" ]]; then
+            ok "''${bold}$name''${reset} up to date (''${old_rev:0:12})"
+            continue
+          fi
+
+          info "Updating ''${bold}$name''${reset}: ''${cyan}''${old_rev:0:12}''${reset} → ''${cyan}''${new_rev:0:12}''${reset}"
+          local hash
+          hash=$(nix flake prefetch --json "github:$owner/$repo/$new_rev" | jq -r '.hash')
+          [[ -n "$hash" && "$hash" != "null" ]] || die "Prefetch failed for $name"
+
+          local tmp
+          tmp=$(mktemp)
+          jq --arg n "$name" --arg r "$new_rev" --arg h "$hash" \
+            '.[$n].rev = $r | .[$n].hash = $h' "$f" > "$tmp" && mv "$tmp" "$f"
+          updated=$((updated + 1))
+          echo -e "  ''${DIM}https://github.com/$owner/$repo/compare/''${old_rev:0:12}...''${new_rev:0:12}''${NC}"
+        done < <(jq -r 'keys[]' "$f")
+      done < <(sources_files)
+
+      echo
+      ok "$updated content pin(s) updated."
+    }
+
     show_help() {
       echo -e "''${bold}nyx-pin''${reset} — Manage flake input pinning
 
@@ -756,6 +848,10 @@ writeShellApplication {
   ''${yellow}set-reason <input> [reason]''${reset}     Set or update the reason annotation for a pin.
   ''${yellow}history [input]''${reset}                 Show git history of pin changes.
   ''${yellow}config''${reset}                          Print the raw pins.json contents.
+  ''${yellow}sources [ls]''${reset}                    List content pins from all sources.json files.
+  ''${yellow}sources update [names...]''${reset}       Update content pins to their latest upstream rev.
+                                   Honors a \"frozen\" field per entry; --force overrides.
+                                   Optional \"ref\" field tracks a branch instead of HEAD.
   ''${yellow}help''${reset}                            Show this help message.
 
 ''${green}''${bold}Pin Types:''${reset}
@@ -857,6 +953,14 @@ writeShellApplication {
         config)
           shift
           cmd_list_json "$@"
+          ;;
+        sources)
+          shift
+          case "''${1:-ls}" in
+            ls|list) cmd_sources_list ;;
+            update|up) shift; cmd_sources_update "$@" ;;
+            *) die "Unknown sources subcommand: $1 (use ls or update)" ;;
+          esac
           ;;
         *)
           die "Unknown command: $1. Run 'nyx-pin help' for usage."
