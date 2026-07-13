@@ -32,6 +32,9 @@ in
         RestartSec = "30s";
       };
       script = ''
+        # wait-online may be disabled, so DNS can lag this unit; skip the
+        # network fetch once the remote exists and let Restart cover first boot
+        flatpak remotes --columns=name | grep -qx flathub && exit 0
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       '';
     };

@@ -32,10 +32,16 @@ let
   */
   helpers = ''
     STATE_DIR=/var/lib/nyx/vm-mode
+    OVERRIDE_DIR=/run/nyx/vm-mode
     RUN_DIR=/run/nyx/vm-cpus
 
+    # One-shot override (vm-mode --once) wins over the persistent state file.
     mode_of() {
       local m
+      m=$(cat "$OVERRIDE_DIR/$1" 2>/dev/null || true)
+      case "$m" in
+        ${modePattern}) printf '%s' "$m"; return ;;
+      esac
       m=$(cat "$STATE_DIR/$1" 2>/dev/null || true)
       case "$m" in
         ${modePattern}) ;;
@@ -164,7 +170,7 @@ ${modeCase}
           ${vm-pin-apply} "$GUEST_NAME" "$MODE"
         ;;
       release/end)
-        rm -f "$RUN_DIR/$GUEST_NAME"
+        rm -f "$RUN_DIR/$GUEST_NAME" "$OVERRIDE_DIR/$GUEST_NAME"
         recompute_host
         epp_restore "$VM_LIST"
         ;;
@@ -204,10 +210,11 @@ ${modeCase}
   vm-mode = pkgs.writeShellScriptBin "vm-mode" ''
     set -euo pipefail
     STATE_DIR=/var/lib/nyx/vm-mode
+    OVERRIDE_DIR=/run/nyx/vm-mode
     DOMAINS="${lib.concatStringsSep " " cfg.domains}"
     MODES="${lib.concatStringsSep " " (lib.attrNames cfg.modes)}"
 
-    current_mode() {
+    saved_mode() {
       local m
       m=$(cat "$STATE_DIR/$1" 2>/dev/null || true)
       case "$m" in
@@ -216,9 +223,29 @@ ${modeCase}
       esac
     }
 
+    # Effective mode: one-shot override beats the saved one.
+    current_mode() {
+      local m
+      m=$(cat "$OVERRIDE_DIR/$1" 2>/dev/null || true)
+      case "$m" in
+        ${modePattern}) printf '%s (once)' "$m" ;;
+        *) saved_mode "$1" ;;
+      esac
+    }
+
     state_of() {
       ${virsh} -c qemu:///system domstate "$1" 2>/dev/null | head -1 || echo unknown
     }
+
+    ONCE=0
+    ARGS=""
+    for a in "$@"; do
+      case "$a" in
+        --once) ONCE=1 ;;
+        *) ARGS="$ARGS $a" ;;
+      esac
+    done
+    set -- $ARGS
 
     if [ $# -eq 0 ]; then
       printf '%-12s %-10s %s\n' DOMAIN MODE STATE
@@ -245,11 +272,20 @@ ${modeCase}
       *) echo "vm-mode: unknown mode '$MODE' (have: $MODES)" >&2; exit 1 ;;
     esac
 
-    printf '%s\n' "$MODE" > "$STATE_DIR/$DOM"
-    if state_of "$DOM" | grep -q running; then
-      exec /run/wrappers/bin/pkexec ${vm-mode-root} "$DOM"
+    if [ "$ONCE" -eq 1 ]; then
+      printf '%s\n' "$MODE" > "$OVERRIDE_DIR/$DOM"
+      SCOPE="once (reverts to '$(saved_mode "$DOM")' after shutdown)"
     else
-      echo "vm-mode: '$DOM' set to '$MODE'; applies at next start"
+      printf '%s\n' "$MODE" > "$STATE_DIR/$DOM"
+      rm -f "$OVERRIDE_DIR/$DOM"
+      SCOPE="permanent"
+    fi
+
+    if state_of "$DOM" | grep -q running; then
+      /run/wrappers/bin/pkexec ${vm-mode-root} "$DOM"
+      echo "vm-mode: '$DOM' -> '$MODE' ($SCOPE)"
+    else
+      echo "vm-mode: '$DOM' -> '$MODE' at next start ($SCOPE)"
     fi
   '';
 in
@@ -304,6 +340,8 @@ in
     systemd.tmpfiles.rules = [
       "d /var/lib/nyx 0755 root root -"
       "d /var/lib/nyx/vm-mode 2775 root libvirtd -"
+      "d /run/nyx 0755 root root -"
+      "d /run/nyx/vm-mode 2775 root libvirtd -"
     ];
 
     nyx.persistence.directories = [ "/var/lib/nyx/vm-mode" ];

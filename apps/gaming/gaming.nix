@@ -77,6 +77,10 @@ in
         ACTION=="add|bind", DRIVER=="amd_x3d_vcache", RUN+="${pkgs.runtimeShell} -c '${pkgs.coreutils}/bin/chgrp gamemode /sys%p/amd_x3d_mode; ${pkgs.coreutils}/bin/chmod g+w /sys%p/amd_x3d_mode'"
       '';
 
+      # realtime priority comes from the gamescope-rt helper, not
+      # capSysNice, which breaks inside Steam's container
+      programs.gamescope.enable = true;
+
       programs.steam = lib.mkIf cfg.steam.enable {
         enable = true;
         remotePlay.openFirewall = cfg.steam.remotePlay;
@@ -87,6 +91,8 @@ in
           dwproton
           proton-cachyos-v3-bin
         ];
+
+        extraPackages = [ pkgs.gamescope ];
       };
     }
 

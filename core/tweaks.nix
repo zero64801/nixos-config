@@ -2,32 +2,35 @@
 {
   system.activationScripts.diff = {
     supportsDryActivation = true;
-    text = ''
-      if [[ -e /run/current-system ]]; then
-        ${lib.getExe pkgs.nushell} -c "
-          let diff_closure = ${lib.getExe pkgs.nix} store diff-closures /run/current-system '$systemConfig';
-          if \$diff_closure != \"\" {
-            let parsed = \$diff_closure
-              | lines
-              | where \$it =~ KiB
-              | where \$it =~ →
-              | parse -r '^(?<Package>\S+): (?<Old_Version>[^,]+)(?:.*) → (?<New_Version>[^,]+)(?:.*, )(?<DiffBin>.*)$'
-              | update Old_Version { if \$in == '∅' { 'new' } else if \$in == 'ε' { '-' } else { \$in } }
-              | update New_Version { if \$in == '∅' { 'removed' } else if \$in == 'ε' { '-' } else { \$in } }
-              | insert Diff {
-                get DiffBin
-                | ansi strip
-                | str trim -l -c '+'
-                | into filesize
+    text = let
+      # diff-closures always prints sizes in KiB, so filtering on it keeps
+      # only lines with a size delta
+      diffScript = pkgs.writeText "closure-diff.nu" ''
+        def main [new: string] {
+          let parsed = ^${lib.getExe pkgs.nix} store diff-closures /run/current-system $new
+            | ansi strip
+            | lines
+            | where $it =~ '→' and $it =~ 'KiB'
+            | parse -r '^(?<Package>\S+): (?<Old>.*?) → (?<New>.*?), (?<DiffBin>[+-][0-9.]+ KiB)$'
+            | insert Change {|row|
+                if $row.Old == '∅' { 'added' } else if $row.New == '∅' { 'removed' } else { 'updated' }
               }
-              | reject DiffBin
-              | sort-by -r Diff;
-            if (\$parsed | is-not-empty) {
-              \$parsed | print
-              \$parsed | get Diff | math sum
-            }
+            | update Old { if $in in ['∅', 'ε'] { '-' } else { $in } }
+            | update New { if $in in ['∅', 'ε'] { '-' } else { $in } }
+            | insert Diff { get DiffBin | str trim -l -c '+' | into filesize }
+            | reject DiffBin
+            | select Package Change Old New Diff
+            | sort-by -r Diff
+
+          if ($parsed | is-not-empty) {
+            $parsed | print
+            print $"Total: ($parsed | get Diff | math sum)"
           }
-        "
+        }
+      '';
+    in ''
+      if [[ -e /run/current-system ]]; then
+        ${lib.getExe pkgs.nushell} ${diffScript} "$systemConfig"
       fi
     '';
   };

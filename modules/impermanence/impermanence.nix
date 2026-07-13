@@ -151,18 +151,26 @@ let
       previousSnapshot = cfg.btrfs.previousSnapshot;
     in
     ''
+      # The systemd initrd only ships bash, coreutils and btrfs-progs: no sed,
+      # grep or awk. pipefail so a missing tool aborts instead of feeding the
+      # loop an empty list (that once left root undeletable and blocked boot).
+      set -o pipefail
+
       echo "impermanence: mounting btrfs volume"
       mkdir -p /mnt
       mount ${device} /mnt
 
       echo "impermanence: cleaning up nested subvolumes under ${rootSubvolume}"
-      # Full list (not -o: grandchildren too), sed keeps paths with spaces,
-      # reverse sort deletes children before their parents.
+      # Full list (not -o: grandchildren too), prefix strip keeps paths with
+      # spaces, reverse sort deletes children before their parents.
       btrfs subvolume list /mnt \
-        | sed 's/^.* path //' \
-        | { grep '^${lib.removePrefix "/" rootSubvolume}/' || true; } \
+        | while IFS= read -r line; do printf '%s\n' "''${line#* path }"; done \
         | sort -r \
         | while IFS= read -r subvolume; do
+        case "$subvolume" in
+          "${lib.removePrefix "/" rootSubvolume}"/*) ;;
+          *) continue ;;
+        esac
         echo "impermanence: deleting /$subvolume"
         btrfs subvolume delete "/mnt/$subvolume"
       done
@@ -289,8 +297,19 @@ in
           requiredBy  = [ "sysroot.mount" ];
           after       = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
           requires    = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
-          unitConfig.DefaultDependencies = "no";
-          serviceConfig.Type = "oneshot";
+          unitConfig = {
+            DefaultDependencies = "no";
+            # The switch-root isolate re-propagates sysroot.mount's Requires
+            # as a fresh start job; this blocks any second run against the
+            # already-mounted root (it would wipe it live).
+            ConditionPathIsMountPoint = "!/sysroot";
+          };
+          serviceConfig = {
+            Type = "oneshot";
+            # Stay active after success so that re-propagated start job is a
+            # no-op instead of re-executing the script.
+            RemainAfterExit = true;
+          };
           script = rollbackScript;
         };
     })
