@@ -179,6 +179,7 @@ in
         steam.enable = true;
         x3dCacheBias = true;
       };
+      jail.enable = true;
       llamaCpp = {
         enable = true;
         cuda = true;
