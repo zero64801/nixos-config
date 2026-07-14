@@ -7,6 +7,7 @@
 
 let
   cfg = config.nyx.apps.jail;
+  withSteam = config.programs.steam.enable;
 
   /*
   Two seccomp BPF filters compiled at build time with libseccomp, modeled on
@@ -141,12 +142,11 @@ let
 
       Usage: nyx-jail [OPTIONS] -- COMMAND...
 
-        --profile NAME  steam | generic | auto (default auto: steam when the
-                        STEAM_COMPAT_* environment is present, else generic)
+        --profile NAME  ${if withSteam then "steam | generic | auto (auto: steam when launched by Steam)" else "generic | auto"}
         --no-net        deny network (unshare the network namespace)
-        --hardened      block user namespaces and mount even for steam
-        --userns        allow user namespaces (automatic for steam; needed by
-                        nested sandboxes: browsers, Electron, pressure-vessel)
+        --hardened      block user namespaces and mount${lib.optionalString withSteam " even for steam"}
+        --userns        allow user namespaces (needed by nested sandboxes:
+                        browsers, Electron${lib.optionalString withSteam "; automatic for steam"})
         --no-dbus       no session bus at all
         --talk NAME     allow talking to a session bus name (repeatable)
         --portal        allow xdg-desktop-portal (file dialogs, doc portal)
@@ -158,7 +158,7 @@ let
         --env-prefix P  forward all host env vars starting with P (repeatable)
         --debug         print the bwrap command line and dropped env vars to stderr
 
-      Steam launch options:  nyx-jail -- %command%
+      ${lib.optionalString withSteam "Steam launch options:  nyx-jail -- %command%"}
       Sketchy binary:        nyx-jail --no-net -- ./unknown-thing
       USAGE
         exit 2
@@ -188,28 +188,35 @@ let
         esac
       done
       [ $# -gt 0 ] || usage
-      case "$profile" in steam|generic|auto) ;; *) usage ;; esac
+      case "$profile" in ${lib.optionalString withSteam "steam|"}generic|auto) ;; *) usage ;; esac
 
-      # Steam sets STEAM_COMPAT_CLIENT_INSTALL_PATH for every compat-tool launch.
       if [ "$profile" = auto ]; then
-        if [ -n "''${STEAM_COMPAT_CLIENT_INSTALL_PATH:-}" ]; then
-          profile=steam
-        else
-          profile=generic
-        fi
+        ${
+          if withSteam then
+            # Steam sets STEAM_COMPAT_CLIENT_INSTALL_PATH for every compat-tool launch.
+            ''if [ -n "''${STEAM_COMPAT_CLIENT_INSTALL_PATH:-}" ]; then profile=steam; else profile=generic; fi''
+          else
+            "profile=generic"
+        }
       fi
 
+      ${lib.optionalString withSteam ''
       # Flatpak-parity default: user namespaces blocked. Steam needs them for
-      # pressure-vessel, so its profile falls back to the base filter.
+      # pressure-vessel, so its profile falls back to the base filter.''}
       if [ "$harden" = auto ]; then
-        if [ "$profile" = steam ]; then harden=0; else harden=1; fi
+        ${
+          if withSteam then
+            ''if [ "$profile" = steam ]; then harden=0; else harden=1; fi''
+          else
+            "harden=1"
+        }
       fi
       filter=${seccompFilters}/base.bpf
       [ "$harden" -eq 1 ] && filter=${seccompFilters}/hardened.bpf
 
       RUNTIME="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
       workdir="$PWD"
-      [ "$profile" = steam ] && workdir="''${STEAM_COMPAT_INSTALL_PATH:-$PWD}"
+      ${lib.optionalString withSteam ''[ "$profile" = steam ] && workdir="''${STEAM_COMPAT_INSTALL_PATH:-$PWD}"''}
 
       # --unshare-pid is load-bearing security, not cleanup: without a PID
       # namespace the fresh /proc still reflects the host, so the payload can
@@ -351,6 +358,8 @@ let
         [ -d "$RUNTIME/doc" ] && args+=(--bind "$RUNTIME/doc" "$RUNTIME/doc")
       fi
 
+      ${
+        if withSteam then ''
       if [ "$profile" = steam ]; then
         # gamemoded lives on the host and is driven over the session bus.
         talk+=(com.feralinteractive.GameMode)
@@ -393,7 +402,14 @@ let
         # adds --rw "$PWD" for write access. Skipped when it is $HOME (already
         # a tmpfs) to avoid un-masking the whole home.
         [ "$workdir" != "$HOME" ] && ro "$workdir"
-      fi
+      fi''
+        else ''
+      # Generic: make the invocation directory reachable so --chdir and a
+      # relative COMMAND (./thing) resolve. Read-only by default; the caller
+      # adds --rw "$PWD" for write access. Skipped when it is $HOME (already
+      # a tmpfs) to avoid un-masking the whole home.
+      [ "$workdir" != "$HOME" ] && ro "$workdir"''
+      }
 
       for p in "''${extra_ro[@]}"; do ro "$p"; done
       for p in "''${extra_rw[@]}"; do rw "$p"; done
