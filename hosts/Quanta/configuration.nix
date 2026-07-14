@@ -53,6 +53,13 @@ in
         enable = true;
       };
 
+      # Xbox 360 pad
+      gamepad = {
+        enable = true;
+        vendorId = "045e";
+        productId = "028e";
+      };
+
       desktop = {
         enable = true;
 
