@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "apps": {
+    "com.github.Matoking.protontricks/x86_64/stable": "cd86ce5c0d798b22d11460273cb449d0f64b067c47c31d6de293b09c7a10b3bc",
+    "com.valvesoftware.SteamLink/x86_64/stable": "85941404406e12178a2493d2ae841e3c88ec5670d2790d089b36f6d20282e5f8",
+    "org.vinegarhq.Vinegar/x86_64/stable": "4393d5356630a1c0c2902998cdd537e80f0fe039407310de358855735e6ba562"
+  },
+  "runtimes": {}
+}

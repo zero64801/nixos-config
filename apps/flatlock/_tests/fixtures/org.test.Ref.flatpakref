@@ -1,0 +1,7 @@
+[Flatpak Ref]
+Name=org.test.Ref
+Branch=stable
+Url=file:///etc/flatlock-test-repo
+RuntimeRepo=file:///etc/flatlock-test-repo.flatpakrepo
+IsRuntime=false
+SuggestRemoteName=refremote

@@ -172,14 +172,12 @@ in
       };
       direnv.enable = true;
       zeditor.enable = true;
-      flatpak.enable = true;
       scx.enable = true;
       gaming = {
         enable = true;
         steam.enable = true;
         x3dCacheBias = true;
       };
-      jail.enable = true;
       llamaCpp = {
         enable = true;
         cuda = true;

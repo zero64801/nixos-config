@@ -158,7 +158,6 @@ in
                 "applications:org.kde.dolphin.desktop"
                 "applications:org.kde.konsole.desktop"
                 "applications:zen-beta.desktop"
-                "applications:dev-workspace.desktop"
               ];
             };
           }

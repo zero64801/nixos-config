@@ -25,9 +25,9 @@ in
 
     home = {
       directories = mkOption {
-        type    = types.listOf types.str;
+        type    = types.listOf (types.either types.str (types.attrsOf types.anything));
         default = [];
-        description = "User home directories to persist (relative to HOME).";
+        description = "User home directories to persist (relative to HOME, or attrsets with directory/user/group/mode).";
       };
 
       files = mkOption {

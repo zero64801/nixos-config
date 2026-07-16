@@ -73,6 +73,18 @@ let
   resolvePath = homeDir: p:
     if lib.hasPrefix "/" p then p else "${homeDir}/${p}";
 
+  # Home entries may be a bare path or an impermanence attrset carrying
+  # mode/user/group; resolve the relative path inside whichever form.
+  resolveEntry = homeDir: entry:
+    if builtins.isString entry then
+      resolvePath homeDir entry
+    else if builtins.isAttrs entry && entry ? directory then
+      entry // { directory = resolvePath homeDir entry.directory; }
+    else if builtins.isAttrs entry && entry ? file then
+      entry // { file = resolvePath homeDir entry.file; }
+    else
+      entry;
+
   localPersistence =
     [ { type = "directories"; paths = allDirectories; }
       { type = "files";       paths = allFiles; }
@@ -82,8 +94,8 @@ let
         uCfg    = allUsers.${u};
         homeDir = config.users.users.${u}.home or "/home/${u}";
       in
-      [ { type = "directories"; paths = map (resolvePath homeDir) (uCfg.directories or []); }
-        { type = "files";       paths = map (resolvePath homeDir) (uCfg.files or []); }
+      [ { type = "directories"; paths = map (resolveEntry homeDir) (uCfg.directories or []); }
+        { type = "files";       paths = map (resolveEntry homeDir) (uCfg.files or []); }
       ]
     ) (builtins.attrNames allUsers);
 
@@ -96,8 +108,8 @@ let
       in
       [ { type = "directories"; paths = nyxCfg.directories; }
         { type = "files";       paths = nyxCfg.files; }
-        { type = "directories"; paths = map (resolvePath homeDir) nyxCfg.home.directories; }
-        { type = "files";       paths = map (resolvePath homeDir) nyxCfg.home.files; }
+        { type = "directories"; paths = map (resolveEntry homeDir) nyxCfg.home.directories; }
+        { type = "files";       paths = map (resolveEntry homeDir) nyxCfg.home.files; }
       ]
     else [];
 

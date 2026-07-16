@@ -1,0 +1,5 @@
+[Context]
+sockets=wayland;!x11
+
+[Environment]
+FROM_FILE=1
