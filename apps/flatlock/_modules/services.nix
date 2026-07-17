@@ -18,6 +18,7 @@ lib.mkMerge [
     assertions = model.assertions;
     warnings = model.warnings;
     flatlock.remotes.flathub = lib.mkDefault "https://flathub.org/repo/flathub.flatpakrepo";
+    flatlock.remotes.flathub-beta = lib.mkDefault "https://flathub.org/beta-repo/flathub-beta.flatpakrepo";
     flatlock.overridesPackage = model.overridesPackage;
   }
 
@@ -73,8 +74,30 @@ lib.mkMerge [
   })
 
   (lib.optionalAttrs (!isSystem) {
+    /*
+      The user profile shadows the system `flatlock` in PATH, so plain
+      `flatlock` would only ever reach the (usually empty) user installation.
+      Ship a flatpak-style dispatcher instead: default and `--system` go to the
+      system CLI where a host's declared apps live, `--user` to the real user
+      CLI. Falls back to the user CLI when no system flatlock is installed.
+    */
     home.packages = [
-      build.flatlock
+      (pkgs.writeShellApplication {
+        name = "flatlock";
+        text = ''
+          user_cli=${build.flatlock}/bin/flatlock
+          sys_cli=/run/current-system/sw/bin/flatlock
+          case "''${1:-}" in
+            --user)   shift; exec "$user_cli" "$@" ;;
+            --system) shift
+              [ -x "$sys_cli" ] || { echo "flatlock: no system installation" >&2; exit 1; }
+              exec "$sys_cli" "$@" ;;
+            *)
+              if [ -x "$sys_cli" ]; then exec "$sys_cli" "$@"; fi
+              exec "$user_cli" "$@" ;;
+          esac
+        '';
+      })
       pkgs.flatpak
     ];
     xdg.enable = true;

@@ -175,7 +175,6 @@ in
       scx.enable = true;
       gaming = {
         enable = true;
-        steam.enable = true;
         x3dCacheBias = true;
       };
       llamaCpp = {

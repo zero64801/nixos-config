@@ -8,5 +8,5 @@
   ];
 
   hm.flatlock.overrides.settings."com.github.Matoking.protontricks".Context.filesystems =
-    "/mnt/vault/Games/Steam;";
+    "/mnt/vault/Games/SteamLibrary;";
 }

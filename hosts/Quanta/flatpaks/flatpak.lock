@@ -1,9 +1,17 @@
 {
-  "version": 1,
   "apps": {
     "com.github.Matoking.protontricks/x86_64/stable": "cd86ce5c0d798b22d11460273cb449d0f64b067c47c31d6de293b09c7a10b3bc",
+    "com.valvesoftware.Steam/x86_64/stable": "1ea2cc62d5d76d9122fb2980b3829555b8f5076a67a6bcd42c4a6f6becd33390",
     "com.valvesoftware.SteamLink/x86_64/stable": "85941404406e12178a2493d2ae841e3c88ec5670d2790d089b36f6d20282e5f8",
     "org.vinegarhq.Vinegar/x86_64/stable": "4393d5356630a1c0c2902998cdd537e80f0fe039407310de358855735e6ba562"
   },
-  "runtimes": {}
+  "runtimes": {
+    "runtime/com.valvesoftware.Steam.Utility.gamescope/x86_64/stable": "3bd6e29900ddbda3c8963706105a8afa7e67b22eb70daaa3467fdd3db7bf69ef",
+    "runtime/org.freedesktop.Platform.GL.mesa-git/x86_64/25.08": "4c956c6804729d89df2fb2217b979294cc293a21435e78f867edd962d453841b",
+    "runtime/org.freedesktop.Platform.GL.nvidia-610-43-02/x86_64/1.4": "0444bbe12dce557687de0942deb0d9323df8aa57bce707a823da2c10b4628534",
+    "runtime/org.freedesktop.Platform.GL32.mesa-git/x86_64/25.08": "f5a8e93a4593fa6054a183e7c5705110a6d36b667d6ce38e1f5a4083b94d8a7f",
+    "runtime/org.freedesktop.Platform.GL32.nvidia-610-43-02/x86_64/1.4": "19117e178e8eb022bced316d0f827a3b908635bd59bf3a9dddc2a4eed0449d34",
+    "runtime/org.freedesktop.Platform.VulkanLayer.MangoHud/x86_64/25.08": "5e930a39701a1883e46113a3089beb9c7e57636b961d97242f74b9265bb4e7a1"
+  },
+  "version": 1
 }

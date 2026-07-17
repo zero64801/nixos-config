@@ -1,15 +1,24 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.gaming;
   stylixEnabled = config.nyx.stylix.enable;
 in
 {
-  config = lib.mkIf (cfg.enable && cfg.steam.enable && stylixEnabled) {
+  config = lib.mkIf stylixEnabled {
+    /*
+    Steam presence is detected at activation time, not from nix options, so
+    it works no matter how Steam was installed. Installation paths, not data
+    dirs: app data (~/.var, persisted here) outlives an uninstall, while the
+    deploy dir under flatpak/app only exists while installed.
+    */
     hm.home.activation.updateSteamTheme =
       config.hm.lib.dag.entryAfter [ "writeBoundary" "dconfSettings" ] ''
-        if ! ${pkgs.coreutils}/bin/timeout 20s ${lib.getExe pkgs.adwsteamgtk} -i; then
-          echo "Skipping Steam theme update: adwsteamgtk did not finish cleanly within 20s."
+        if [ -x /run/current-system/sw/bin/steam ] \
+          || [ -d /var/lib/flatpak/app/com.valvesoftware.Steam ] \
+          || [ -d "$HOME/.local/share/flatpak/app/com.valvesoftware.Steam" ]; then
+          if ! ${pkgs.coreutils}/bin/timeout 20s ${lib.getExe pkgs.adwsteamgtk} -i; then
+            echo "Skipping Steam theme update: adwsteamgtk did not finish cleanly within 20s."
+          fi
         fi
       '';
 
