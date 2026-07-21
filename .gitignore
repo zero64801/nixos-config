@@ -2,3 +2,7 @@ result
 result-*
 tests
 .direnv/
+
+# Python bytecode from the flatlock CLI/tests
+__pycache__/
+*.pyc
