@@ -10,6 +10,7 @@ in
     enable = true;
     lockFile = ./flatpak.lock;
     lockFileRelativePath = "hosts/Quanta/flatpaks/flatpak.lock";
+    uninstallUnmanaged = true;
     # overrides live at the user (hm) level; prune any system override files
     # left behind (e.g. the earlier system-level Steam/protontricks attempt)
     overrides.pruneRemoved = true;

@@ -198,7 +198,6 @@ in
 
     outboundFile = lib.mkOption {
       type = lib.types.str;
-      default = "/persist/local/secrets/sing-box/quanta-vless-outbound.json";
       description = ''
         Runtime JSON file containing a single sing-box VLESS outbound object.
         Keep this outside the Nix store because it contains server details.

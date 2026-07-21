@@ -11,6 +11,7 @@ from runtime import (
     active_commit,
     atomic_write_json,
     command,
+    current_masks,
     ensure_directory,
     ensure_regular_or_missing,
     load_json,
@@ -387,12 +388,17 @@ class FlatlockCli:
     def write_lock(self):
         path = self.require_lock_path()
         value = self.collect_lock()
+        # masking mutates the installation and prompts for auth, so skip refs already masked
+        masked = current_masks(self.scope)
         for ref in self.pin_requested:
+            if ref in masked:
+                continue
             if active_commit(self.scope, ref) is not None:
                 mask_add(self.scope, ref)
         if self.lock_runtimes:
             for ref in value["runtimes"]:
-                mask_add(self.scope, ref)
+                if ref not in masked:
+                    mask_add(self.scope, ref)
         atomic_write_json(path, value)
         print(f"flatlock: wrote {path}")
 

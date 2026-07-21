@@ -119,7 +119,6 @@ in
                   mkdir -p "$TMP_MNT/root/snapshots"
                   mkdir -p "$TMP_MNT/root/persist"
                   mkdir -p "$TMP_MNT/root/persist/local"
-                  mkdir -p "$TMP_MNT/root/persist/safe"
 
                   mkdir -p "$TMP_MNT/snapshots/root"
 
@@ -143,10 +142,6 @@ in
                   };
                   "/persist_local" = {
                     mountpoint = "/persist/local";
-                    mountOptions = [ "noatime" "ssd" "compress=zstd" ];
-                  };
-                  "/persist_safe" = {
-                    mountpoint = "/persist/safe";
                     mountOptions = [ "noatime" "ssd" "compress=zstd" ];
                   };
                 };
@@ -229,11 +224,11 @@ in
 
   fileSystems = {
     "/persist/local".neededForBoot = true;
-    "/persist/safe".neededForBoot = true;
   };
 
   systemd.tmpfiles.rules = [
     "d ${storageMount} 0755 ${user} users -"
     "d ${vaultMount} 0755 ${user} users -"
+    "d ${vaultMount}/secrets 0700 ${user} users -"
   ];
 }

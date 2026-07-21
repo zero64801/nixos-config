@@ -161,7 +161,11 @@ in
     apps = {
       zen.enable = true;
       discord.enable = true;
-      vlessProxy.enable = true;
+      vlessProxy = {
+        enable = true;
+        # on vault so a root factory reset keeps the credentials
+        outboundFile = "/mnt/vault/secrets/sing-box/vless-outbound.json";
+      };
       fish.enable = true;
       git = {
         enable = true;

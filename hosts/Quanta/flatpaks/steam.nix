@@ -51,6 +51,10 @@ in
     # the old com.valvesoftware.Steam.Utility.gamescope ref is a deprecated empty stub, the VulkanLayer ref ships the actual binaries
     "org.freedesktop.Platform.VulkanLayer.MangoHud/x86_64/25.08"
     "org.freedesktop.Platform.VulkanLayer.gamescope/x86_64/25.08"
+    # Proton-GE built against the Flatpak runtime: its Media Foundation
+    # video path plays NieR's WMV FMVs, which the nixpkgs protons render as
+    # garbage in the sandbox. Auto-mounted as a Steam extension (no grant).
+    "com.valvesoftware.Steam.CompatibilityTool.Proton-GE/x86_64/stable"
   ];
 
   # programs.steam normally ships these controller udev rules

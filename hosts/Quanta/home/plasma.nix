@@ -113,6 +113,10 @@ in
     settings.StartupWMClass = "Code";
   };
 
+  hm.home.packages = with pkgs; [
+    haruna
+  ];
+
   hm.programs.plasma = lib.mkIf config.nyx.desktop.plasma6.enable {
     enable = true;
 
