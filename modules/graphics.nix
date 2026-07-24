@@ -142,6 +142,10 @@ in
       ];
     }
 
+    (mkIf amdEnabled {
+      environment.systemPackages = [ pkgs.radeontop ];
+    })
+
     (mkIf nvidiaEnabled {
       hardware.nvidia = {
         modesetting.enable = cfg.backend == "nvidia";
