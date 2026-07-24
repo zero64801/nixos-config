@@ -584,6 +584,17 @@ class FlatlockCli:
             for ref, commit in entries.items():
                 self.bundle_ref(ref, commit, directory)
 
+    def logs(self, follow=False):
+        # reconcile output (flatpak's byte-level progress) lands in this unit's
+        # journal; the sd_notify STATUS line shows in `systemctl status`
+        args = ["journalctl"]
+        if self.installation == "user":
+            args.append("--user")
+        args += ["--unit=flatlock", "--pager-end"]
+        if follow:
+            args.append("--follow")
+        os.execvp("journalctl", args)
+
 
 def usage():
     print(
@@ -595,7 +606,8 @@ def usage():
   lock             record active commits and apply masks
   update [--runtimes] [app...]
                    update declared apps and optionally advance runtime pins
-  bundle [prune]   archive locked refs or remove stale archives"""
+  bundle [prune]   archive locked refs or remove stale archives
+  logs [-f]        show the reconcile journal, optionally following it"""
     )
 
 
@@ -624,6 +636,8 @@ def main():
         )
     elif command_name == "bundle" and arguments in ([], ["prune"]):
         cli.bundle(prune=arguments == ["prune"])
+    elif command_name == "logs" and arguments in ([], ["-f"], ["--follow"]):
+        cli.logs(follow=arguments in (["-f"], ["--follow"]))
     elif command_name in ("-h", "--help", "help") and not arguments:
         usage()
     else:

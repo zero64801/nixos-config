@@ -126,6 +126,11 @@ in
             restart = false;
           }
           {
+            definition = ./vms/win11-base.xml;
+            active = null;
+            restart = false;
+          }
+          {
             definition = ./vms/win11-re.xml;
             active = null;
             restart = false;

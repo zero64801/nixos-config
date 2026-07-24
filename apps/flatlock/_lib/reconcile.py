@@ -23,6 +23,7 @@ from runtime import (
     open_regular,
     output,
     safe_child,
+    sd_notify,
 )
 
 
@@ -374,8 +375,22 @@ def reconcile(manifest, scope, state_dir, override_dir):
             "url": current_remotes.get(name),
         }
 
+    runtime_packages = manifest.get("runtimePackages", [])
+    total = len(manifest["apps"]) + len(runtime_packages)
+    done = 0
+
+    def progress(ref):
+        nonlocal done
+        done += 1
+        # EXTEND_TIMEOUT keeps a long download from tripping TimeoutStartSec
+        sd_notify(
+            f"STATUS=Reconciling {ref} ({done}/{total})",
+            "EXTEND_TIMEOUT_USEC=1800000000",
+        )
+
     next_apps = {}
     for app in manifest["apps"]:
+        progress(app["ref"])
         next_apps[app["ref"]] = reconcile_app(
             scope,
             app,
@@ -389,7 +404,8 @@ def reconcile(manifest, scope, state_dir, override_dir):
                 next_remotes.setdefault(origin, {"identity": None, "explicit": False})
 
     next_runtimes = {}
-    for runtime in manifest.get("runtimePackages", []):
+    for runtime in runtime_packages:
+        progress(runtime["ref"])
         next_runtimes[runtime["ref"]] = reconcile_app(
             scope,
             runtime,
@@ -454,6 +470,7 @@ def reconcile(manifest, scope, state_dir, override_dir):
         "overrides": {"settings": manifest["overrides"]["settings"]},
     }
     atomic_write_json(state_path, state)
+    sd_notify(f"STATUS=Reconciled {total} refs")
 
 
 def main():

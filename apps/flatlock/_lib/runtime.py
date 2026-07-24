@@ -2,6 +2,7 @@ import errno
 import fcntl
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -13,6 +14,26 @@ from pathlib import Path
 
 class FlatlockError(RuntimeError):
     pass
+
+
+def sd_notify(*messages):
+    """Send status to systemd if run as a service; a no-op otherwise.
+
+    Sent from the reconciler (the unit's main process), so the default
+    NotifyAccess=main accepts STATUS and EXTEND_TIMEOUT_USEC without the
+    service needing Type=notify.
+    """
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not address:
+        return
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(address)
+            sock.sendall("\n".join(messages).encode())
+    except OSError:
+        pass
 
 
 _EMPTY_UNSET = object()

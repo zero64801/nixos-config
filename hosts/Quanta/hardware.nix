@@ -23,7 +23,6 @@
     kernelParams = [
       "amd_pstate=active"
       "transparent_hugepage=always"
-      "fbcon=map:1"
     ];
     kernel.sysctl = {
       "vm.swappiness" = 150;

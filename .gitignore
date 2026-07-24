@@ -6,3 +6,6 @@ tests
 # Python bytecode from the flatlock CLI/tests
 __pycache__/
 *.pyc
+
+# ruff
+.ruff_cache/

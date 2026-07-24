@@ -12,6 +12,28 @@ let
 
   cfg = config.nyx.virtualisation.nixvirt;
 
+  # Appended to snapshotFixup, which runs at ExecStartPost after every declarative
+  # domain has been (re)defined. libvirt keeps <name>_VARS.fd when a domain is
+  # undefined, so dropping a domain from the list leaves its UEFI vars behind. Any
+  # *.fd not referenced by a defined domain therefore belongs to a removed one.
+  nvramReaper = lib.optionalString cfg.reapNvram ''
+    nvdir=/var/lib/libvirt/qemu/nvram
+    if [ -d "$nvdir" ]; then
+      referenced=$(for rd in $(virsh list --all --name); do
+        [ -n "$rd" ] || continue
+        virsh dumpxml "$rd" --inactive 2>/dev/null \
+          | xmlstarlet sel -t -v "/domain/os/nvram" -n 2>/dev/null || true
+      done | grep . || true)
+      for f in "$nvdir"/*.fd; do
+        [ -e "$f" ] || continue
+        if ! printf '%s\n' "$referenced" | grep -qxF "$f"; then
+          echo "reaping orphaned nvram: $f"
+          rm -f "$f"
+        fi
+      done
+    fi
+  '';
+
   snapshotFixup = pkgs.writeShellApplication {
     name = "nixvirt-snapshot-fixup";
     runtimeInputs = [
@@ -54,13 +76,19 @@ let
               -v @name -o "|" -v "source/@file" -n \
           | while IFS="|" read -r target file; do
               [ -n "$target" ] && [ -n "$file" ] || continue
-              active=$(virsh domblklist "$dom" | awk -v t="$target" '$1 == t { print $2 }')
-              if [ "$active" != "$file" ]; then
+              # Read the persistent (inactive) config, not the active disk. That is what
+              # this repoints and what a shutdown reverts to. A running domain shows the
+              # overlay as its active disk, which would mask a stale persistent base and
+              # leave the drift to surface on the next shutdown.
+              persistent=$(virsh domblklist "$dom" --inactive | awk -v t="$target" '$1 == t { print $2 }')
+              if [ "$persistent" != "$file" ]; then
                 echo "$dom: repointing $target -> $file (snapshot $cur)"
                 redefine_disk "$dom" "$target" "$file"
               fi
             done
       done
+
+      ${nvramReaper}
     '';
   };
 
@@ -291,6 +319,25 @@ let
           confirm "Proceed?"
           virsh snapshot-create-as "$dom" "$name" --disk-only --atomic
         fi
+
+        # NixVirt redefines each domain from the declarative XML on every service start,
+        # resetting the persistent disk source back to the base. Point the persistent
+        # config at the new overlay now, so a rebuild or shutdown before the next
+        # snapshotFixup run cannot surface a stale base (see build_plan's DANGER check).
+        # Internal snapshots keep the same disk source, so nothing to repoint there.
+        if [ "$internal" -ne 1 ]; then
+          while IFS="|" read -r tdev file; do
+            [ -n "$tdev" ] && [ -n "$file" ] || continue
+            cur_src=$(virsh domblklist "$dom" --inactive | awk -v t="$tdev" '$1 == t { print $2 }')
+            if [ "$cur_src" != "$file" ]; then
+              repoint_disk "$tdev" "$file"
+              echo "$dom: persistent config for $tdev -> $file"
+            fi
+          done < <(virsh snapshot-dumpxml "$dom" "$name" 2>/dev/null \
+            | xmlstarlet sel -t -m "/domainsnapshot/disks/disk[@snapshot='external']" \
+                -v @name -o "|" -v "source/@file" -n 2>/dev/null || true)
+        fi
+
         echo
         echo "Snapshot chain is now:"
         virsh snapshot-list "$dom" --tree 2>/dev/null | sed '/^$/d; s/^/  /'
@@ -1171,6 +1218,16 @@ in
       type = listOf domainOpt;
       default = [ ];
       description = "Domains to define declaratively at qemu:///system.";
+    };
+
+    reapNvram = mkOption {
+      type = bool;
+      default = true;
+      description = ''
+        Delete orphaned UEFI NVRAM files under /var/lib/libvirt/qemu/nvram that no
+        defined domain references. Runs after domains are redefined on each nixvirt
+        service start. Turn off if you keep nvram for domains managed outside NixVirt.
+      '';
     };
   };
 

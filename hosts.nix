@@ -22,7 +22,7 @@ let
 
   mkSystem = hostname:
     lib.nixosSystem {
-      specialArgs = { inherit inputs; };
+      specialArgs = { inherit inputs; hostName = hostname; };
 
       modules =
         importDir ./core

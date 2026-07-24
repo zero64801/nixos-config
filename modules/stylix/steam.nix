@@ -2,24 +2,49 @@
 
 let
   stylixEnabled = config.nyx.stylix.enable;
+
+  /*
+  Steam updates re-extract steamui/ and wipe the injected CSS, so the theme
+  needs reapplying (`steam-restyle`, then restart Steam). Steam presence is
+  detected at run time, not from nix options, so it works no matter how Steam
+  was installed. Installation paths, not data dirs: app data (~/.var,
+  persisted here) outlives an uninstall, while the deploy dir under
+  flatpak/app only exists while installed.
+  */
+  steamRestyle = pkgs.writeShellScriptBin "steam-restyle" ''
+    set -u
+    if [ ! -x /run/current-system/sw/bin/steam ] \
+      && [ ! -d /var/lib/flatpak/app/com.valvesoftware.Steam ] \
+      && [ ! -d "$HOME/.local/share/flatpak/app/com.valvesoftware.Steam" ]; then
+      echo "Steam is not installed; nothing to theme." >&2
+      exit 0
+    fi
+
+    # adwsteamgtk copies our custom.css with shutil.copy, which stamps the
+    # read-only mode of the home-manager store symlink onto its own cache; a
+    # re-run then cannot overwrite that cache file. Make it writable first.
+    cache="''${XDG_CACHE_HOME:-$HOME/.cache}/AdwSteamInstaller/extracted"
+    [ -d "$cache" ] && ${pkgs.coreutils}/bin/chmod -R u+w "$cache" 2>/dev/null || true
+
+    # adwsteamgtk exits 0 even when custom_css.install raises, so treat a
+    # Traceback in its output as failure rather than reporting a false success.
+    if out=$(${pkgs.coreutils}/bin/timeout 60s ${lib.getExe pkgs.adwsteamgtk} -i 2>&1) \
+      && ! printf '%s' "$out" | ${pkgs.gnugrep}/bin/grep -q Traceback; then
+      echo "Steam theme reapplied. Restart Steam to see it."
+    else
+      printf '%s\n' "$out" >&2
+      echo "steam-restyle: theme apply failed" >&2
+      exit 1
+    fi
+  '';
 in
 {
   config = lib.mkIf stylixEnabled {
-    /*
-    Steam presence is detected at activation time, not from nix options, so
-    it works no matter how Steam was installed. Installation paths, not data
-    dirs: app data (~/.var, persisted here) outlives an uninstall, while the
-    deploy dir under flatpak/app only exists while installed.
-    */
+    hm.home.packages = [ steamRestyle ];
+
     hm.home.activation.updateSteamTheme =
       config.hm.lib.dag.entryAfter [ "writeBoundary" "dconfSettings" ] ''
-        if [ -x /run/current-system/sw/bin/steam ] \
-          || [ -d /var/lib/flatpak/app/com.valvesoftware.Steam ] \
-          || [ -d "$HOME/.local/share/flatpak/app/com.valvesoftware.Steam" ]; then
-          if ! ${pkgs.coreutils}/bin/timeout 20s ${lib.getExe pkgs.adwsteamgtk} -i; then
-            echo "Skipping Steam theme update: adwsteamgtk did not finish cleanly within 20s."
-          fi
-        fi
+        run ${steamRestyle}/bin/steam-restyle
       '';
 
     hm.dconf.settings."io/github/Foldex/AdwSteamGtk".prefs-install-custom-css = true;

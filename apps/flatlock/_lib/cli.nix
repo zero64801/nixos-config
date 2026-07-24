@@ -5,6 +5,7 @@
   flatpak,
   ostree,
   python3,
+  systemd,
   hostname ? "unknown",
   installation ? "system",
   configRepoPath ? null,
@@ -56,6 +57,7 @@ writeShellApplication {
     flatpak
     ostree
     python3
+    systemd # journalctl for `flatlock logs`
   ];
   text = ''
     exec python3 ${source}/cli.py ${lib.escapeShellArg config} "$@"

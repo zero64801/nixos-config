@@ -162,6 +162,14 @@ in
           "svg.context-properties.content.enabled" = true;
           "sidebar.revamp" = true;
           "sidebar.verticalTabs" = true;
+
+          # The 9070 XT (Navi 48) is newer than Firefox's built-in hardware-decode
+          # allowlist, so video silently falls back to software and stutters once KWin
+          # has to composite it in a window (fullscreen uses direct scanout and hides
+          # it). force-enabled bypasses the allowlist; vainfo confirms the card decodes
+          # VP9/AV1/H264/HEVC. LIBVA_DRIVER_NAME pins libva to AMD (see graphics.nix).
+          "media.ffmpeg.vaapi.enabled" = true;
+          "media.hardware-video-decoding.force-enabled" = true;
         };
         userChrome = commonUserChrome;
       };

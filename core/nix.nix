@@ -1,9 +1,9 @@
-{ inputs, ... }:
+{ inputs, hostName, ... }:
 
 {
   nixpkgs = {
     config.allowUnfree = true;
-    overlays = [ (import ../pkgs/default.nix inputs) ];
+    overlays = [ (import ../pkgs/default.nix { inherit inputs hostName; }) ];
   };
 
   nix = {

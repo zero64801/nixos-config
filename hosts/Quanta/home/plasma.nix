@@ -89,182 +89,184 @@ let
   '';
 in
 {
-  nyx.desktop.plasma6.extraSpectacleOcrLanguages = [
-    "jpn"
-    "jpn_vert"
-  ];
-
-  # Resolved from by-path at login: cardN shuffles between boots, but kwin only matches literal device nodes, not symlinks.
-  hm.xdg.configFile."plasma-workspace/env/kwin-drm-devices.sh".text = ''
-    KWIN_DRM_DEVICES=$(readlink -f /dev/dri/by-path/pci-${displayGpu}-card)
-    export KWIN_DRM_DEVICES
-  '';
-
-  # Sandboxed VSCode from ~/Projects/dev/shell.nix; direnv exec replays the
-  # cached nix-direnv env so no terminal or manual nix-shell is needed.
-  hm.xdg.desktopEntries.dev-workspace = {
-    name = "Dev Workspace";
-    genericName = "Code Editor";
-    comment = "VSCode in the sandboxed dev environment";
-    exec = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
-    icon = "code";
-    terminal = false;
-    categories = [ "Development" "IDE" ];
-    settings.StartupWMClass = "Code";
-  };
-
-  hm.home.packages = with pkgs; [
-    haruna
-  ];
-
-  hm.programs.plasma = lib.mkIf config.nyx.desktop.plasma6.enable {
-    enable = true;
-
-    hotkeys.commands.dev-workspace = {
-      name = "Open Dev Workspace";
-      key = "Meta+C";
-      command = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
-    };
-
-    workspace = {
-      clickItemTo = "open";
-      wallpaper = "${pkgs.kdePackages.plasma-workspace-wallpapers}/share/wallpapers/Elarun/contents/images/2560x1600.png";
-    };
-
-    kscreenlocker = {
-      autoLock = false;
-      lockOnResume = false;
-      lockOnStartup = false;
-    };
-
-    powerdevil = {
-      AC = {
-        powerProfile = "balanced";
-        autoSuspend.action = "nothing";
-        turnOffDisplay.idleTimeout = "never";
-        dimDisplay.enable = false;
-      };
-    };
-
-    panels = [
-      {
-        location = "top";
-        screen = 0;
-        widgets = [
-          {
-            kickoff = {
-              sortAlphabetically = true;
-            };
-          }
-          {
-            iconTasks = {
-              launchers = [
-                "applications:org.kde.dolphin.desktop"
-                "applications:org.kde.konsole.desktop"
-                "applications:zen-beta.desktop"
-              ];
-            };
-          }
-          "org.kde.plasma.marginsseparator"
-          {
-            systemTray.items = {
-              shown = [
-                "org.kde.plasma.networkmanagement"
-                "org.kde.plasma.volume"
-              ];
-            };
-          }
-          {
-            digitalClock = {
-              calendar.firstDayOfWeek = "monday";
-              time.format = "24h";
-            };
-          }
-        ];
-      }
+  config = lib.mkIf config.nyx.desktop.plasma6.enable {
+    nyx.desktop.plasma6.extraSpectacleOcrLanguages = [
+      "jpn"
+      "jpn_vert"
     ];
 
-    kwin = {
-      edgeBarrier = 0;
-      cornerBarrier = false;
+    # Resolved from by-path at login: cardN shuffles between boots, but kwin only matches literal device nodes, not symlinks.
+    hm.xdg.configFile."plasma-workspace/env/kwin-drm-devices.sh".text = ''
+      KWIN_DRM_DEVICES=$(readlink -f /dev/dri/by-path/pci-${displayGpu}-card)
+      export KWIN_DRM_DEVICES
+    '';
+
+    # Sandboxed VSCode from ~/Projects/dev/shell.nix; direnv exec replays the
+    # cached nix-direnv env so no terminal or manual nix-shell is needed.
+    hm.xdg.desktopEntries.dev-workspace = {
+      name = "Dev Workspace";
+      genericName = "Code Editor";
+      comment = "VSCode in the sandboxed dev environment";
+      exec = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+      icon = "code";
+      terminal = false;
+      categories = [ "Development" "IDE" ];
+      settings.StartupWMClass = "Code";
     };
 
-    window-rules = [
-      {
-        description = "Open Discord on left monitor";
-        match = {
-          window-class = {
-            value = "discord";
-            type = "exact";
-            match-whole = false;
-          };
-        };
-        apply.position = {
-          value = "0,0";
-          apply = "initially";
-        };
-        apply.size = {
-          value = "1256,1440";
-          apply = "initially";
-        };
-      }
-      {
-        description = "Open Zen on right side of left monitor";
-        match = {
-          window-class = {
-            value = "zen-beta";
-            type = "exact";
-            match-whole = false;
-          };
-        };
-        apply.position = {
-          value = "1256,0";
-          apply = "initially";
-        };
-        apply.size = {
-          value = "1304,1440";
-          apply = "initially";
-        };
-      }
+    hm.home.packages = with pkgs; [
+      haruna
     ];
 
-    configFile = {
-      baloofilerc."Basic Settings"."Indexing-Enabled" = false;
-      kdeglobals = {
-        KDE.ShowDeleteCommand = true;
+    hm.programs.plasma = {
+      enable = true;
+
+      hotkeys.commands.dev-workspace = {
+        name = "Open Dev Workspace";
+        key = "Meta+C";
+        command = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
       };
 
-      dolphinrc = {
-        General.ShowDeleteCommand = true;
-        Confirmation.ConfirmDelete = true;
+      workspace = {
+        clickItemTo = "open";
+        wallpaper = "${pkgs.kdePackages.plasma-workspace-wallpapers}/share/wallpapers/Elarun/contents/images/2560x1600.png";
       };
 
-      kwalletrc.Wallet = {
-        Enabled = false;
-        "First Use" = false;
-        "Prompt on Open" = false;
+      kscreenlocker = {
+        autoLock = false;
+        lockOnResume = false;
+        lockOnStartup = false;
       };
+
+      powerdevil = {
+        AC = {
+          powerProfile = "balanced";
+          autoSuspend.action = "nothing";
+          turnOffDisplay.idleTimeout = "never";
+          dimDisplay.enable = false;
+        };
+      };
+
+      panels = [
+        {
+          location = "top";
+          screen = 0;
+          widgets = [
+            {
+              kickoff = {
+                sortAlphabetically = true;
+              };
+            }
+            {
+              iconTasks = {
+                launchers = [
+                  "applications:org.kde.dolphin.desktop"
+                  "applications:org.kde.konsole.desktop"
+                  "applications:zen-beta.desktop"
+                ];
+              };
+            }
+            "org.kde.plasma.marginsseparator"
+            {
+              systemTray.items = {
+                shown = [
+                  "org.kde.plasma.networkmanagement"
+                  "org.kde.plasma.volume"
+                ];
+              };
+            }
+            {
+              digitalClock = {
+                calendar.firstDayOfWeek = "monday";
+                time.format = "24h";
+              };
+            }
+          ];
+        }
+      ];
+
+      kwin = {
+        edgeBarrier = 0;
+        cornerBarrier = false;
+      };
+
+      window-rules = [
+        {
+          description = "Open Discord on left monitor";
+          match = {
+            window-class = {
+              value = "discord";
+              type = "exact";
+              match-whole = false;
+            };
+          };
+          apply.position = {
+            value = "0,0";
+            apply = "initially";
+          };
+          apply.size = {
+            value = "1256,1440";
+            apply = "initially";
+          };
+        }
+        {
+          description = "Open Zen on right side of left monitor";
+          match = {
+            window-class = {
+              value = "zen-beta";
+              type = "exact";
+              match-whole = false;
+            };
+          };
+          apply.position = {
+            value = "1256,0";
+            apply = "initially";
+          };
+          apply.size = {
+            value = "1304,1440";
+            apply = "initially";
+          };
+        }
+      ];
+
+      configFile = {
+        baloofilerc."Basic Settings"."Indexing-Enabled" = false;
+        kdeglobals = {
+          KDE.ShowDeleteCommand = true;
+        };
+
+        dolphinrc = {
+          General.ShowDeleteCommand = true;
+          Confirmation.ConfirmDelete = true;
+        };
+
+        kwalletrc.Wallet = {
+          Enabled = false;
+          "First Use" = false;
+          "Prompt on Open" = false;
+        };
+      };
+
     };
 
-  };
+    # Output recreation (monitor sleep, input switch, replug) makes kwin re-derive priority
+    # from connector order, stealing primary from the center monitor; re-assert on DRM changes.
+    services.udev.extraRules = ''
+      ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="${pkgs.systemd}/bin/systemctl --no-block -M ${config.nyx.flake.user}@ --user start display-layout.service"
+    '';
 
-  # Output recreation (monitor sleep, input switch, replug) makes kwin re-derive priority
-  # from connector order, stealing primary from the center monitor; re-assert on DRM changes.
-  services.udev.extraRules = ''
-    ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="${pkgs.systemd}/bin/systemctl --no-block -M ${config.nyx.flake.user}@ --user start display-layout.service"
-  '';
-
-  # A user service instead of plasma-manager's startupScript: those only re-run when their
-  # content changes, so a regenerated kwin output config was never re-corrected on login.
-  hm.systemd.user.services.display-layout = {
-    Unit = {
-      Description = "Assert monitor layout and primary by EDID serial";
-      After = [ "plasma-workspace.target" ];
+    # A user service instead of plasma-manager's startupScript: those only re-run when their
+    # content changes, so a regenerated kwin output config was never re-corrected on login.
+    hm.systemd.user.services.display-layout = {
+      Unit = {
+        Description = "Assert monitor layout and primary by EDID serial";
+        After = [ "plasma-workspace.target" ];
+      };
+      Service = {
+        Type = "oneshot";
+        ExecStart = "${layoutScript}";
+      };
+      Install.WantedBy = [ "plasma-workspace.target" ];
     };
-    Service = {
-      Type = "oneshot";
-      ExecStart = "${layoutScript}";
-    };
-    Install.WantedBy = [ "plasma-workspace.target" ];
   };
 }

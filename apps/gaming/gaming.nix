@@ -3,7 +3,6 @@
 let
   cfg = config.nyx.apps.gaming;
   user = config.nyx.flake.user;
-  dwproton = pkgs.dwproton-bin;
 in
 {
   options.nyx.apps.gaming = {
@@ -14,9 +13,26 @@ in
       remotePlay = lib.mkEnableOption "Steam Remote Play";
       dedicatedServer = lib.mkEnableOption "Steam Dedicated Server";
       localTransfer = lib.mkEnableOption "Steam Local Network Game Transfers";
+
+      compatPackages = lib.mkOption {
+        type = with lib.types; listOf package;
+        default = [ ];
+        description = "Compatibility tools added to Steam's extraCompatPackages (e.g. custom Proton builds).";
+      };
     };
 
-    heroic.enable = lib.mkEnableOption "Heroic Launcher";
+    heroic = {
+      enable = lib.mkEnableOption "Heroic Launcher";
+
+      protonTools = lib.mkOption {
+        type = with lib.types; attrsOf package;
+        default = { };
+        description = ''
+          Proton tools linked into Heroic's tools/proton directory, keyed by
+          link name. Each package must expose a `steamcompattool` output.
+        '';
+      };
+    };
 
     x3dCacheBias = lib.mkEnableOption ''
       Toggle amd_x3d_vcache driver to "cache" mode while a game is running
@@ -87,10 +103,7 @@ in
         dedicatedServer.openFirewall = cfg.steam.dedicatedServer;
         localNetworkGameTransfers.openFirewall = cfg.steam.localTransfer;
 
-        extraCompatPackages = with pkgs; [
-          dwproton
-          proton-cachyos-v3-bin
-        ];
+        extraCompatPackages = cfg.steam.compatPackages;
 
         extraPackages = [ pkgs.gamescope ];
       };
@@ -99,8 +112,11 @@ in
     (lib.mkIf cfg.heroic.enable {
       systemd.tmpfiles.rules = [
         "d /home/${user}/.config/heroic/tools/proton 0755 ${user} users -"
-        "L+ /home/${user}/.config/heroic/tools/proton/dwproton - - - - ${dwproton.steamcompattool}"
-      ];
+      ]
+      ++ lib.mapAttrsToList
+        (name: tool:
+          "L+ /home/${user}/.config/heroic/tools/proton/${name} - - - - ${tool.steamcompattool}")
+        cfg.heroic.protonTools;
     })
 
     {

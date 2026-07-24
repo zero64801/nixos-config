@@ -188,6 +188,9 @@ in
           {
             __EGL_VENDOR_LIBRARY_FILENAMES = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json";
             VK_LOADER_DRIVERS_DISABLE = "nvidia_icd.json";
+            # Pin VA-API to the AMD card so no app can load nvidia_drv_video.so on the
+            # secondary node (its EGL is hidden above, so that path only ever fails).
+            LIBVA_DRIVER_NAME = "radeonsi";
           }
         else
           lib.optionalAttrs cfg.amd.enable {
