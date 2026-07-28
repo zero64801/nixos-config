@@ -23,10 +23,8 @@ in
   FLATPAK_GL_DRIVERS, which flatpak reads at sandbox setup; delete that
   line to fall back to the stable driver, which stays installed.
 
-  The nvidia driver mounts alongside mesa so PRIME offload works inside
-  sandboxes (Steam's in-sandbox nvrun, see steam.nix). Apps stay on mesa
-  by default: the Steam override pins the EGL vendor and disables the
-  nvidia Vulkan ICD, mirroring the session-wide hiding in graphics.nix.
+  The nvidia driver mounts alongside mesa for PRIME offload inside sandboxes.
+  Apps stay on mesa via the inherited session ICD hiding from graphics.nix.
   */
   flatlock.runtimes = [
     {

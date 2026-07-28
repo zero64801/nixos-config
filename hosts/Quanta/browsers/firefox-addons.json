@@ -1,0 +1,30 @@
+{
+  "bitwarden": {
+    "addonId": "{446900e4-71c2-419f-a6a7-df9c091e268b}",
+    "slug": "bitwarden-password-manager",
+    "version": "2026.7.0",
+    "url": "https://addons.mozilla.org/firefox/downloads/file/4915668/bitwarden_password_manager-2026.7.0.xpi",
+    "sha256": "11836eb9d2abc9914bb337b57e20c5a09cf44f24fa572f7e886384fd350a5112"
+  },
+  "darkreader": {
+    "addonId": "addon@darkreader.org",
+    "slug": "darkreader",
+    "version": "4.9.129",
+    "url": "https://addons.mozilla.org/firefox/downloads/file/4899461/darkreader-4.9.129.xpi",
+    "sha256": "f4f047fe08e420b6d29617738ea00a7b784892b2262b7e6f38dd09b8ee958a44"
+  },
+  "return-youtube-dislikes": {
+    "addonId": "{762f9885-5a13-4abd-9c77-433dcd38b8fd}",
+    "slug": "return-youtube-dislikes",
+    "version": "3.0.0.18",
+    "url": "https://addons.mozilla.org/firefox/downloads/file/4371820/return_youtube_dislikes-3.0.0.18.xpi",
+    "sha256": "2d33977ce93276537543161f8e05c3612f71556840ae1eb98239284b8f8ba19e"
+  },
+  "ublock-origin": {
+    "addonId": "uBlock0@raymondhill.net",
+    "slug": "ublock-origin",
+    "version": "1.72.2",
+    "url": "https://addons.mozilla.org/firefox/downloads/file/4888680/ublock_origin-1.72.2.xpi",
+    "sha256": "40c315b0da7871868155ecfae7a50a58dfa0920aebd865e008214986f1b7c578"
+  }
+}

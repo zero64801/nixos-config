@@ -1,3 +1,22 @@
 {
-  "pins": {}
+  "pins": {
+    "zen-browser": {
+      "type": "frozen",
+      "rev": "35443b74c3481fb963ee0a53175ab0e8001f2967",
+      "date": "2026-07-27T18:35:49Z",
+      "reason": "browser binary via bot-driven release bumps; unfreeze deliberately"
+    },
+    "nixvirt": {
+      "type": "frozen",
+      "rev": "6d213ab42f72ba41c2eb4e6bdb97581c0642d942",
+      "date": "2026-07-27T18:35:49Z",
+      "reason": "single-maintainer NixOS module, root at activation"
+    },
+    "nixcord": {
+      "type": "frozen",
+      "rev": "3708bb6f9e6c0e65b10741eab6ac55e701c09625",
+      "date": "2026-07-27T18:35:49Z",
+      "reason": "repo transferred kaylorben -> 4evy 2026-07; bot-driven commits"
+    }
+  }
 }

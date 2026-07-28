@@ -3,13 +3,9 @@
 let
   cfg = config.nyx.apps.discord;
   sources = pkgs.util.importPins ./sources.json;
-  remotePlugins = {
-    inherit (sources) bigFileUpload;
-  };
-  localPlugins = {
+  plugins = {
     MyServerRoles = ./local-plugins/myServerRoles;
   };
-  plugins = remotePlugins // localPlugins;
 in
 {
   options.nyx.apps.discord.enable = lib.mkEnableOption "Discord (Nixcord + Vencord)";
@@ -81,18 +77,6 @@ in
           extraConfig.plugins = {
             AccountPanelServerProfile.enabled = false;
             MyServerRoles.enabled = true;
-            BigFileUpload = {
-              enabled = true;
-              fileUploader = "Catbox";
-              autoSend = "No";
-              autoFormat = "Yes";
-              dragAndDropEnabled = "Yes";
-              pasteEnabled = "Yes";
-              respectNitroLimit = "Yes";
-              nitroType = "full";
-              disableFallbacks = "No";
-              loggingLevel = "errors";
-            };
           };
         };
 

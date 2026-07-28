@@ -11,6 +11,43 @@ in
         (_: pin: final.fetchFromGitHub { inherit (pin) owner repo rev hash; })
         (builtins.fromJSON (builtins.readFile path));
 
+    # Gecko addons from a firefox-addons.json next to the consuming module;
+    # managed by `addon-pin`. XPIs come straight from addons.mozilla.org,
+    # pinned to the sha256 AMO publishes for the file, so no hash is ever
+    # computed from a local download.
+    importAddons = path:
+      let
+        # Firefox's own application ID; extensions install beneath it.
+        firefoxId = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}";
+
+        mkAddon = name: pin:
+          final.stdenvNoCC.mkDerivation {
+            pname = "firefox-addon-${name}";
+            inherit (pin) version;
+
+            src = final.fetchurl { inherit (pin) url sha256; };
+
+            dontUnpack = true;
+            preferLocalBuild = true;
+
+            installPhase = ''
+              runHook preInstall
+              install -Dm444 "$src" \
+                "$out/share/mozilla/extensions/${firefoxId}/${pin.addonId}.xpi"
+              runHook postInstall
+            '';
+
+            passthru = { inherit (pin) addonId slug; };
+
+            meta = {
+              description = "Firefox addon ${name}";
+              homepage = "https://addons.mozilla.org/firefox/addon/${pin.slug}/";
+              platforms = lib.platforms.all;
+            };
+          };
+      in
+      lib.mapAttrs mkAddon (builtins.fromJSON (builtins.readFile path));
+
     # Shared scaffold for the nyx CLI scripts. SC2034/SC2329 disabled because
     # not every script uses every color or helper.
     cliPrelude = ''

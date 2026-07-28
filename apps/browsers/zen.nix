@@ -4,12 +4,15 @@ let
   cfg = config.nyx.apps.zen;
   profilePath = ".config/zen/default";
 
+  addons = if cfg.addonPins == null then { } else pkgs.util.importAddons cfg.addonPins;
+
   lock = x: {
     Value = x;
     Status = "locked";
   };
 
-  commonPolicies = {
+  # Hardening baseline. Taste and hardware belong to the host, these do not.
+  basePolicies = {
     AutofillAddressEnabled = true;
     AutofillCreditCardEnabled = false;
     DisableAppUpdate = true;
@@ -39,15 +42,12 @@ let
     UserMessaging.SkipOnboarding = true;
   };
 
-  commonPreferences = {
-    "browser.startup.page" = lock 3;
-    "general.autoScroll" = lock true;
-    "browser.ctrlTab.sortByRecentlyUsed" = lock true;
+  basePreferences = {
     "browser.contentblocking.category" = lock "strict";
     "dom.private-attribution.submission.enabled" = lock false;
     "browser.ml.chat.enabled" = lock false;
+    # Required for the userChrome option to take effect at all.
     "toolkit.legacyUserProfileCustomizations.stylesheets" = lock true;
-    "widget.gtk.rounded-bottom-corners.enabled" = lock true;
   };
 
   mkExtensionPolicy = extensions: {
@@ -68,16 +68,49 @@ let
       }
     ) extensions
   );
-
-  commonUserChrome = ''
-    /* Hide text in bookmarks in title bar */
-    #PlacesToolbar toolbarbutton.bookmark-item > label.toolbarbutton-text {
-      display: none !important;
-    }
-  '';
 in
 {
-  options.nyx.apps.zen.enable = lib.mkEnableOption "Zen Browser";
+  options.nyx.apps.zen = {
+    enable = lib.mkEnableOption "Zen Browser";
+
+    addonPins = lib.mkOption {
+      type = with lib.types; nullOr path;
+      default = null;
+      example = lib.literalExpression "./firefox-addons.json";
+      description = ''
+        A firefox-addons.json of AMO pins, imported with pkgs.util.importAddons
+        and managed by `addon-pin`. Everything it lists is force installed and
+        every other extension is blocked, including when this is null.
+      '';
+    };
+
+    preferences = lib.mkOption {
+      type = with lib.types; attrsOf anything;
+      default = { };
+      description = ''
+        Firefox preferences merged over the hardening baseline. Values are
+        given raw and locked by the module.
+      '';
+    };
+
+    profileSettings = lib.mkOption {
+      type = with lib.types; attrsOf anything;
+      default = { };
+      description = "Unlocked about:config settings for the default profile.";
+    };
+
+    search = lib.mkOption {
+      type = with lib.types; attrsOf anything;
+      default = { };
+      description = "Passed through to the default profile's search block.";
+    };
+
+    userChrome = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      description = "userChrome.css for the default profile.";
+    };
+  };
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
   {
@@ -89,94 +122,23 @@ in
       programs.zen-browser = {
         enable = true;
 
-        policies = commonPolicies // {
-        Preferences = commonPreferences // {
-          "browser.uiCustomization.state" = lock (
-            builtins.toJSON {
-              placements = {
-                widget-overflow-fixed-list = [ ];
-                unified-extensions-area = [
-                  "addon_darkreader_org-browser-action"
-                  "ublock0_raymondhill_net-browser-action"
-                ];
-                nav-bar = [
-                  "sidebar-button"
-                  "back-button"
-                  "forward-button"
-                  "stop-reload-button"
-                  "personal-bookmarks"
-                  "customizableui-special-spring1"
-                  "urlbar-container"
-                  "customizableui-special-spring2"
-                  "downloads-button"
-                  "unified-extensions-button"
-                ];
-                toolbar-menubar = [ "menubar-items" ];
-                TabsToolbar = [ "tabbrowser-tabs" ];
-                PersonalToolbar = [ "import-button" ];
-              };
-              seen = [
-                "addon_darkreader_org-browser-action"
-                "ublock0_raymondhill_net-browser-action"
-                "developer-button"
-              ];
-              dirtyAreaCache = [
-                "nav-bar"
-                "unified-extensions-area"
-                "PersonalToolbar"
-                "toolbar-menubar"
-                "TabsToolbar"
-              ];
-              currentVersion = 20;
-              newElementCount = 5;
-            }
-          );
+        policies = basePolicies // {
+          Preferences = basePreferences // lib.mapAttrs (_: lock) cfg.preferences;
+          ExtensionSettings = mkExtensionPolicy (lib.attrValues addons);
         };
 
-        ExtensionSettings = mkExtensionPolicy (
-          with inputs.firefox-addons.packages.${pkgs.stdenv.hostPlatform.system}; [
-            darkreader
-            return-youtube-dislikes
-            ublock-origin
-            bitwarden
-          ]
-        );
-      };
-
-      profiles.default = {
-        name = "Default";
-        search = {
-          force = true;
-          default = "duckduckgo";
-          engines = {
-            duckduckgo = {
-              name = "DuckDuckGo";
-              urls = [
-                { template = "https://duckduckgo.com/?q={searchTerms}"; }
-              ];
-            };
-          };
+        profiles.default = {
+          name = "Default";
+          inherit (cfg) search userChrome;
+          settings = cfg.profileSettings;
         };
-        settings = {
-          "zen.welcome-screen.seen" = true;
-          "svg.context-properties.content.enabled" = true;
-          "sidebar.revamp" = true;
-          "sidebar.verticalTabs" = true;
 
-          # The 9070 XT (Navi 48) is newer than Firefox's built-in hardware-decode
-          # allowlist, so video silently falls back to software and stutters once KWin
-          # has to composite it in a window (fullscreen uses direct scanout and hides
-          # it). force-enabled bypasses the allowlist; vainfo confirms the card decodes
-          # VP9/AV1/H264/HEVC. LIBVA_DRIVER_NAME pins libva to AMD (see graphics.nix).
-          "media.ffmpeg.vaapi.enabled" = true;
-          "media.hardware-video-decoding.force-enabled" = true;
-        };
-        userChrome = commonUserChrome;
-      };
-
-      nativeMessagingHosts = [ ];
+        nativeMessagingHosts = [ ];
       };
     };
+
+    # Updates the AMO pins that addonPins points at.
+    environment.systemPackages = [ pkgs.addon-pin ];
 
     # Persist the whole profile: SQLite -wal files and rename-replaced json/txt
     # break under per-file bind mounts.

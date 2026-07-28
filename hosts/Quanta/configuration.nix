@@ -185,6 +185,15 @@ in
       gaming = {
         enable = true;
         x3dCacheBias = true;
+
+        # Confined in hosts/Quanta/confine/steam.nix.
+        steam = {
+          enable = true;
+          compatPackages = [
+            pkgs.dwproton-bin
+            pkgs.proton-cachyos-v3-bin
+          ];
+        };
       };
       llamaCpp = {
         enable = true;
@@ -251,7 +260,7 @@ in
   systemd.services.NetworkManager-wait-online.enable = false;
 
   services.udev.extraRules = ''
-    # High-end NVMe controllers handle deep queues internally; skip the software scheduler.
+    # High-end NVMe controllers handle deep queues internally. Skip the software scheduler.
     ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none"
 
     # Disable wakeup on PCIe ports

@@ -81,6 +81,11 @@ in
         set -gx FZF_DEFAULT_OPTS "${fzf-options}"
         fish_vi_key_bindings
 
+        # Sourced directly rather than via programs.fzf.keybindings, which also injects
+        # key-bindings.bash into /etc/bashrc. Non-readline bash has no `bind` builtin,
+        # so every non-interactive bash spawned here spews "bind: command not found".
+        source ${pkgs.fzf}/share/fzf/key-bindings.fish && fzf_key_bindings
+
         function fish_user_key_bindings
           bind --mode insert alt-c 'cdi; commandline -f repaint'
           bind --mode insert alt-f 'fzf-file-widget'
@@ -119,7 +124,6 @@ in
       };
       direnv.enableFishIntegration = true;
       command-not-found.enable = false;
-      fzf.keybindings = true;
     };
 
     environment.systemPackages = with pkgs; [
@@ -128,6 +132,7 @@ in
       fishPlugins.hydro
       eza
       fish-lsp
+      fzf
     ];
 
     nyx.persistence.home.directories = [
