@@ -71,6 +71,10 @@ let
     envPassthroughRejectsBadName =
       !(builtins.tryEval (build { envPassthrough = [ "not-a-var" ]; }).drvPath).success;
 
+    # The prefix lands in file names and Exec lines, anything else must be rejected.
+    binPrefixRejectsBadChars =
+      !(builtins.tryEval (build { binPrefix = "no spaces"; }).drvPath).success;
+
     # Without the broadcast rule portal requests hang waiting for the Response signal.
     portalRepliesCanReturn = lib.elem "--broadcast=org.freedesktop.portal.*=@/org/freedesktop/portal/*" (
       sessionRules { profile = [ "gui" ]; }

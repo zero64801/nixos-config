@@ -7,17 +7,20 @@ let
   layoutScript = pkgs.writeShellScript "display-layout" ''
     KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
-    # At login this races Plasma's env import into systemd --user; without WAYLAND_DISPLAY
-    # Qt falls back to xcb and aborts, so resolve the session socket directly.
+    # Plasma's env import into systemd --user races login, and the udev trigger can fire
+    # with no session at all (boot, GPU rebinds). Qt aborts hard when the socket is
+    # missing, so wait for it directly and leave quietly if no compositor appears.
     export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-    if [ -z "''${WAYLAND_DISPLAY:-}" ]; then
+    WAYLAND_DISPLAY=""
+    for _ in $(seq 1 30); do
       for s in "$XDG_RUNTIME_DIR"/wayland-*; do
-        [ -S "$s" ] || continue
-        WAYLAND_DISPLAY=''${s##*/}
-        export WAYLAND_DISPLAY
-        break
+        [ -S "$s" ] && WAYLAND_DISPLAY=''${s##*/} && break
       done
-    fi
+      [ -n "$WAYLAND_DISPLAY" ] && break
+      sleep 0.5
+    done
+    [ -n "$WAYLAND_DISPLAY" ] || exit 0
+    export WAYLAND_DISPLAY
     export QT_QPA_PLATFORM=wayland
 
     # Monitors are identified by EDID serial so the layout survives connector renumbering.
@@ -25,9 +28,10 @@ let
     CENTER_SERIAL="GM0NNP3"
     RIGHT_SERIAL="2S6YHV3"
 
-    # kwin's output management comes up slightly after the session target; poll briefly.
+    # kwin's output management comes up slightly after its socket. The probe still dies
+    # in Qt's init_platform until then, so keep its cores out of coredumpctl.
     for _ in $(seq 1 30); do
-      "$KSCREEN" -o >/dev/null 2>&1 && break
+      ( ulimit -c 0; exec "$KSCREEN" -o ) >/dev/null 2>&1 && break
       sleep 0.5
     done
 

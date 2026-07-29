@@ -43,6 +43,14 @@ let
     appId = "com.test.Svc";
   };
 
+  # Same package again with a prefix, as a confined twin next to an unconfined one.
+  prefixedService = wrap {
+    package = serviceApp;
+    binaries = [ "svcapp" ];
+    appId = "com.test.Prefixed";
+    binPrefix = "sb-";
+  };
+
   # xdg-dbus-proxy validates rule names before connecting, so bad rules fail here.
   profileRules = lib.mapAttrsToList (
     profileName: _:
@@ -104,6 +112,7 @@ pkgs.runCommand "confine-launcher-behaviour"
     };
     inherit (wrappedService) outPath;
     unwrappedService = serviceApp;
+    prefixedApp = prefixedService;
     offlineApp = offline;
     noDesktopApp = noDesktop;
     multiDesktopApp = multiDesktop;
@@ -194,6 +203,24 @@ pkgs.runCommand "confine-launcher-behaviour"
       || fail "the main Exec was not rewritten, or the field code was eaten"
     grep -qx "Exec=$outPath/bin/svcapp --new" "$lone" \
       || fail "the Exec under [Desktop Action] was left pointing elsewhere"
+
+    # --- binPrefix, the confined twin next to an unconfined build -------------
+    [ -x "$prefixedApp/bin/sb-svcapp" ] || fail "the prefixed shim is missing"
+    [ -e "$prefixedApp/bin/svcapp" ] \
+      && fail "the unprefixed name is still exposed and collides with the bare package"
+    grep -q "$prefixedApp/bin/sb-svcapp" \
+      "$prefixedApp/share/dbus-1/services/com.test.Svc.service" \
+      || fail "the D-Bus service does not launch through the prefixed shim"
+    grep -q "$prefixedApp/bin/sb-svcapp --daemon" \
+      "$prefixedApp/share/systemd/user/svcapp.service" \
+      || fail "the systemd unit does not launch through the prefixed shim"
+    plone="$prefixedApp/share/applications/com.test.Prefixed.desktop"
+    grep -qx "Exec=$prefixedApp/bin/sb-svcapp %U" "$plone" \
+      || fail "the desktop Exec does not use the prefixed shim"
+    grep -q '^Name=.* (sb)$' "$plone" \
+      || fail "the menu entry name is not suffixed with the prefix label"
+    grep -qx 'Name=New' "$plone" \
+      || fail "the [Desktop Action] name was suffixed too, only the entry name should be"
 
     # --- and the sandbox actually runs ----------------------------------------
     export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/rt"

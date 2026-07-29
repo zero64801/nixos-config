@@ -22,6 +22,9 @@ let
   defaults = {
     name = null;
     binaries = null;
+    # Renames the shims (bin/<prefix><name>) so a confined and an unconfined
+    # build of the same package can be installed side by side.
+    binPrefix = "";
     profile = [ ];
     network = false;
     wayland = false;
@@ -151,6 +154,9 @@ let
         cfg.envPassthrough
     then
       throw "confine: envPassthrough entries must be environment variable names"
+    # The prefix lands in file names and Exec lines.
+    else if !lib.isString cfg.binPrefix || builtins.match "[A-Za-z0-9_.-]*" cfg.binPrefix == null then
+      throw "confine: binPrefix may only contain letters, digits, dot, dash and underscore"
     else
       x: x;
   name = if cfg.name != null then cfg.name else package.pname or package.name;
@@ -867,12 +873,23 @@ let
 
   binaryList =
     if cfg.binaries == null then ''$(cd "${package}/bin" && ls)'' else lib.escapeShellArgs cfg.binaries;
+
+  # "sandbox-" reads as "sandbox" in menu entry names.
+  binPrefixLabel =
+    let
+      m = builtins.match "(.*[A-Za-z0-9])[-_.]*" cfg.binPrefix;
+    in
+    if m == null then cfg.binPrefix else lib.head m;
 in
 
 checked (runCommand "${name}-confined"
   {
     # outputsToInstall would name outputs the single-output wrapper lacks.
-    meta = removeAttrs (package.meta or { }) [ "outputsToInstall" ];
+    meta =
+      removeAttrs (package.meta or { }) [ "outputsToInstall" ]
+      // lib.optionalAttrs (cfg.binPrefix != "" && package.meta ? mainProgram) {
+        mainProgram = cfg.binPrefix + package.meta.mainProgram;
+      };
     passthru = (package.passthru or { }) // {
       inherit filter launcher;
       unwrapped = package;
@@ -934,7 +951,7 @@ checked (runCommand "${name}-confined"
         if [ -d "$entry" ]; then
           rewrite_launchers "$entry" "$dest/$(basename "$entry")"
         elif [ -f "$entry" ]; then
-          sed "s|${package}/bin/|$out/bin/|g" "$entry" > "$dest/$(basename "$entry")"
+          sed "s|${package}/bin/|$out/bin/${cfg.binPrefix}|g" "$entry" > "$dest/$(basename "$entry")"
         fi
       done
     }
@@ -951,8 +968,8 @@ checked (runCommand "${name}-confined"
       fi
       printf '#!%s\nexec %s %s "$@"\n' \
         ${runtimeShell} ${launcher}/bin/${launcher.name} "${package}/bin/$bin" \
-        > "$out/bin/$bin"
-      chmod +x "$out/bin/$bin"
+        > "$out/bin/${cfg.binPrefix}$bin"
+      chmod +x "$out/bin/${cfg.binPrefix}$bin"
     done
 
     # Launchers must reach the wrapper, never the store path behind it.
@@ -973,8 +990,12 @@ checked (runCommand "${name}-confined"
         chmod +w "$dest"
         for bin in "''${binaries[@]}"; do
           # '#' delimits because the pattern itself alternates on '|'.
-          sed -i -E "s#^(Exec|TryExec)=([^ ]*/)?$bin([[:space:]]|\$)#\1=$out/bin/$bin\3#" "$dest"
+          sed -i -E "s#^(Exec|TryExec)=([^ ]*/)?$bin([[:space:]]|\$)#\1=$out/bin/${cfg.binPrefix}$bin\3#" "$dest"
         done
+        ${lib.optionalString (cfg.binPrefix != "") ''
+          # Tells the confined menu entry apart from the unconfined one.
+          sed -i "0,/^Name=/s/^Name=\(.*\)/Name=\1 (${binPrefixLabel})/" "$dest"
+        ''}
       done
     fi
   '')
