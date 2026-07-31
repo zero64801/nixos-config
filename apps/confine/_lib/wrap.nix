@@ -42,6 +42,13 @@ let
       ro = [ ];
       rw = [ ];
     };
+    # { link, target } pairs created inside the sandbox. connect(2) follows
+    # them, so this reaches another sandbox's socket. bind(2) does not, a
+    # server needs runtimeDir = "shared" instead.
+    symlinks = [ ];
+    # "shared" puts the runtime dir on the host at app/<appId>, so sockets the
+    # app creates there are reachable by other sandboxes.
+    runtimeDir = "private";
     dbus = {
       filter = true;
       log = false;
@@ -157,6 +164,10 @@ let
     # The prefix lands in file names and Exec lines.
     else if !lib.isString cfg.binPrefix || builtins.match "[A-Za-z0-9_.-]*" cfg.binPrefix == null then
       throw "confine: binPrefix may only contain letters, digits, dot, dash and underscore"
+    else if !lib.all (s: s ? link && s ? target && lib.isString s.link && lib.isString s.target) cfg.symlinks then
+      throw "confine: symlinks entries must be { link, target } string pairs"
+    else if !lib.elem cfg.runtimeDir [ "private" "shared" ] then
+      throw "confine: runtimeDir must be private or shared, not ${builtins.toJSON cfg.runtimeDir}"
     else
       x: x;
   name = if cfg.name != null then cfg.name else package.pname or package.name;
@@ -478,9 +489,23 @@ let
         --setenv LOGNAME "''${LOGNAME:-$(id -un)}"
         --setenv XDG_RUNTIME_DIR "$runtime_dir"
         --setenv XDG_DATA_DIRS "${package}/share:''${XDG_DATA_DIRS:-/run/current-system/sw/share}"
-        --dir "$runtime_dir"
-        --chmod 0700 "$runtime_dir"
       )
+
+      ${
+        if cfg.runtimeDir == "shared" then
+          ''
+            # bind(2) refuses to create a socket at a name that exists, symlinks
+            # included, so a server's socket can only be shared by backing the
+            # directory it writes to with a host one.
+            mkdir -p "$runtime_dir/app/${appId}"
+            chmod 700 "$runtime_dir/app/${appId}"
+            args+=(--bind "$runtime_dir/app/${appId}" "$runtime_dir")
+          ''
+        else
+          ''
+            args+=(--dir "$runtime_dir" --chmod 0700 "$runtime_dir")
+          ''
+      }
 
       # Last, the final --setenv wins in bwrap and declared env outranks host values.
       args+=(${lib.escapeShellArgs (
@@ -517,14 +542,17 @@ let
       }
 
       ${lib.optionalString (cfg.binds.ro != [ ] || cfg.binds.rw != [ ]) ''
-        # Relative paths resolve against the real home.
+        # Relative paths resolve against the real home, xdg-run/ against the
+        # runtime directory.
         add_bind() {
           local mode=$1 from=$2 to=$3 src dest
           case "$from" in
+            xdg-run/*) src="$runtime_dir/''${from#xdg-run/}" ;;
             /*) src="$from" ;;
             *)  src="$HOME/$from" ;;
           esac
           case "$to" in
+            xdg-run/*) dest="$runtime_dir/''${to#xdg-run/}" ;;
             /*) dest="$to" ;;
             *)  dest="$HOME/$to" ;;
           esac
@@ -547,6 +575,23 @@ let
         ${lib.concatMapStrings (b: ''
           add_bind rw ${lib.escapeShellArg b.from} ${lib.escapeShellArg b.to}
         '') (map normaliseBind cfg.binds.rw)}
+      ''}
+
+      ${lib.optionalString (cfg.symlinks != [ ]) ''
+        # connect(2) follows these, so they reach a socket in a bound directory.
+        add_symlink() {
+          local target=$1 link=$2 dest
+          case "$link" in
+            xdg-run/*) dest="$runtime_dir/''${link#xdg-run/}" ;;
+            /*) dest="$link" ;;
+            *)  dest="$HOME/$link" ;;
+          esac
+          args+=(--symlink "$target" "$dest")
+        }
+
+        ${lib.concatMapStrings (s: ''
+          add_symlink ${lib.escapeShellArg s.target} ${lib.escapeShellArg s.link}
+        '') cfg.symlinks}
       ''}
 
       ${lib.optionalString (cfg.devices != [ ]) ''

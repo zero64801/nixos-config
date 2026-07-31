@@ -65,12 +65,23 @@ let
 
   # Needs no bus or compositor, so it can run inside the build.
   offline = wrap (base // {
+    binaries = [
+      "env"
+      "ls"
+    ];
     portals = false;
     dbus.filter = false;
     env.CONFINE_DECLARED = "declared-wins";
     envPassthrough = [
       "CONFINE_HOSTVAR"
       "CONFINE_DECLARED"
+    ];
+    binds.ro = [ "xdg-run/confine-shared" ];
+    symlinks = [
+      {
+        link = "xdg-run/ipc-link";
+        target = "confine-shared/sock";
+      }
     ];
   });
 
@@ -224,9 +235,27 @@ pkgs.runCommand "confine-launcher-behaviour"
 
     # --- and the sandbox actually runs ----------------------------------------
     export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/rt"
-    mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+    mkdir -p "$HOME" "$XDG_RUNTIME_DIR/confine-shared"
+    touch "$XDG_RUNTIME_DIR/confine-shared/marker" "$XDG_RUNTIME_DIR/host-secret"
     export CONFINE_HOSTVAR=host-copied CONFINE_DECLARED=host-loses
     "$offlineApp/bin/env" > observed || fail "the sandbox did not run"
+
+    # --- xdg-run binds and symlinks -------------------------------------------
+    "$offlineApp/bin/ls" "$XDG_RUNTIME_DIR/confine-shared" > rtdir \
+      || fail "the xdg-run bind did not resolve against the runtime dir"
+    grep -qx marker rtdir || fail "the bound runtime directory is empty inside"
+    "$offlineApp/bin/ls" "$XDG_RUNTIME_DIR" > rtroot
+    grep -qx host-secret rtroot \
+      && fail "an unbound runtime dir entry leaked into the sandbox"
+    grep -qx ipc-link rtroot || fail "the declared symlink was not created"
+
+    # A server's socket is only shareable if the directory it writes to is
+    # host-backed, bind(2) refuses to create one at an existing name.
+    grep -q -- '--bind "$runtime_dir/app/com.test.Shared" "$runtime_dir"' \
+      "${scriptOf { appId = "com.test.Shared"; runtimeDir = "shared"; }}" \
+      || fail "runtimeDir = shared does not back the runtime dir with the app directory"
+    grep -q -- '--dir "$runtime_dir"' "$plainScript" \
+      || fail "the default runtime dir is no longer private"
 
     grep -qx 'CONFINE_HOSTVAR=host-copied' observed \
       || fail "envPassthrough did not copy the host value"

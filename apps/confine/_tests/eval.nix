@@ -75,6 +75,14 @@ let
     binPrefixRejectsBadChars =
       !(builtins.tryEval (build { binPrefix = "no spaces"; }).drvPath).success;
 
+    # A bare string cannot say which side is the link, so the shape is enforced.
+    symlinksRejectBareStrings =
+      !(builtins.tryEval (build { symlinks = [ "xdg-run/discord-ipc-0" ]; }).drvPath).success;
+
+    runtimeDirIsPrivateByDefault =
+      bare.runtimeDir == "private"
+      && !(builtins.tryEval (build { runtimeDir = "sideways"; }).drvPath).success;
+
     # Without the broadcast rule portal requests hang waiting for the Response signal.
     portalRepliesCanReturn = lib.elem "--broadcast=org.freedesktop.portal.*=@/org/freedesktop/portal/*" (
       sessionRules { profile = [ "gui" ]; }

@@ -5,7 +5,7 @@
 let
   commit = "d3d1d48e97c47416e2e04662573d7484540e4a0a";
   version = "B7-355-d3d1d48e";
-  hash = "sha256-kTsYNJzbyyhwid4BXu0CXLOZyg50rms2a9ml6Tru+bg=";
+  hash = "sha256-lsY/pT2Fsf2brS014fmUvRQX9q/EHDxXWZvlwFm5jgY=";
 in
 {
   looking-glass-client = prev.looking-glass-client.overrideAttrs (_: {

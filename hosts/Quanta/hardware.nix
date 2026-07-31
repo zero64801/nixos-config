@@ -57,6 +57,13 @@
     extraModulePackages = [ ];
   };
 
+  powerManagement.cpuFreqGovernor = "powersave";
+
+  services.udev.extraRules = ''
+    # Disable wakeup on PCIe ports
+    ACTION=="add", SUBSYSTEM=="pci", DRIVER=="pcieport", ATTR{power/wakeup}="disabled"
+  '';
+
   systemd.services.cpu-dma-latency = {
     description = "PM-QoS: cap CPU wake latency at 100us (bans the 350us C3 idle exit)";
     wantedBy = [ "multi-user.target" ];
@@ -85,6 +92,8 @@
       allowedUDPPorts = [ ];
     };
   };
+
+  systemd.services.NetworkManager-wait-online.enable = false;
 
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
   hardware.keyboard.qmk.enable = true;

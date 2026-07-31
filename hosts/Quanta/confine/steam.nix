@@ -59,7 +59,10 @@ lib.mkIf config.nyx.apps.gaming.steam.enable {
     # libdbus aborts on some protocol warnings, a filtered bus makes those likelier.
     env.DBUS_FATAL_WARNINGS = "0";
 
-    # Discord rich presence and speech-dispatcher need runtime paths binds cannot express.
+    # SDL's udev hotplug monitor does not deliver inside a user namespace. This
+    # picks the inotify fallback, the same path SDL auto-selects under Flatpak.
+    env.SDL_JOYSTICK_DISABLE_UDEV = "1";
+
   };
 
   # The wrapper re-confines programs.steam's compatibility tool override.

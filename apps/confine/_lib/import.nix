@@ -165,9 +165,9 @@ writeShellApplication {
         xdg-run/pipewire-0)
           add_profile audio
           return ;;
+        # Kept verbatim, the launcher resolves it against the runtime dir.
         xdg-run/*)
-          notes+=("unmapped runtime path: $spec")
-          return ;;
+          path="$spec" ;;
         xdg-download*)  path="Downloads''${spec#xdg-download}" ;;
         xdg-documents*) path="Documents''${spec#xdg-documents}" ;;
         xdg-pictures*)  path="Pictures''${spec#xdg-pictures}" ;;
