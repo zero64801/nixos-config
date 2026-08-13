@@ -4,8 +4,8 @@
   flatpak,
 }:
 
-# One-shot paste output, an upstream permission change can never quietly
-# alter a build. remote-info reports what ships after Flathub review.
+# One-shot paste output, an upstream permission change can never quietly alter a build.
+# remote-info reports what ships after Flathub review.
 writeShellApplication {
   name = "confine-import";
   runtimeInputs = [ flatpak ];

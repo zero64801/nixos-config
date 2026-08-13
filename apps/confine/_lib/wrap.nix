@@ -7,6 +7,7 @@
   bubblewrap,
   coreutils,
   dbus,
+  flatpak-xdg-utils,
   gnused,
   iproute2,
   passt,
@@ -22,8 +23,7 @@ let
   defaults = {
     name = null;
     binaries = null;
-    # Renames the shims (bin/<prefix><name>) so a confined and an unconfined
-    # build of the same package can be installed side by side.
+    # Renames the shims to bin/<prefix><name> so a confined and unconfined build of the same package install side by side.
     binPrefix = "";
     profile = [ ];
     network = false;
@@ -42,12 +42,13 @@ let
       ro = [ ];
       rw = [ ];
     };
-    # { link, target } pairs created inside the sandbox. connect(2) follows
-    # them, so this reaches another sandbox's socket. bind(2) does not, a
-    # server needs runtimeDir = "shared" instead.
+    /*
+    { link, target } pairs created inside the sandbox. connect(2) follows them,
+    so this reaches another sandbox's socket. bind(2) does not, a server needs
+    runtimeDir = "shared" instead.
+    */
     symlinks = [ ];
-    # "shared" puts the runtime dir on the host at app/<appId>, so sockets the
-    # app creates there are reachable by other sandboxes.
+    # "shared" puts the runtime dir on the host at app/<appId> so sockets the app creates there are reachable by other sandboxes.
     runtimeDir = "private";
     dbus = {
       filter = true;
@@ -124,6 +125,18 @@ let
     else
       b;
 
+  /*
+  Routes xdg-open through the OpenURI portal, so opening a file or link hands off
+  to the host instead of exec'ing a host app inside the sandbox, where a
+  single-instance handoff over the filtered bus would fail. Only xdg-open and
+  xdg-email are linked, flatpak-spawn means nothing here.
+  */
+  xdgPortalOpen = runCommand "confine-xdg-open" { } ''
+    mkdir -p $out/bin
+    ln -s ${flatpak-xdg-utils}/bin/xdg-open $out/bin/xdg-open
+    ln -s ${flatpak-xdg-utils}/bin/xdg-email $out/bin/xdg-email
+  '';
+
   # Flatpak grants these implicitly, single-instance activation and MPRIS need them.
   ownedNames = id: [
     id
@@ -171,9 +184,12 @@ let
     else
       x: x;
   name = if cfg.name != null then cfg.name else package.pname or package.name;
+  # Carry the wrapped version so the wrapper is not a versionless sibling in closure diffs.
+  version = package.version or "";
+  confinedName = "${name}-confined" + lib.optionalString (version != "") "-${version}";
 
-  # "isolated" runs a pasta userspace stack, host loopback and other host
-  # subnets are unreachable but the LAN still routes. Booleans mean none/host.
+  # "isolated" runs a pasta userspace stack, host loopback and other host subnets are unreachable but the LAN still routes.
+  # Booleans mean none/host.
   networkMode =
     if lib.isBool cfg.network then
       (if cfg.network then "host" else "none")
@@ -185,8 +201,10 @@ let
   isolatedNetwork = networkMode == "isolated";
   hasNetwork = networkMode != "none";
 
-  # Controls what $HOME contains, the path is never relocated like Flatpak's
-  # ~/.var/app. Booleans are rejected, "home = false" would read as no home.
+  /*
+  Controls what $HOME contains, the path is never relocated like Flatpak's
+  ~/.var/app. Booleans are rejected, "home = false" would read as no home.
+  */
   homeMode =
     if lib.elem cfg.home [ "private" "ephemeral" "host" ] then
       cfg.home
@@ -238,8 +256,10 @@ let
     ++ map (n: "--talk=${n}") (lib.unique cfg.dbus.system.talk)
     ++ map (n: "--call=${n}") (lib.unique cfg.dbus.system.call);
 
-  # From flatpak_run_add_a11y_dbus_args() in common/flatpak-run-dbus.c. The
-  # a11y bus carries keystrokes, so per-method rules rather than a talk rule.
+  /*
+  From flatpak_run_add_a11y_dbus_args() in common/flatpak-run-dbus.c. The a11y
+  bus carries keystrokes, so per-method rules rather than a talk rule.
+  */
   a11yProxyArgs = [
     "--filter"
     "--sloppy-names"
@@ -323,7 +343,7 @@ let
     ++ [
       "--setenv"
       "PATH"
-      "${package}/bin:/run/current-system/sw/bin"
+      "${lib.optionalString cfg.portals "${xdgPortalOpen}/bin:"}${package}/bin:/run/current-system/sw/bin"
     ];
 
   launcher = writeShellApplication {
@@ -382,8 +402,8 @@ let
       trap 'exit 143' TERM
 
       ${lib.optionalString (isolatedNetwork && cfg.portals) ''
-        # pasta adds a PID namespace, so the child-pid bwrap reports means
-        # nothing on the host. Match descendants by mnt namespace inode instead.
+        # pasta adds a PID namespace, so the child-pid bwrap reports means nothing on the host.
+        # Match descendants by mnt namespace inode instead.
         resolve_host_pid() {
           local info="$flatpak_dir/bwrapinfo.json" want frontier next pid kid _try
           want=$(sed -n 's/.*"mnt-namespace": *\([0-9]*\).*/\1/p' "$info")
@@ -414,8 +434,7 @@ let
       ''}
 
       ${lib.optionalString cfg.portals ''
-        # xdg-desktop-portal reads /proc/<peer>/root/.flatpak-info, and the bus
-        # peer it sees is the proxy, so the proxy needs this before starting.
+        # xdg-desktop-portal reads /proc/<peer>/root/.flatpak-info, and the bus peer it sees is the proxy, so the proxy needs this before starting.
         printf '[Application]\nname=%s\n\n[Instance]\ninstance-id=%s\nsession-bus-proxy=%s\nsystem-bus-proxy=%s\n' \
           ${lib.escapeShellArg appId} "$instance_id" \
           ${lib.escapeShellArg (lib.boolToString useProxy)} \
@@ -438,9 +457,8 @@ let
       '') maskedDirs}
 
       # --clearenv strips everything, a missing var crashes deep inside GTK or Qt.
-      # Host plugin trees (QT_PLUGIN_PATH, GTK_PATH, QML2_IMPORT_PATH) stay out,
-      # mismatched toolkit plugins crash apps. GIO_EXTRA_MODULES stays out so
-      # GSettings falls back to the keyfile backend inside the sandbox.
+      # Host plugin trees (QT_PLUGIN_PATH, GTK_PATH, QML2_IMPORT_PATH) stay out, mismatched toolkit plugins crash apps.
+      # GIO_EXTRA_MODULES stays out so GSettings falls back to the keyfile backend inside the sandbox.
       for var in TERM LANG LOCALE_ARCHIVE TZDIR TERMINFO_DIRS \
                  XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP \
                  DESKTOP_SESSION XDG_CONFIG_DIRS XDG_MENU_PREFIX \
@@ -460,8 +478,8 @@ let
       done
 
       ${lib.optionalString cfg.gpu ''
-        # Multi GPU host policy: the session env pins the default card and offload
-        # wrappers override it per command. Stripped, Vulkan apps see every card.
+        # Multi GPU host policy: the session env pins the default card and offload wrappers override it per command.
+        # Stripped, Vulkan apps enumerate every card and ignore the host default.
         for var in __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE \
                    VK_DRIVER_FILES VK_ICD_FILENAMES LIBVA_DRIVER_NAME DRI_PRIME \
                    __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME \
@@ -494,9 +512,8 @@ let
       ${
         if cfg.runtimeDir == "shared" then
           ''
-            # bind(2) refuses to create a socket at a name that exists, symlinks
-            # included, so a server's socket can only be shared by backing the
-            # directory it writes to with a host one.
+            # bind(2) refuses to create a socket at a name that exists, symlinks included.
+            # A server's socket is only shareable by backing the directory it writes to with a host one.
             mkdir -p "$runtime_dir/app/${appId}"
             chmod 700 "$runtime_dir/app/${appId}"
             args+=(--bind "$runtime_dir/app/${appId}" "$runtime_dir")
@@ -516,8 +533,8 @@ let
         ]) (lib.attrNames cfg.env)
       )})
 
-      # The per-app runtime dir Flatpak apps expect, single-instance locks and
-      # RPC sockets live here. Shared across instances, so kept on exit.
+      # The per-app runtime dir Flatpak apps expect, single-instance locks and RPC sockets live here.
+      # Shared across instances, so kept on exit.
       mkdir -p "$runtime_dir/app/${appId}"
       # The default umask would leave per-app state readable by other apps.
       chmod 700 "$runtime_dir/app/${appId}"
@@ -542,8 +559,7 @@ let
       }
 
       ${lib.optionalString (cfg.binds.ro != [ ] || cfg.binds.rw != [ ]) ''
-        # Relative paths resolve against the real home, xdg-run/ against the
-        # runtime directory.
+        # Relative paths resolve against the real home, xdg-run/ against the runtime directory.
         add_bind() {
           local mode=$1 from=$2 to=$3 src dest
           case "$from" in
@@ -639,8 +655,8 @@ let
       ''}
 
       ${lib.optionalString useWaylandProxy ''
-        # Withholds zwlr_data_control_manager_v1, unfocused clipboard reads that
-        # KWin's blacklist misses. Opt-in, it also drops fractional scaling.
+        # Withholds zwlr_data_control_manager_v1, unfocused clipboard reads that KWin's blacklist misses.
+        # Opt-in, it also drops fractional scaling.
         wayland_socket=confine-${appId}.$instance_id
         wayland-proxy-virtwl --wayland-display="$wayland_socket" &
         wayland_proxy_pid=$!
@@ -656,8 +672,7 @@ let
       ''}
 
       ${lib.optionalString cfg.wayland ''
-        # No security-context, KWin's allowInterface() (wayland_server.cpp)
-        # already refuses fake_input without X-KDE-Wayland-Interfaces.
+        # No security-context, KWin's allowInterface() (wayland_server.cpp) already refuses fake_input without X-KDE-Wayland-Interfaces.
         args+=(
           --ro-bind "$runtime_dir/$wayland_socket" "$runtime_dir/$wayland_socket"
           --setenv WAYLAND_DISPLAY "$wayland_socket"
@@ -737,8 +752,8 @@ let
       ''}
 
       ${lib.optionalString cfg.pulse ''
-        # libpulse chmods $XDG_RUNTIME_DIR/pulse and fails when it is a bind
-        # target. enable-shm=no, shm needs a shared /dev/shm and IPC namespace.
+        # libpulse chmods $XDG_RUNTIME_DIR/pulse and fails when it is a bind target.
+        # enable-shm=no, shm needs a shared /dev/shm and IPC namespace.
         if [ -S "$runtime_dir/pulse/native" ]; then
           # Not --ro-bind-data, that takes a descriptor and pasta closes inherited fds.
           printf 'enable-shm=no\n' > "$instance/pulse-config"
@@ -777,8 +792,7 @@ let
             ''}
             proxy_wrapper=()
             ${lib.optionalString cfg.portals ''
-              # The portal inspects the bus peer, the proxy, so the forged
-              # /.flatpak-info must sit in the proxy's own namespace.
+              # The portal inspects the bus peer, the proxy, so the forged /.flatpak-info must sit in the proxy's own namespace.
               proxy_wrapper=(
                 bwrap --die-with-parent --clearenv --new-session
                 --proc /proc --dev /dev
@@ -795,8 +809,7 @@ let
               ${xdg-dbus-proxy}/bin/xdg-dbus-proxy "''${proxy_args[@]}" 3>"$instance/sync" &
             proxy_pid=$!
 
-            # The proxy writes one byte on --fd when ready and exits when that
-            # fd closes, so the read end is held for the whole run.
+            # The proxy writes one byte on --fd when ready and exits when that fd closes, so the read end is held for the whole run.
             exec {sync_fd}<"$instance/sync"
             read -r -N 1 -t 10 -u "$sync_fd" _ready || true
 
@@ -855,8 +868,8 @@ let
         # pasta maps the caller to uid 0 and Chromium refuses to run as root.
         args+=(--uid "$(id -u)" --gid "$(id -g)")
 
-        # Forwards default to "auto", exposing every loopback service, so they
-        # start closed. --no-map-gw and the outbound pin close the other routes.
+        # Forwards default to "auto", exposing every loopback service, so they start closed.
+        # --no-map-gw and the outbound pin close the other routes.
         pasta_args=(
           --config-net --no-map-gw --quiet
           -t ${portSpec cfg.networkPorts.fromHost} -u ${portSpec cfg.networkPorts.fromHost}
@@ -887,8 +900,8 @@ let
       ${
         if cfg.portals then
           ''
-            # The portal resolves instance-id to bwrapinfo.json and opens a pidfd
-            # on child-pid. Since 1.19 a missing file fails the whole lookup.
+            # The portal resolves instance-id to bwrapinfo.json and opens a pidfd on child-pid.
+            # Since 1.19 a missing file fails the whole lookup.
             mkdir -p "$flatpak_dir"
             mkfifo -m 600 "$instance/info"
 
@@ -927,8 +940,9 @@ let
     if m == null then cfg.binPrefix else lib.head m;
 in
 
-checked (runCommand "${name}-confined"
+checked (runCommand confinedName
   {
+    inherit version;
     # outputsToInstall would name outputs the single-output wrapper lacks.
     meta =
       removeAttrs (package.meta or { }) [ "outputsToInstall" ]
@@ -940,8 +954,8 @@ checked (runCommand "${name}-confined"
       unwrapped = package;
       permissions = cfg;
 
-      # Overriding re-confines so programs.steam cannot return an unconfined
-      # build. setFunctionArgs keeps the signature lib.functionArgs callers see.
+      # Overriding re-confines so programs.steam cannot return an unconfined build.
+      # setFunctionArgs keeps the signature lib.functionArgs callers see.
       override = lib.setFunctionArgs (
         f: confineAgain (package.override f)
       ) (lib.functionArgs (package.override or (x: x)));
@@ -975,8 +989,8 @@ checked (runCommand "${name}-confined"
       done
     fi
 
-    # foot keeps terminfo in a separate output, losing it breaks terminals
-    # inside. Only the top level merges, nested collisions still lose files.
+    # foot keeps terminfo in a separate output, losing it breaks terminals inside.
+    # Only the top level merges, nested collisions still lose files.
     ${lib.concatMapStrings (o: ''
       if [ -d ${package.${o}}/share ]; then
         mkdir -p "$out/share"
@@ -1023,8 +1037,7 @@ checked (runCommand "${name}-confined"
       entries=(${package}/share/applications/*.desktop)
 
       for desktop in "''${entries[@]}"; do
-        # Portals resolve the app id to a matching .desktop for name and icon,
-        # so a lone entry is renamed to the forged id.
+        # Portals resolve the app id to a matching .desktop for name and icon, so a lone entry is renamed to the forged id.
         if [ "''${#entries[@]}" -eq 1 ]; then
           dest="$out/share/applications/${appId}.desktop"
         else

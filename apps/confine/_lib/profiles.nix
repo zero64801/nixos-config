@@ -7,8 +7,9 @@
     sysfs = true;
 
     dbus.session = {
-      # Portal names get the call rule below, talk is broader. Notifications is
-      # not a portal name. portal.Flatpak is a Spawn primitive and stays out.
+      # Portal names get the call rule below, talk is broader.
+      # Notifications is not a portal name.
+      # portal.Flatpak is a Spawn primitive and stays out.
       talk = [ "org.freedesktop.Notifications" ];
       # Portal replies arrive as Response signals, without broadcast every request hangs.
       call = [ "org.freedesktop.portal.*=*" ];
@@ -47,8 +48,8 @@
   # ROCm compute node, rendering does not need it.
   compute.devices = [ "/dev/kfd" ];
 
-  # xdg-dbus-proxy rejects wildcards not preceded by a dot, so the per-pid
-  # item name cannot be matched. Registration only needs the watcher.
+  # xdg-dbus-proxy rejects wildcards not preceded by a dot, so the per-pid item name cannot be matched.
+  # Registration only needs the watcher.
   tray = {
     dbus.session.talk = [
       "org.kde.StatusNotifierWatcher"
@@ -78,8 +79,8 @@
     ];
   };
 
-  # pressure-vessel nests containers. Without the second arch token the filter
-  # never applies to Steam's 32-bit binaries.
+  # pressure-vessel nests containers.
+  # Without the second arch token the filter never applies to Steam's 32-bit binaries.
   steam = {
     seccomp = {
       nesting = true;

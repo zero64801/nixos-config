@@ -1,6 +1,9 @@
 { pkgs, ... }:
 
 {
+  # CPU xHCI 6f:00.4 (rear USB-C + one type A)
+  boot.kernelParams = [ "vfio-pci.ids=1022:15b7" ];
+
   nyx.virtualisation = {
     base.enable = true;
 

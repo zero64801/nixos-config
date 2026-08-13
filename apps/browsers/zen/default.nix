@@ -138,7 +138,7 @@ in
     };
 
     # Updates the AMO pins that addonPins points at.
-    environment.systemPackages = [ pkgs.addon-pin ];
+    environment.systemPackages = [ (pkgs.callPackage ./_addon-pin.nix { }) ];
 
     # Persist the whole profile: SQLite -wal files and rename-replaced json/txt
     # break under per-file bind mounts.

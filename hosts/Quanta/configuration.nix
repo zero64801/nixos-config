@@ -86,7 +86,6 @@ in
       llamaCpp = {
         enable = true;
         cuda = true;
-        vulkan = true;
       };
     };
 
@@ -101,6 +100,19 @@ in
   services.displayManager.autoLogin = {
     enable = true;
     user = username;
+  };
+
+  # Publish over mDNS so LAN devices reach this host as Quanta.local without a static IP.
+  services.avahi = {
+    enable = true;
+    # Lets this host resolve other .local names too.
+    nssmdns4 = true;
+    publish = {
+      enable = true;
+      addresses = true;
+      workstation = true;
+    };
+    openFirewall = true;
   };
 
   security.tpm2 = {

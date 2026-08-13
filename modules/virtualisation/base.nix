@@ -96,6 +96,18 @@ in
           isolation is enabled. DHCP and DNS are always allowed.
         '';
       };
+
+      allowedLanHosts = mkOption {
+        type = listOf str;
+        default = [ ];
+        description = ''
+          LAN or other-subnet destinations (IP or CIDR) that VMs may
+          reach despite isolation, punched through ahead of the lanRanges
+          drops. Use for e.g. a device on an isolated IoT VLAN you adb
+          into from a VM. Actual reachability is still gated by the
+          router's own inter-VLAN rules.
+        '';
+      };
     };
   };
 
@@ -172,6 +184,10 @@ in
           let
             bridge   = cfg.networkIsolation.bridge;
             vmSubnet = cfg.networkIsolation.vmSubnet;
+            allowRule = dst: ''
+              iifname "${bridge}" ip saddr ${vmSubnet} ip daddr ${dst} accept
+            '';
+            allows = concatStringsSep "" (map allowRule cfg.networkIsolation.allowedLanHosts);
             dropRule = range: ''
               iifname "${bridge}" ip saddr ${vmSubnet} ip daddr ${range} ip daddr != ${vmSubnet} drop
             '';
@@ -180,7 +196,7 @@ in
           ''
             chain forward {
               type filter hook forward priority -100; policy accept;
-              ${rules}
+              ${allows}${rules}
             }
           '';
       };

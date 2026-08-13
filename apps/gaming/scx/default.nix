@@ -70,6 +70,11 @@ in
       extraArgs = cfg.hostSchedulerFlags;
     };
 
+    systemd.services.scx = {
+      conflicts = [ "scx-manual.service" ];
+      after = [ "scx-manual.service" ];
+    };
+
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.policykit.exec" &&

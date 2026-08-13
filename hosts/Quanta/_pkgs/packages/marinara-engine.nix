@@ -15,28 +15,28 @@
 }:
 
 let
-  pnpm = pnpm_10.override { nodejs = nodejs_24; };
+  pnpm = pnpm_10.override { nodejs-slim = nodejs_24; };
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "marinara-engine";
-  version = "1.6.1";
+  version = "2.4.1";
 
   src = fetchFromGitHub {
     owner = "Pasta-Devs";
     repo = "Marinara-Engine";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-ZQfn9RnoJnr/vYI0IPm65KY44diA/YlSGrMOStMZIco=";
+    hash = "sha256-/SBZZwAFR8ZZAZi0gTOz2jxKPkbxMEGoyTnczmkeauE=";
   };
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     inherit pnpm;
-    fetcherVersion = 2;
+    fetcherVersion = 3;
     prePnpmInstall = ''
       mkdir -p $out
       sed -i '/^store-dir=/d' .npmrc
     '';
-    hash = "sha256-JX0krR/QP/hjkQKYTjDLAn507S0P/PiShNXrY3K4GxY=";
+    hash = "sha256-Dov4Ez7To52j+4MWaNlV5/+fbZDrGFNg70qr6cGPy/0=";
   };
 
   nativeBuildInputs = [
@@ -87,6 +87,12 @@ stdenv.mkDerivation (finalAttrs: {
 
     mkdir -p $out/share/marinara-engine $out/bin
     cp -r package.json pnpm-workspace.yaml .env.example node_modules packages docs $out/share/marinara-engine/
+
+    # onnxruntime-node ships prebuilt macOS and Windows libraries next to the linux one, none of which this host can load.
+    onnx=$out/share/marinara-engine/node_modules/onnxruntime-node
+    if [ -d "$onnx" ]; then
+      find "$onnx" -type d \( -name darwin -o -name win32 \) -exec rm -rf {} +
+    fi
 
     makeWrapper ${lib.getExe nodejs_24} $out/bin/marinara-engine \
       --chdir "$out/share/marinara-engine/packages/server" \
