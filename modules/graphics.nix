@@ -11,7 +11,7 @@ let
 
   /*
   Opt-in PRIME render offload onto the nvidia card. The session-wide ICD
-  hiding keeps every app off the card by default; this wrapper re-exposes
+  hiding keeps every app off the card by default. This wrapper re-exposes
   the ICDs and requests offload for one command, e.g. `nvrun steam` or
   `nvrun %command%` in Steam launch options.
   */
@@ -44,7 +44,7 @@ let
   /*
   Zero-copy direct output: a gamescope DRM session owning the secondary GPU's
   own connector, bypassing the desktop compositor entirely. Needs a monitor
-  cabled to that card; flip the monitor input to play, flip back on exit.
+  cabled to that card. Flip the monitor input to play, flip back on exit.
   The game runs under gamemoderun so the scx/x3d gamemode hooks still fire.
   Extra gamescope flags go in GAMESCOPE_OPTS.
   */
@@ -184,16 +184,14 @@ in
           install nvidia_drm /bin/true
         '';
 
-      # Keep desktop apps off the secondary card entirely: incidental EGL/Vulkan enumeration
-      # leaves device fds open, which gpu-switch then has to fuser -k (visible as app flashes).
+      # Keep desktop apps off the secondary card entirely: incidental EGL/Vulkan enumeration leaves device fds open, which gpu-switch then has to fuser -k (visible as app flashes).
       # CUDA, ROCm and NVENC bypass both loaders, so compute is unaffected either way.
       environment.sessionVariables =
         if cfg.backend != "nvidia" then
           {
             __EGL_VENDOR_LIBRARY_FILENAMES = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json";
             VK_LOADER_DRIVERS_DISABLE = "nvidia_icd.json";
-            # Pin VA-API to the AMD card so no app can load nvidia_drv_video.so on the
-            # secondary node (its EGL is hidden above, so that path only ever fails).
+            # Pin VA-API to the AMD card so no app can load nvidia_drv_video.so on the secondary node (its EGL is hidden above, so that path only ever fails).
             LIBVA_DRIVER_NAME = "radeonsi";
           }
         else

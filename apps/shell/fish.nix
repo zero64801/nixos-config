@@ -81,9 +81,8 @@ in
         set -gx FZF_DEFAULT_OPTS "${fzf-options}"
         fish_vi_key_bindings
 
-        # Sourced directly rather than via programs.fzf.keybindings, which also injects
-        # key-bindings.bash into /etc/bashrc. Non-readline bash has no `bind` builtin,
-        # so every non-interactive bash spawned here spews "bind: command not found".
+        # Sourced directly rather than via programs.fzf.keybindings, which also injects key-bindings.bash into /etc/bashrc.
+        # Non-readline bash has no `bind` builtin, so every non-interactive bash spawned here spews "bind: command not found".
         source ${pkgs.fzf}/share/fzf/key-bindings.fish && fzf_key_bindings
 
         function fish_user_key_bindings

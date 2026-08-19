@@ -1,15 +1,14 @@
 { config, lib, pkgs, ... }:
 
 let
-  # PCI address of the GPU that owns the desktop session; the kwin pin and the monitor layout script both key off it.
+  # PCI address of the GPU that owns the desktop session. The kwin pin and the monitor layout script both key off it.
   displayGpu = "0000:05:00.0";
 
   layoutScript = pkgs.writeShellScript "display-layout" ''
     KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
 
-    # Plasma's env import into systemd --user races login, and the udev trigger can fire
-    # with no session at all (boot, GPU rebinds). Qt aborts hard when the socket is
-    # missing, so wait for it directly and leave quietly if no compositor appears.
+    # Plasma's env import into systemd --user races login, and the udev trigger can fire with no session at all (boot, GPU rebinds).
+    # Qt aborts hard when the socket is missing, so wait for it directly and leave quietly if no compositor appears.
     export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
     WAYLAND_DISPLAY=""
     for _ in $(seq 1 30); do
@@ -28,8 +27,8 @@ let
     CENTER_SERIAL="GM0NNP3"
     RIGHT_SERIAL="2S6YHV3"
 
-    # kwin's output management comes up slightly after its socket. The probe still dies
-    # in Qt's init_platform until then, so keep its cores out of coredumpctl.
+    # kwin's output management comes up slightly after its socket.
+    # The probe still dies in Qt's init_platform until then, so keep its cores out of coredumpctl.
     for _ in $(seq 1 30); do
       ( ulimit -c 0; exec "$KSCREEN" -o ) >/dev/null 2>&1 && break
       sleep 0.5
@@ -82,8 +81,7 @@ let
     [ "$all_ok" = 1 ] && exit 0
     for _ in $(seq 1 10); do
       if "$KSCREEN" $args; then
-        # Combined with enable/position args kwin renumbers priorities by connector order
-        # and drops the primary request, so it must go in its own transaction.
+        # Combined with enable/position args kwin renumbers priorities by connector order and drops the primary request, so it must go in its own transaction.
         [ -z "$primary_conn" ] || "$KSCREEN" "output.$primary_conn.primary"
         exit 0
       fi
@@ -105,8 +103,8 @@ in
       export KWIN_DRM_DEVICES
     '';
 
-    # Sandboxed VSCode from ~/Projects/dev/shell.nix; direnv exec replays the
-    # cached nix-direnv env so no terminal or manual nix-shell is needed.
+    # Sandboxed VSCode from ~/Projects/dev/shell.nix.
+    # direnv exec replays the cached nix-direnv env so no terminal or manual nix-shell is needed.
     hm.xdg.desktopEntries.dev-workspace = {
       name = "Dev Workspace";
       genericName = "Code Editor";
@@ -253,14 +251,13 @@ in
 
     };
 
-    # Output recreation (monitor sleep, input switch, replug) makes kwin re-derive priority
-    # from connector order, stealing primary from the center monitor; re-assert on DRM changes.
+    # Output recreation (monitor sleep, input switch, replug) makes kwin re-derive priority from connector order, stealing primary from the center monitor.
+    # Re-assert on DRM changes.
     services.udev.extraRules = ''
       ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="${pkgs.systemd}/bin/systemctl --no-block -M ${config.nyx.flake.user}@ --user start display-layout.service"
     '';
 
-    # A user service instead of plasma-manager's startupScript: those only re-run when their
-    # content changes, so a regenerated kwin output config was never re-corrected on login.
+    # A user service instead of plasma-manager's startupScript: those only re-run when their content changes, so a regenerated kwin output config was never re-corrected on login.
     hm.systemd.user.services.display-layout = {
       Unit = {
         Description = "Assert monitor layout and primary by EDID serial";

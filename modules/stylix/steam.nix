@@ -20,14 +20,12 @@ let
       exit 0
     fi
 
-    # adwsteamgtk copies our custom.css with shutil.copy, which stamps the
-    # read-only mode of the home-manager store symlink onto its own cache; a
-    # re-run then cannot overwrite that cache file. Make it writable first.
+    # adwsteamgtk copies our custom.css with shutil.copy, which stamps the read-only mode of the home-manager store symlink onto its own cache.
+    # A re-run then cannot overwrite that cache file, so make it writable first.
     cache="''${XDG_CACHE_HOME:-$HOME/.cache}/AdwSteamInstaller/extracted"
     [ -d "$cache" ] && ${pkgs.coreutils}/bin/chmod -R u+w "$cache" 2>/dev/null || true
 
-    # adwsteamgtk exits 0 even when custom_css.install raises, so treat a
-    # Traceback in its output as failure rather than reporting a false success.
+    # adwsteamgtk exits 0 even when custom_css.install raises, so treat a Traceback in its output as failure rather than reporting a false success.
     if out=$(${pkgs.coreutils}/bin/timeout 60s ${lib.getExe pkgs.adwsteamgtk} -i 2>&1) \
       && ! printf '%s' "$out" | ${pkgs.gnugrep}/bin/grep -q Traceback; then
       echo "Steam theme reapplied. Restart Steam to see it."

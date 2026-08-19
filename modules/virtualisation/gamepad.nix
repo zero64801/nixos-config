@@ -30,8 +30,7 @@ let
         exit 2
       }
 
-      # Domains that actually hold the device, instead of a last-used state
-      # file that goes stale on manual detach or reboot.
+      # Domains that actually hold the device, instead of a last-used state file that goes stale on manual detach or reboot.
       attached_domains() {
         virsh -c qemu:///system list --name | while IFS= read -r d; do
           [ -n "$d" ] || continue

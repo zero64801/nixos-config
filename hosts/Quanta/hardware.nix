@@ -60,7 +60,6 @@
   powerManagement.cpuFreqGovernor = "powersave";
 
   services.udev.extraRules = ''
-    # Disable wakeup on PCIe ports
     ACTION=="add", SUBSYSTEM=="pci", DRIVER=="pcieport", ATTR{power/wakeup}="disabled"
   '';
 

@@ -1,9 +1,9 @@
 { config, lib, ... }:
 
-# Kept separate from default.nix on purpose: the VM check imports the module
-# standalone (imports = [ ./default.nix ]), so the module itself must not
-# reference nyx.*, hm or other repo infrastructure. This glue is auto
-# imported into the full system config, where those options exist.
+/*
+Kept separate from default.nix on purpose: the VM check imports the module standalone (imports = [ ./default.nix ]), so the module itself must not reference nyx.*, hm or other repo infrastructure.
+This glue is auto imported into the full system config, where those options exist.
+*/
 let
   cfg = config.flatlock;
 in
@@ -26,8 +26,7 @@ in
         "f ${cfg.configRepoPath}/${cfg.lockFileRelativePath} 0644 ${config.nyx.flake.user} users - {}"
       ];
 
-      # user overrides outrank system overrides, binding the directory to the
-      # store keeps Flatseal from quietly loosening what the module declared
+      # user overrides outrank system overrides, binding the directory to the store keeps Flatseal from quietly loosening what the module declared
       hm.xdg.dataFile = lib.mkIf cfg.strictOverrides {
         "flatpak/overrides".source = cfg.overridesPackage;
       };

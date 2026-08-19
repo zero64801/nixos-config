@@ -59,6 +59,12 @@ in
         # on vault so a root factory reset keeps the credentials
         outboundFile = "/mnt/vault/secrets/sing-box/vless-outbound.json";
       };
+      wgProxy = {
+        enable = true;
+        # on vault so a root factory reset keeps the key
+        endpointFile = "/mnt/vault/secrets/sing-box/ivpn-wg-endpoint.json";
+        tunnelDns = "172.16.0.1";
+      };
       fish.enable = true;
       git = {
         enable = true;
@@ -105,7 +111,11 @@ in
   # Publish over mDNS so LAN devices reach this host as Quanta.local without a static IP.
   services.avahi = {
     enable = true;
-    # Lets this host resolve other .local names too.
+    ipv6 = false;
+    extraConfig = ''
+      [publish]
+      publish-aaaa-on-ipv4=no
+    '';
     nssmdns4 = true;
     publish = {
       enable = true;

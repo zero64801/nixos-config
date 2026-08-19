@@ -6,12 +6,12 @@
     shell = pkgs.fish;
     isNormalUser = true;
 
+    # video is for nvscope: DRM master on the passthrough card's own connector needs rw on its /dev/dri node.
     extraGroups = [
       "wheel"
       "networkmanager"
       "tss"
       "gamemode"
-      # nvscope: DRM master on the passthrough card's own connector needs rw on its /dev/dri node.
       "video"
     ] ++ config.nyx.security.serviceAdminGroups;
 

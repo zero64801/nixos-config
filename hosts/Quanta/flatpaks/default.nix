@@ -11,8 +11,7 @@ in
     lockFile = ./flatpak.lock;
     lockFileRelativePath = "hosts/Quanta/flatpaks/flatpak.lock";
     uninstallUnmanaged = true;
-    # overrides live at the user (hm) level; prune any system override files
-    # left behind (e.g. the earlier system-level Steam/protontricks attempt)
+    # overrides live at the user (hm) level, so prune system override files left behind (e.g. the earlier system-level Steam/protontricks attempt)
     overrides.pruneRemoved = true;
   };
 
@@ -20,7 +19,7 @@ in
   Latest mesa for every flatpak: the beta repo's mesa-git builds publish
   under the stable 25.08 branch, matching the GL extension point of both
   the freedesktop 25.08 and gnome 50 runtimes in use here. Selected via
-  FLATPAK_GL_DRIVERS, which flatpak reads at sandbox setup; delete that
+  FLATPAK_GL_DRIVERS, which flatpak reads at sandbox setup. Delete that
   line to fall back to the stable driver, which stays installed.
 
   The nvidia driver mounts alongside mesa for PRIME offload inside sandboxes.
@@ -56,7 +55,7 @@ in
   environment.sessionVariables.FLATPAK_GL_DRIVERS = glDrivers;
 
   /*
-  sessionVariables only land at login; push the value into the running
+  sessionVariables only land at login. Push the value into the running
   session's systemd and D-Bus activation environments on every switch so
   flatpaks launched afterwards already see it. Skipped when no session
   bus is up (headless switch). Removing the variable still needs a
@@ -77,7 +76,6 @@ in
     remotes = lib.mkForce { };
     lockFile = ./flatpak-user.lock;
     lockFileRelativePath = "hosts/Quanta/flatpaks/flatpak-user.lock";
-    # clean up user override files that are no longer declared
     overrides.pruneRemoved = true;
   };
 }

@@ -72,6 +72,8 @@ let
     portals = false;
     dbus.filter = false;
     env.CONFINE_DECLARED = "declared-wins";
+    # Commas stay bare under escapeShellArgs and once broke the array syntax.
+    env.CONFINE_LIST = "a,b,c";
     envPassthrough = [
       "CONFINE_HOSTVAR"
       "CONFINE_DECLARED"
@@ -110,9 +112,14 @@ pkgs.runCommand "confine-launcher-behaviour"
         "audio"
       ];
     };
+    # Several ports render as a comma list, which shellcheck rejects unquoted.
     isolatedScript = scriptOf {
       portals = true;
       network = "isolated";
+      networkPorts.toHost = [
+        3000
+        2081
+      ];
     };
     isolatedX11Script = scriptOf {
       profile = [
@@ -249,8 +256,7 @@ pkgs.runCommand "confine-launcher-behaviour"
       && fail "an unbound runtime dir entry leaked into the sandbox"
     grep -qx ipc-link rtroot || fail "the declared symlink was not created"
 
-    # A server's socket is only shareable if the directory it writes to is
-    # host-backed, bind(2) refuses to create one at an existing name.
+    # A server's socket is only shareable if the directory it writes to is host-backed, bind(2) refuses to create one at an existing name.
     grep -q -- '--bind "$runtime_dir/app/com.test.Shared" "$runtime_dir"' \
       "${scriptOf { appId = "com.test.Shared"; runtimeDir = "shared"; }}" \
       || fail "runtimeDir = shared does not back the runtime dir with the app directory"
@@ -259,6 +265,8 @@ pkgs.runCommand "confine-launcher-behaviour"
 
     grep -qx 'CONFINE_HOSTVAR=host-copied' observed \
       || fail "envPassthrough did not copy the host value"
+    grep -qx 'CONFINE_LIST=a,b,c' observed \
+      || fail "a comma valued declared env did not arrive intact"
     # CONFINE_DECLARED is both declared and passed through, the fixed value wins.
     grep -qx 'CONFINE_DECLARED=declared-wins' observed \
       || fail "declared env did not reach the sandbox or lost to envPassthrough"

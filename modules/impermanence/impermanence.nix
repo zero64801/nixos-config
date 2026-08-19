@@ -62,7 +62,7 @@ let
   allUsers       = persistenceConfig.users or { };
 
   /*
-  masterPersistence — used only by the nyx-persist CLI tool.
+  masterPersistence is used only by the nyx-persist CLI tool.
 
   Built exclusively from direct source inputs rather than reading back from
   config.environment.persistence (which this module writes to). Reading our
@@ -73,8 +73,8 @@ let
   resolvePath = homeDir: p:
     if lib.hasPrefix "/" p then p else "${homeDir}/${p}";
 
-  # Home entries may be a bare path or an impermanence attrset carrying
-  # mode/user/group; resolve the relative path inside whichever form.
+  # Home entries may be a bare path or an impermanence attrset carrying mode/user/group.
+  # Resolve the relative path inside whichever form.
   resolveEntry = homeDir: entry:
     if builtins.isString entry then
       resolvePath homeDir entry
@@ -163,9 +163,8 @@ let
       previousSnapshot = cfg.btrfs.previousSnapshot;
     in
     ''
-      # The systemd initrd only ships bash, coreutils and btrfs-progs: no sed,
-      # grep or awk. pipefail so a missing tool aborts instead of feeding the
-      # loop an empty list (that once left root undeletable and blocked boot).
+      # The systemd initrd only ships bash, coreutils and btrfs-progs: no sed, grep or awk.
+      # pipefail so a missing tool aborts instead of feeding the loop an empty list (that once left root undeletable and blocked boot).
       set -o pipefail
 
       echo "impermanence: mounting btrfs volume"
@@ -173,8 +172,7 @@ let
       mount ${device} /mnt
 
       echo "impermanence: cleaning up nested subvolumes under ${rootSubvolume}"
-      # Full list (not -o: grandchildren too), prefix strip keeps paths with
-      # spaces, reverse sort deletes children before their parents.
+      # Full list (not -o: grandchildren too), prefix strip keeps paths with spaces, reverse sort deletes children before their parents.
       btrfs subvolume list /mnt \
         | while IFS= read -r line; do printf '%s\n' "''${line#* path }"; done \
         | sort -r \
@@ -296,30 +294,27 @@ in
     (mkIf cfg.btrfs.enable {
       boot.initrd.systemd.services.impermanence-rollback =
         let
-          # Wait for the backing device itself, not just the unlocker; without
-          # this the mount can race udev when unlockDevice is unset.
+          # Wait for the backing device itself, not just the unlocker.
+          # Without it the mount can race udev when unlockDevice is unset.
           deviceUnit = "${utils.escapeSystemdPath cfg.btrfs.device}.device";
         in
         {
           description = "Rollback btrfs root to blank snapshot";
           wantedBy    = [ "initrd.target" ];
           before      = [ "sysroot.mount" ];
-          # requiredBy makes a failed rollback stop the boot instead of
-          # silently coming up on the stale root.
+          # requiredBy makes a failed rollback stop the boot instead of silently coming up on the stale root.
           requiredBy  = [ "sysroot.mount" ];
           after       = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
           requires    = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
           unitConfig = {
             DefaultDependencies = "no";
-            # The switch-root isolate re-propagates sysroot.mount's Requires
-            # as a fresh start job; this blocks any second run against the
-            # already-mounted root (it would wipe it live).
+            # The switch-root isolate re-propagates sysroot.mount's Requires as a fresh start job.
+            # This blocks any second run against the already-mounted root (it would wipe it live).
             ConditionPathIsMountPoint = "!/sysroot";
           };
           serviceConfig = {
             Type = "oneshot";
-            # Stay active after success so that re-propagated start job is a
-            # no-op instead of re-executing the script.
+            # Stay active after success so that re-propagated start job is a no-op instead of re-executing the script.
             RemainAfterExit = true;
           };
           script = rollbackScript;

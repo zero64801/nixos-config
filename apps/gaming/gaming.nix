@@ -48,13 +48,19 @@ in
 
       programs.gamemode = {
         enable = true;
+        # The stock governor flip hits every core including VM claims, and while governor=performance the kernel rejects all other EPP writes.
+        # Same value both ways makes it a no-op, scx-switch sets game EPP claim-aware instead.
+        settings.general = {
+          desiredgov = "powersave";
+          defaultgov = "powersave";
+        };
         settings.custom = let
           scxCfg = config.nyx.apps.scx;
           switch = "${scxCfg.package}/bin/scx-switch";
           scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
 
           /*
-          X3D writes go directly — a udev rule chgrps the sysfs file to the
+          X3D writes go directly - a udev rule chgrps the sysfs file to the
           gamemode group when the driver binds, so no privilege escalation
           is needed for the toggle.
           */
@@ -71,7 +77,7 @@ in
 
           /*
           SCX switch still needs root (calls systemctl), so wrap only that
-          part in pkexec — keeps the X3D toggle privilege-free.
+          part in pkexec - keeps the X3D toggle privilege-free.
           */
           startScript = pkgs.writeShellScript "gamemode-start" ''
             ${x3dStart}
@@ -93,8 +99,7 @@ in
         ACTION=="add|bind", DRIVER=="amd_x3d_vcache", RUN+="${pkgs.runtimeShell} -c '${pkgs.coreutils}/bin/chgrp gamemode /sys%p/amd_x3d_mode; ${pkgs.coreutils}/bin/chmod g+w /sys%p/amd_x3d_mode'"
       '';
 
-      # realtime priority comes from the gamescope-rt helper, not
-      # capSysNice, which breaks inside Steam's container
+      # realtime priority comes from the gamescope-rt helper, not capSysNice, which breaks inside Steam's container
       programs.gamescope.enable = true;
 
       programs.steam = lib.mkIf cfg.steam.enable {

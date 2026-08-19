@@ -5,6 +5,7 @@ let
   scripts = import ./_scripts.nix {
     inherit pkgs lib;
     inherit (cfg) gameScheduler gameSchedulerFlags;
+    vmClaimDir = config.nyx.virtualisation.cpuPinning.claimDir;
   };
   inherit (scripts) scx-env scx-switch scx-gui scx-desktop-item;
 in

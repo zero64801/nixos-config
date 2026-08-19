@@ -6,8 +6,7 @@
     (lib.mkAliasOptionModule [ "hm" ] [ "home-manager" "users" config.nyx.flake.user ])
   ];
 
-  # A plain bool, not a users.users check: home-manager's useUserPackages
-  # contributes users.users names, so gating on them infinitely recurses.
+  # A plain bool, not a users.users check: home-manager's useUserPackages contributes users.users names, so gating on them infinitely recurses.
   options.nyx.homeManager.enable = lib.mkOption {
     type = lib.types.bool;
     default = true;

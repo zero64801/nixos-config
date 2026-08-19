@@ -525,13 +525,16 @@ let
       }
 
       # Last, the final --setenv wins in bwrap and declared env outranks host values.
-      args+=(${lib.escapeShellArgs (
-        lib.concatMap (n: [
-          "--setenv"
-          n
-          cfg.env.${n}
-        ]) (lib.attrNames cfg.env)
-      )})
+      # Always quoted, escapeShellArgs leaves commas bare and those read as element separators inside an array.
+      args+=(${
+        lib.concatMapStringsSep " " (s: "'${lib.replaceStrings [ "'" ] [ "'\\''" ] s}'") (
+          lib.concatMap (n: [
+            "--setenv"
+            n
+            cfg.env.${n}
+          ]) (lib.attrNames cfg.env)
+        )
+      })
 
       # The per-app runtime dir Flatpak apps expect, single-instance locks and RPC sockets live here.
       # Shared across instances, so kept on exit.
@@ -872,8 +875,9 @@ let
         # --no-map-gw and the outbound pin close the other routes.
         pasta_args=(
           --config-net --no-map-gw --quiet
-          -t ${portSpec cfg.networkPorts.fromHost} -u ${portSpec cfg.networkPorts.fromHost}
-          -T ${portSpec cfg.networkPorts.toHost}   -U ${portSpec cfg.networkPorts.toHost}
+          # Quoted because several ports render as a comma list.
+          -t '${portSpec cfg.networkPorts.fromHost}' -u '${portSpec cfg.networkPorts.fromHost}'
+          -T '${portSpec cfg.networkPorts.toHost}'   -U '${portSpec cfg.networkPorts.toHost}'
           ${lib.escapeShellArgs cfg.extraPastaArgs}
         )
         route_if=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')

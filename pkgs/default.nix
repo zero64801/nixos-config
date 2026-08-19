@@ -8,8 +8,8 @@ let
     && name != "flake.nix"
     && !lib.hasPrefix "_" name;
 
-  # Additive packages: callPackage every non-underscore *.nix under `dir`,
-  # keyed by filename. Missing dir yields nothing.
+  # Additive packages: callPackage every non-underscore *.nix under `dir`, keyed by filename.
+  # Missing dir yields nothing.
   packagesFrom = dir:
     if !builtins.pathExists dir then { }
     else
@@ -18,9 +18,8 @@ let
         value = final.callPackage f { };
       }) (builtins.filter isPackageFile (lib.filesystem.listFilesRecursive dir)));
 
-  # Overrides: import each `{ inputs, final, prev }` file and merge. These
-  # mutate existing packages, so they are only ever applied for the host that
-  # owns them - never globally.
+  # Overrides: import each `{ inputs, final, prev }` file and merge.
+  # These mutate existing packages, so they are only ever applied for the host that owns them - never globally.
   overridesFrom = dir:
     if !builtins.pathExists dir then { }
     else
@@ -36,9 +35,8 @@ let
 
   functions = import ./functions.nix inputs final prev;
 
-  # A host's bespoke packages/overrides live inside its own directory
-  # (hosts/<name>/_pkgs), so the whole host is one self-contained, deletable
-  # unit. The `_` prefix keeps importDir from treating them as NixOS modules.
+  # A host's bespoke packages/overrides live inside its own directory (hosts/<name>/_pkgs), so the whole host is one self-contained, deletable unit.
+  # The `_` prefix keeps importDir from treating them as NixOS modules.
   hostDir = ../hosts + "/${hostName}/_pkgs";
 in
   packagesFrom ./packages

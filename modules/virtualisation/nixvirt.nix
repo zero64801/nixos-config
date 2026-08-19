@@ -12,10 +12,9 @@ let
 
   cfg = config.nyx.virtualisation.nixvirt;
 
-  # Appended to snapshotFixup, which runs at ExecStartPost after every declarative
-  # domain has been (re)defined. libvirt keeps <name>_VARS.fd when a domain is
-  # undefined, so dropping a domain from the list leaves its UEFI vars behind. Any
-  # *.fd not referenced by a defined domain therefore belongs to a removed one.
+  # Appended to snapshotFixup, which runs at ExecStartPost after every declarative domain has been (re)defined.
+  # libvirt keeps <name>_VARS.fd when a domain is undefined, so dropping a domain from the list leaves its UEFI vars behind.
+  # Any *.fd not referenced by a defined domain therefore belongs to a removed one.
   nvramReaper = lib.optionalString cfg.reapNvram ''
     nvdir=/var/lib/libvirt/qemu/nvram
     if [ -d "$nvdir" ]; then
@@ -76,10 +75,8 @@ let
               -v @name -o "|" -v "source/@file" -n \
           | while IFS="|" read -r target file; do
               [ -n "$target" ] && [ -n "$file" ] || continue
-              # Read the persistent (inactive) config, not the active disk. That is what
-              # this repoints and what a shutdown reverts to. A running domain shows the
-              # overlay as its active disk, which would mask a stale persistent base and
-              # leave the drift to surface on the next shutdown.
+              # Compare the persistent (inactive) config, since that is what gets repointed and what a shutdown reverts to.
+              # A running domain shows the overlay as its active disk, which would mask a stale persistent base until the next shutdown.
               persistent=$(virsh domblklist "$dom" --inactive | awk -v t="$target" '$1 == t { print $2 }')
               if [ "$persistent" != "$file" ]; then
                 echo "$dom: repointing $target -> $file (snapshot $cur)"
@@ -216,8 +213,8 @@ let
           exit 1
         fi
 
-        # Seatbelt: another defined domain may reference the same disk image
-        # (offline qemu-img/nbd surgery bypasses QEMU's runtime write lock).
+        # Seatbelt: another defined domain may reference the same disk image.
+        # Offline qemu-img/nbd surgery bypasses QEMU's runtime write lock.
         while read -r src; do
           [ -n "$src" ] || continue
           while read -r other; do
@@ -320,10 +317,8 @@ let
           virsh snapshot-create-as "$dom" "$name" --disk-only --atomic
         fi
 
-        # NixVirt redefines each domain from the declarative XML on every service start,
-        # resetting the persistent disk source back to the base. Point the persistent
-        # config at the new overlay now, so a rebuild or shutdown before the next
-        # snapshotFixup run cannot surface a stale base (see build_plan's DANGER check).
+        # NixVirt redefines each domain from the declarative XML on every service start, resetting the persistent disk source back to the base.
+        # Repointing the persistent config at the new overlay now means a rebuild or shutdown before the next snapshotFixup run cannot surface a stale base (see build_plan's DANGER check).
         # Internal snapshots keep the same disk source, so nothing to repoint there.
         if [ "$internal" -ne 1 ]; then
           while IFS="|" read -r tdev file; do

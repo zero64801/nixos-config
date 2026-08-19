@@ -7,7 +7,7 @@ pressure-vessel container (no_new_privs blocks ambient caps,
 nixpkgs#351516).
 
 A socket-activated helper holds CAP_SYS_NICE. The client connects, then
-execs gamescope on its own pid; the daemon reads that pid from
+execs gamescope on its own pid. The daemon reads that pid from
 SO_PEERCRED (valid across pid namespaces), waits for the exec, verifies
 /proc/<pid>/exe is an allowed gamescope build and applies SCHED_RR.
 Connect-then-exec needs no forks, so Steam's fork-killing launch chain
@@ -239,8 +239,7 @@ in
     };
   };
 
-  # daemon gates on gaming alone: the Steam flatpak needs it with native
-  # Steam disabled
+  # daemon gates on gaming alone: the Steam flatpak needs it with native Steam disabled
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ client ];
     programs.steam.extraPackages = lib.mkIf cfg.steam.enable [ client ];

@@ -127,8 +127,7 @@ in
       path = [ config.services.samba.package ];
       serviceConfig.Type = "oneshot";
       script = ''
-        # grep -c exits 1 at zero matches; set -e would kill the unit in
-        # exactly the idle case this service exists for
+        # grep -c exits 1 at zero matches, and set -e would kill the unit in exactly the idle case this service exists for.
         conns=$(smbstatus -p 2>/dev/null | grep -cE '^[0-9]+[[:space:]]' || true)
         if [ "$conns" -eq 0 ]; then
           echo "samba: idle, stopping samba.target"

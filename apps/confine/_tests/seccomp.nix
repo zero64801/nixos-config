@@ -65,8 +65,7 @@ let
     steam         userns        ok
     steam         clone3        EINVAL
     steam         tiocsti       EPERM
-    # EPERM not EAFNOSUPPORT: the 32-bit arch makes libseccomp drop the
-    # socket-family rules, the kernel refuses AF_PACKET for lack of CAP_NET_RAW.
+    # EPERM not EAFNOSUPPORT: the 32-bit arch makes libseccomp drop the socket-family rules, the kernel refuses AF_PACKET for lack of CAP_NET_RAW.
     steam         socket_packet EPERM
     steam         socket_can    ok
     steam         socket_inet   ok

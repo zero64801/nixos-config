@@ -8,8 +8,7 @@ writeShellApplication {
 
     AMO="https://addons.mozilla.org/api/v5/addons/addon"
 
-    # Pins live in a firefox-addons.json next to the module that consumes
-    # them, the same way nyx-pin treats sources.json.
+    # Pins live in a firefox-addons.json next to the module that consumes them, the same way nyx-pin treats sources.json.
     pins_files() {
       if [ -n "''${PINS_FILE:-}" ]; then
         [ -f "$PINS_FILE" ] || die "no such file: $PINS_FILE"
@@ -23,8 +22,7 @@ writeShellApplication {
         | while IFS= read -r f; do echo "$root/$f"; done
     }
 
-    # AMO publishes the sha256 of every file it serves, so the pin never
-    # depends on a hash this script computed from its own download.
+    # AMO publishes the sha256 of every file it serves, so the pin never depends on a hash this script computed from its own download.
     fetch_latest() {
       local slug=$1 body
       body=$(curl -fsSL --max-time 30 "$AMO/$slug/") \

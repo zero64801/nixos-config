@@ -7,7 +7,7 @@
 
 let
   inherit (lib) mkEnableOption mkIf mkOption;
-  inherit (lib.types) attrsOf listOf int str submodule;
+  inherit (lib.types) attrsOf enum listOf int str submodule;
 
   cfg = config.nyx.virtualisation.cpuPinning;
 
@@ -21,6 +21,7 @@ let
           VCPU_PINS="${lib.concatMapStringsSep " " toString m.vcpuPins}"
           EMU_CPUS="${m.emulatorCpus}"
           IO_CPUS="${m.iothreadCpus}"
+          EPP="${m.epp}"
           ;;
   '') cfg.modes);
 
@@ -36,7 +37,7 @@ let
 
     STATE_DIR=/var/lib/nyx/vm-mode
     OVERRIDE_DIR=/run/nyx/vm-mode
-    RUN_DIR=/run/nyx/vm-cpus
+    RUN_DIR=${cfg.claimDir}
 
     # One-shot override (vm-mode --once) wins over the persistent state file.
     mode_of() {
@@ -65,8 +66,11 @@ ${modeCase}
 
     host_allowed_list() {
       local claimed f c out=""
-      claimed=" $(cat "$RUN_DIR"/* 2>/dev/null | tr '\n' ' ') "
-      for c in $(seq 0 $(($(nproc) - 1))); do
+      # The glob fails with no claims left, and under set -e that must not kill the cleanup.
+      # It only survives today through a subshell quirk.
+      claimed=" $(cat "$RUN_DIR"/* 2>/dev/null | tr '\n' ' ' || true) "
+      # nproc alone reports the caller affinity, and the hook runs inside an already restricted slice, which shrank the recomputed host set once.
+      for c in $(seq 0 $(($(nproc --all) - 1))); do
         case "$claimed" in
           *" $c "*) ;;
           *) out="$out$c " ;;
@@ -76,9 +80,12 @@ ${modeCase}
     }
 
     apply_slices() {
-      systemctl set-property --runtime -- system.slice AllowedCPUs="$1"
-      systemctl set-property --runtime -- user.slice   AllowedCPUs="$1"
-      systemctl set-property --runtime -- init.scope   AllowedCPUs="$1"
+      # Tolerate per call failures: the hook runs under set -e, and dying between the marker removal and the recompute strands the slices on the claimed set until the next VM cycle.
+      local s
+      for s in system.slice user.slice init.scope; do
+        systemctl set-property --runtime -- "$s" AllowedCPUs="$1" \
+          || echo "cpu-pin: failed to set AllowedCPUs on $s" >&2
+      done
     }
 
     set_epp() {
@@ -110,7 +117,8 @@ ${modeCase}
     # Reset EPP only on cores no running VM still claims.
     epp_restore() {
       local claimed c
-      claimed=" $(cat "$RUN_DIR"/* 2>/dev/null | tr '\n' ' ') "
+      # Same failing glob when the last claim goes, but this call is direct, so set -e kills the hook here and leaves EPP stuck on performance.
+      claimed=" $(cat "$RUN_DIR"/* 2>/dev/null | tr '\n' ' ' || true) "
       for c in $1; do
         case "$claimed" in
           *" $c "*) ;;
@@ -120,8 +128,8 @@ ${modeCase}
     }
   '';
 
-  # Runs outside hook context (libvirt hooks must never call back into the
-  # API); waits for the domain then repins live.
+  # Runs outside hook context (libvirt hooks must never call back into the API).
+  # Waits for the domain then repins live.
   vm-pin-apply = pkgs.writeShellScript "vm-pin-apply" ''
     set -euo pipefail
     DOM="$1"
@@ -166,7 +174,7 @@ ${modeCase}
       prepare/begin)
         printf '%s\n' "$VM_LIST" > "$RUN_DIR/$GUEST_NAME"
         recompute_host
-        set_epp performance $VM_LIST
+        set_epp "$EPP" $VM_LIST
         ;;
       started/begin)
         systemd-run --collect --no-block --unit="vm-pin-$GUEST_NAME-$$" \
@@ -180,9 +188,7 @@ ${modeCase}
     esac
   '';
 
-  # Passwordless via polkit for wheel: argv is only a whitelisted domain name,
-  # the mode is read from the root-visible state file, so nothing attacker
-  # controlled reaches privileged execution.
+  # Passwordless via polkit for wheel: argv is only a whitelisted domain name and the mode is read from the root-visible state file, so nothing attacker controlled reaches privileged execution.
   vm-mode-root = pkgs.writeShellScript "vm-mode-root" ''
     set -euo pipefail
     DOM="''${1:-}"
@@ -205,7 +211,7 @@ ${modeCase}
     ${vm-pin-apply} "$DOM" "$MODE"
     printf '%s\n' "$VM_LIST" > "$RUN_DIR/$DOM"
     recompute_host
-    set_epp performance $VM_LIST
+    set_epp "$EPP" $VM_LIST
     [ -n "$OLD_LIST" ] && epp_restore "$OLD_LIST"
     echo "vm-mode: applied '$MODE' to $DOM live"
   '';
@@ -296,6 +302,15 @@ in
   options.nyx.virtualisation.cpuPinning = {
     enable = mkEnableOption "per-domain CPU pinning profiles switchable at runtime via vm-mode";
 
+    claimDir = mkOption {
+      type = str;
+      default = "/run/nyx/vm-cpus";
+      description = ''
+        Runtime directory holding one file per running domain listing its
+        claimed CPUs. Read by anything that must leave claimed cores alone.
+      '';
+    };
+
     domains = mkOption {
       type = listOf str;
       default = [ ];
@@ -324,6 +339,16 @@ in
           iothreadCpus = mkOption {
             type = str;
             description = "cpuset for iothread 1.";
+          };
+          epp = mkOption {
+            type = enum [
+              "performance"
+              "balance_performance"
+              "balance_power"
+              "power"
+            ];
+            default = "performance";
+            description = "Energy performance preference applied to the claimed cores.";
           };
         };
       });

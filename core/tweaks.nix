@@ -3,8 +3,7 @@
   system.activationScripts.diff = {
     supportsDryActivation = true;
     text = let
-      # diff-closures always prints sizes in KiB, so filtering on it keeps
-      # only lines with a size delta
+      # diff-closures always prints sizes in KiB, so filtering on it keeps only lines with a size delta.
       diffScript = pkgs.writeText "closure-diff.nu" ''
         def main [new: string] {
           let parsed = ^${lib.getExe pkgs.nix} store diff-closures /run/current-system $new

@@ -1,4 +1,4 @@
-{ pkgs, lib, gameScheduler ? null, gameSchedulerFlags ? [ ] }:
+{ pkgs, lib, gameScheduler ? null, gameSchedulerFlags ? [ ], vmClaimDir ? "/run/nyx/vm-cpus" }:
 
 let
   scx-env =
@@ -14,6 +14,7 @@ let
   This runs passwordless via polkit for wheel, so nothing from argv may
   reach root execution unvalidated: the game profile is baked in at build
   time and apply only accepts basenames resolved inside scx-env.
+  pkexec scrubs PATH, external binaries must be absolute store paths.
   */
   scx-switch = pkgs.writeShellScriptBin "scx-switch" ''
     set -f
@@ -25,13 +26,35 @@ let
     stop_all() {
       systemctl stop scx 2>/dev/null || true
       systemctl stop scx-manual 2>/dev/null || true
+      # A dead scx-manual left loaded blocks creating the next one.
+      # Failed units clear with reset-failed, a leftover transient fragment only goes away by deleting it and reloading.
+      systemctl reset-failed scx-manual 2>/dev/null || true
+      if [ -e /run/systemd/transient/scx-manual.service ]; then
+        rm -f /run/systemd/transient/scx-manual.service
+        systemctl daemon-reload
+      fi
     }
 
     run_manual() {
       systemd-run --unit=scx-manual \
+                  --collect \
                   --description="SCX Manager: $1" \
                   --service-type=simple \
                   "$@"
+    }
+
+    # Game EPP bias lives here since gamemoded's global governor flip is disabled: it stomped VM-claimed cores and a performance governor rejects every other EPP write.
+    # Cores with claims stay untouched, the pinning hook owns their EPP.
+    # The claim glob needs set +f, the script runs under noglob.
+    set_epp_unclaimed() {
+      local claimed c
+      claimed=" $(set +f; ${pkgs.coreutils}/bin/cat ${vmClaimDir}/* 2>/dev/null | ${pkgs.coreutils}/bin/tr '\n' ' ' || true) "
+      for c in $(${pkgs.coreutils}/bin/seq 0 $(($(${pkgs.coreutils}/bin/nproc --all) - 1))); do
+        case "$claimed" in
+          *" $c "*) ;;
+          *) echo "$1" > "/sys/devices/system/cpu/cpu$c/cpufreq/energy_performance_preference" 2>/dev/null || true ;;
+        esac
+      done
     }
 
     case "''${1:-}" in
@@ -42,6 +65,7 @@ let
       host)
         systemctl stop scx-manual 2>/dev/null || true
         systemctl restart scx
+        set_epp_unclaimed balance_performance
         echo "Restored host scheduler (system scx.service)"
         ;;
       game)
@@ -50,6 +74,7 @@ let
         exit 1
         '' else ''
         stop_all
+        set_epp_unclaimed performance
         run_manual "${scx-env}/bin/${gameScheduler}" ${lib.escapeShellArgs gameSchedulerFlags}
         ''}
         ;;

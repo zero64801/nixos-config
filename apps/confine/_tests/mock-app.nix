@@ -75,8 +75,7 @@ pkgs.writeShellApplication {
       echo "$n entries"
     )"
 
-    # The portal validates the fd by resolving its path in the caller's namespace,
-    # so this needs a writable bind whose path is identical inside and out.
+    # The portal validates the fd by resolving its path in the caller's namespace, so this needs a writable bind whose path is identical inside and out.
     say portal-identity "$(
       dir=""
       for candidate in "$HOME"/ConfinePortalTest "$HOME"/Downloads; do
