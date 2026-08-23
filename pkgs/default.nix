@@ -23,15 +23,9 @@ let
   overridesFrom = dir:
     if !builtins.pathExists dir then { }
     else
-      let
-        entries = lib.filterAttrs
-          (name: type:
-            type == "regular" && lib.hasSuffix ".nix" name && !lib.hasPrefix "_" name)
-          (builtins.readDir dir);
-        files = map (name: dir + "/${name}") (builtins.attrNames entries);
-      in
       lib.foldl' lib.recursiveUpdate { }
-        (map (f: import f { inherit inputs final prev; }) files);
+        (map (f: import f { inherit inputs final prev; })
+          (builtins.filter isPackageFile (lib.filesystem.listFilesRecursive dir)));
 
   functions = import ./functions.nix inputs final prev;
 
