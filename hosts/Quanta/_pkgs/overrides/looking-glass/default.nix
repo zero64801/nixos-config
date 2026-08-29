@@ -1,9 +1,9 @@
 { inputs, final, prev }:
 
 let
-  commit = "7476e56ded94b7cadebdb12529636a30a66cb3fa";
-  version = "B7-794-7476e56d";
-  hash = "sha256-CRQURnhraZO6sI2/1CPDJELKUA5yuquIg1KxiU5EbxM=";
+  commit = "54ea580e35d8f3c96ab6177ff284d1d047796bf7";
+  version = "B7-822-54ea580e";
+  hash = "sha256-Z5+JfMuG4hVDjZber7pBwdiM/T45mve0/NWaMGL0E1k=";
 
   src = final.fetchFromGitHub {
     owner = "gnif";

@@ -37,6 +37,14 @@ case "$HOOK_NAME/$STATE_NAME" in
       echo "$want" > "$HP_DIR/nr_hugepages"
     fi
     if [[ "$(nr)" -lt "$want" ]]; then
+      # The pool allocator reclaims page cache only timidly, so a cache stuffed host can starve it while MemAvailable stays huge.
+      # Dropping caches evicts warm file caches, so it stays a last resort before aborting.
+      sync
+      echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+      echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+      echo "$want" > "$HP_DIR/nr_hugepages"
+    fi
+    if [[ "$(nr)" -lt "$want" ]]; then
       got=$(nr)
       echo "$before" > "$HP_DIR/nr_hugepages"
       echo "hugepages: only $got of $want 2MiB pages available for $GUEST_NAME, aborting start" >&2
