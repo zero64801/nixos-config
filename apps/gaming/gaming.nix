@@ -1,11 +1,11 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.gaming;
-  user = config.nyx.flake.user;
+  cfg = config.my.apps.gaming;
+  user = config.my.flake.user;
 in
 {
-  options.nyx.apps.gaming = {
+  options.my.apps.gaming = {
     enable = lib.mkEnableOption "Gaming support";
 
     steam = {
@@ -55,7 +55,7 @@ in
           defaultgov = "powersave";
         };
         settings.custom = let
-          scxCfg = config.nyx.apps.scx;
+          scxCfg = config.my.apps.scx;
           switch = "${scxCfg.package}/bin/scx-switch";
           scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
 
@@ -125,7 +125,7 @@ in
     })
 
     {
-      nyx.persistence.home.directories =
+      my.persistence.home.directories =
         [ ".cache/mesa_shader_cache" ]
         ++ lib.optionals cfg.steam.enable [
           ".local/share/Steam"

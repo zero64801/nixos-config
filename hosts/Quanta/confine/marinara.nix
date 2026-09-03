@@ -1,8 +1,8 @@
 { config, lib, pkgs, ... }:
 
 let
-  proxy = config.nyx.apps.wgProxy;
-  engine = config.nyx.confine.packages.marinara-engine;
+  proxy = config.my.apps.wgProxy;
+  engine = config.my.confine.packages.marinara-engine;
 
   # Tunnel up for exactly as long as the engine runs.
   proxied = pkgs.writeShellScriptBin "marinara" ''
@@ -57,7 +57,7 @@ let
   '';
 in
 {
-  nyx.confine.apps.marinara-engine = {
+  my.confine.apps.marinara-engine = {
     package = pkgs.marinara-engine;
     appId = "dev.marinara.Engine";
     # The launchers below are the entry points.

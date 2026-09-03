@@ -9,9 +9,9 @@ let
   inherit (lib) mkEnableOption mkIf mkOption;
   inherit (lib.types) nullOr str;
 
-  cfg = config.nyx.pinning;
+  cfg = config.my.pinning;
 
-  nyx-pin = pkgs.callPackage ./_cli.nix {
+  pin = pkgs.callPackage ./_cli.nix {
     inherit (cfg) flakePath;
     pinsFilePath = cfg.pinsFile;
     hostName = config.networking.hostName;
@@ -19,13 +19,13 @@ let
 
 in
 {
-  options.nyx.pinning = {
+  options.my.pinning = {
     enable = mkEnableOption "flake input pinning management";
 
     flakePath = mkOption {
       type    = str;
-      default = config.nyx.flakePath;
-      description = "Path to the NixOS flake repository. Defaults to nyx.flakePath.";
+      default = config.my.flakePath;
+      description = "Path to the NixOS flake repository. Defaults to my.flakePath.";
     };
 
     pinsFile = mkOption {
@@ -39,6 +39,9 @@ in
   };
 
   config = mkIf cfg.enable {
-    environment.systemPackages = [ nyx-pin ];
+    environment.systemPackages = [
+      pin
+      (pkgs.writeTextDir "share/fish/vendor_completions.d/pin.fish" (builtins.readFile ./_completions.fish))
+    ];
   };
 }

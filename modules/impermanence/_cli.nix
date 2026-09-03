@@ -20,7 +20,7 @@
 }:
 
 writeShellApplication {
-  name = "nyx-persist";
+  name = "persist";
 
   runtimeInputs = [
     coreutils
@@ -91,9 +91,9 @@ writeShellApplication {
     }
 
     show_help() {
-      echo -e "''${bold}nyx-persist''${reset} - Manage impermanence paths
+      echo -e "''${bold}persist''${reset} - Manage impermanence paths
 
-''${green}''${bold}Usage:''${reset} nyx-persist [OPTIONS] [COMMAND] [PATH]
+''${green}''${bold}Usage:''${reset} persist [OPTIONS] [COMMAND] [PATH]
 
 ''${green}''${bold}Commands:''${reset}
   ''${yellow}list, ls''${reset}                        List all active persistent paths (system + modules).
@@ -121,14 +121,14 @@ writeShellApplication {
   • After ''${bold}add''${reset}, a ''${bold}nixos-rebuild''${reset} is required for the bind-mount to take effect.
 
 ''${green}''${bold}Examples:''${reset}
-  ''${bold}nyx-persist /etc/foo.conf''${reset}                         Copy + register a system file
-  ''${bold}nyx-persist /var/lib/myapp''${reset}                        Copy + register a system directory
-  ''${bold}nyx-persist add --copy-only ~/.ssh''${reset}                 Seed ~/.ssh into storage (already in a module)
-  ''${bold}nyx-persist add --copy-only /home/user/.local/share/app''${reset}  All parent dirs get correct ownership
-  ''${bold}nyx-persist rm''${reset}                                    Pick a path to remove via fzf
-  ''${bold}nyx-persist rm /var/lib/myapp''${reset}                     Remove a specific path
-  ''${bold}nyx-persist junk list''${reset}                             Show orphaned paths in storage
-  ''${bold}nyx-persist junk remove''${reset}                           Clean up orphaned paths
+  ''${bold}persist /etc/foo.conf''${reset}                         Copy + register a system file
+  ''${bold}persist /var/lib/myapp''${reset}                        Copy + register a system directory
+  ''${bold}persist add --copy-only ~/.ssh''${reset}                 Seed ~/.ssh into storage (already in a module)
+  ''${bold}persist add --copy-only /home/user/.local/share/app''${reset}  All parent dirs get correct ownership
+  ''${bold}persist rm''${reset}                                    Pick a path to remove via fzf
+  ''${bold}persist rm /var/lib/myapp''${reset}                     Remove a specific path
+  ''${bold}persist junk list''${reset}                             Show orphaned paths in storage
+  ''${bold}persist junk remove''${reset}                           Clean up orphaned paths
   "
       exit 0
     }
@@ -499,7 +499,7 @@ writeShellApplication {
           ;;
         *)
           echo -e "''${red}Unknown junk subcommand: $1''${reset}"
-          echo "Usage: nyx-persist junk [list|remove]"
+          echo "Usage: persist junk [list|remove]"
           exit 1
           ;;
       esac

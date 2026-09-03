@@ -1,5 +1,5 @@
 {
-  nyx.apps.zen = {
+  my.apps.zen = {
     addonPins = ./firefox-addons.json;
 
     preferences = {

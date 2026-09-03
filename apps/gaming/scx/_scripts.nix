@@ -1,4 +1,4 @@
-{ pkgs, lib, gameScheduler ? null, gameSchedulerFlags ? [ ], vmClaimDir ? "/run/nyx/vm-cpus" }:
+{ pkgs, lib, gameScheduler ? null, gameSchedulerFlags ? [ ], vmClaimDir ? "/run/my/vm-cpus" }:
 
 let
   scx-env =

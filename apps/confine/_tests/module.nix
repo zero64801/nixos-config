@@ -15,7 +15,7 @@ let
         (
           { lib, ... }:
           {
-            options.nyx.persistence.home.directories = lib.mkOption {
+            options.my.persistence.home.directories = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
             };
@@ -28,7 +28,7 @@ let
                 fsType = "tmpfs";
               };
               system.stateVersion = "25.11";
-              nyx.confine.apps = apps;
+              my.confine.apps = apps;
             };
           }
         )
@@ -47,7 +47,7 @@ let
 
   checks = {
     # readOnly plus a default counts as two definitions and threw on read.
-    packagesIsReadable = (evalWith { a = plain; }).nyx.confine.packages ? a;
+    packagesIsReadable = (evalWith { a = plain; }).my.confine.packages ? a;
 
     # The assertion must read merged perms, wayland can come from a profile.
     isolatedX11WithProfileWayland =
@@ -110,9 +110,9 @@ let
     );
 
     persistenceCoversPrivateHomesOnly =
-      (evalWith { a = plain; }).nyx.persistence.home.directories == [ ".local/share/confine/com.vendor.App" ]
-      && (evalWith { a = plain // { home = "host"; }; }).nyx.persistence.home.directories == [ ]
-      && (evalWith { a = plain // { persist = false; }; }).nyx.persistence.home.directories == [ ];
+      (evalWith { a = plain; }).my.persistence.home.directories == [ ".local/share/confine/com.vendor.App" ]
+      && (evalWith { a = plain // { home = "host"; }; }).my.persistence.home.directories == [ ]
+      && (evalWith { a = plain // { persist = false; }; }).my.persistence.home.directories == [ ];
 
     # install = false keeps it out of the system profile but still wrapped.
     installIsRespected =

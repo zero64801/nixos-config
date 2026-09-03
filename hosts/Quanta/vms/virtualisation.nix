@@ -4,7 +4,7 @@
   # CPU xHCI 6f:00.4 (rear USB-C + one type A)
   boot.kernelParams = [ "vfio-pci.ids=1022:15b7" ];
 
-  nyx.virtualisation = {
+  my.virtualisation = {
     base.enable = true;
 
     # Xbox 360 pad
@@ -87,6 +87,11 @@
         }
         {
           definition = ./win11-re.xml;
+          active = null;
+          restart = false;
+        }
+        {
+          definition = ./linux-re.xml;
           active = null;
           restart = false;
         }

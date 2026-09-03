@@ -8,7 +8,7 @@ writeShellApplication {
 
     AMO="https://addons.mozilla.org/api/v5/addons/addon"
 
-    # Pins live in a firefox-addons.json next to the module that consumes them, the same way nyx-pin treats sources.json.
+    # Pins live in a firefox-addons.json next to the module that consumes them, the same way pin treats sources.json.
     pins_files() {
       if [ -n "''${PINS_FILE:-}" ]; then
         [ -f "$PINS_FILE" ] || die "no such file: $PINS_FILE"

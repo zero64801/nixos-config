@@ -17,8 +17,8 @@ socketPath in the app override.
 */
 
 let
-  cfg = config.nyx.apps.gaming;
-  user = config.nyx.flake.user;
+  cfg = config.my.apps.gaming;
+  user = config.my.flake.user;
 
   socketPath = "/run/gamescope-rt.sock";
   gamescopeStore = toString pkgs.gamescope;
@@ -221,7 +221,7 @@ let
   });
 in
 {
-  options.nyx.apps.gaming.gamescopeRt = {
+  options.my.apps.gaming.gamescopeRt = {
     socketPath = lib.mkOption {
       type = lib.types.str;
       default = socketPath;

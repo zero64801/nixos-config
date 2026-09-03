@@ -1,7 +1,7 @@
 { lib, config, ... }:
 
 {
-  config = lib.mkIf config.nyx.desktop.enable {
+  config = lib.mkIf config.my.desktop.enable {
     networking = {
       nftables.enable = true;
 

@@ -1,15 +1,15 @@
 { config, lib, ... }:
 
 let
-  cfg = config.nyx.apps.git;
+  cfg = config.my.apps.git;
 in
 {
-  options.nyx.apps.git = {
+  options.my.apps.git = {
     enable = lib.mkEnableOption "Git version control";
 
     name = lib.mkOption {
       type = lib.types.str;
-      default = config.nyx.flake.user;
+      default = config.my.flake.user;
       description = "Name for Git commits";
     };
 
@@ -73,6 +73,6 @@ in
       };
     };
 
-    nyx.persistence.home.directories = [ ".ssh" ];
+    my.persistence.home.directories = [ ".ssh" ];
   };
 }

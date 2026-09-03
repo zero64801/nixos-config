@@ -1,5 +1,5 @@
 {
-  nyx.apps.discord = {
+  my.apps.discord = {
     commandLineArgs = [ "--enable-blink-features=MiddleClickAutoscroll" ];
 
     localPlugins.MyServerRoles = ./local-plugins/myServerRoles;

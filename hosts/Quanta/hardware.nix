@@ -19,7 +19,12 @@
       "tcp_bbr"
       "ntsync"
     ];
-    blacklistedKernelModules = [ "sp5100_tco" ];
+    blacklistedKernelModules = [
+      "sp5100_tco"
+      "iwlwifi"
+      "iwlmvm"
+      "btusb"
+    ];
     kernelParams = [
       "amd_pstate=active"
       "transparent_hugepage=always"
@@ -96,8 +101,6 @@
 
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
   hardware.keyboard.qmk.enable = true;
-  hardware.bluetooth = {
-    enable = true;
-    settings.General.Experimental = true;
-  };
+  # The onboard AX210 WiFi and its Bluetooth are unused, and both radiate 2.4 GHz next to the wireless mouse and keyboard dongles.
+  hardware.bluetooth.enable = false;
 }

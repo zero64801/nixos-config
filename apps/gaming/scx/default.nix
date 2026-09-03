@@ -1,16 +1,16 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.scx;
+  cfg = config.my.apps.scx;
   scripts = import ./_scripts.nix {
     inherit pkgs lib;
     inherit (cfg) gameScheduler gameSchedulerFlags;
-    vmClaimDir = config.nyx.virtualisation.cpuPinning.claimDir;
+    vmClaimDir = config.my.virtualisation.cpuPinning.claimDir;
   };
   inherit (scripts) scx-env scx-switch scx-gui scx-desktop-item;
 in
 {
-  options.nyx.apps.scx = {
+  options.my.apps.scx = {
     enable = lib.mkEnableOption "sched-ext scheduler manager";
 
     package = lib.mkOption {

@@ -253,7 +253,7 @@ writeShellApplication {
       attr="\"$(esc "$name")\""
     fi
 
-    echo "nyx.confine.apps.$attr = {"
+    echo "my.confine.apps.$attr = {"
     echo "  package = pkgs.CHANGEME;"
     echo "  appId = \"$(esc "$app_id")\";"
     [ "''${#profiles[@]}" -gt 0 ] && echo "  profile = [ $(printf '"%s" ' "''${profiles[@]}")];"

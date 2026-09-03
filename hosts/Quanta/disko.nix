@@ -1,7 +1,7 @@
 { config, inputs, pkgs, ... }:
 
 let
-  user = config.nyx.flake.user;
+  user = config.my.flake.user;
   storageDev = "/dev/disk/by-id/nvme-WD_BLACK_SN850X_4000GB_25226M800213";
   storageMount = "/mnt/storage";
 

@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  stylixEnabled = config.nyx.stylix.enable or false;
+  stylixEnabled = config.my.stylix.enable or false;
   fallbackPalette = rec {
     base00 = "191724";
     base01 = "1f1d2e";
@@ -80,24 +80,24 @@ let
     then config.stylix.fonts.sansSerif.name
     else "Noto Sans";
   cursorTheme =
-    if stylixEnabled && (config.nyx.stylix.cursor.enable or false)
-    then config.nyx.stylix.cursor.name
+    if stylixEnabled && (config.my.stylix.cursor.enable or false)
+    then config.my.stylix.cursor.name
     else "Adwaita";
   cursorPackage =
-    if stylixEnabled && (config.nyx.stylix.cursor.enable or false)
-    then config.nyx.stylix.cursor.package
+    if stylixEnabled && (config.my.stylix.cursor.enable or false)
+    then config.my.stylix.cursor.package
     else pkgs.adwaita-icon-theme;
-  stylixIconsEnabled = stylixEnabled && (config.nyx.stylix.icons.enable or false);
+  stylixIconsEnabled = stylixEnabled && (config.my.stylix.icons.enable or false);
   iconTheme =
     if stylixIconsEnabled
     then
-      if (config.nyx.stylix.polarity or "dark") == "light"
-      then config.nyx.stylix.icons.light
-      else config.nyx.stylix.icons.dark
+      if (config.my.stylix.polarity or "dark") == "light"
+      then config.my.stylix.icons.light
+      else config.my.stylix.icons.dark
     else "Tela-purple-dark";
   iconPackage =
     if stylixIconsEnabled
-    then config.nyx.stylix.icons.package
+    then config.my.stylix.icons.package
     else pkgs.tela-icon-theme;
   niriCursorSize = 24;
   videoMimeTypes = [
@@ -151,8 +151,8 @@ let
   fallbackWallpaper = "${pkgs.kdePackages.plasma-workspace-wallpapers}/share/wallpapers/Elarun/contents/images/2560x1600.png";
   dmsPrimaryOutput = "DP-1";
   dmsWallpaper =
-    if stylixEnabled && (config.nyx.stylix.wallpaper or null) != null
-    then config.nyx.stylix.wallpaper
+    if stylixEnabled && (config.my.stylix.wallpaper or null) != null
+    then config.my.stylix.wallpaper
     else fallbackWallpaper;
   dmsSettings = {
     configVersion = 5;
@@ -381,8 +381,6 @@ let
             Mod+Shift+M hotkey-overlay-title="Open music player: kew" { spawn "alacritty" "-e" "kew"; }
             Mod+Alt+C hotkey-overlay-title="Copy XWayland clipboard to Wayland" { spawn-sh "DISPLAY=:0 ${pkgs.xclip}/bin/xclip -selection clipboard -out | ${pkgs.wl-clipboard}/bin/wl-copy"; }
             Mod+Alt+V hotkey-overlay-title="Copy Wayland clipboard to XWayland" { spawn-sh "${pkgs.wl-clipboard}/bin/wl-paste | DISPLAY=:0 ${pkgs.xclip}/bin/xclip -selection clipboard"; }
-            Mod+Print hotkey-overlay-title="Record selected region" { spawn "nyx-record-region"; }
-            Mod+Shift+Print hotkey-overlay-title="Stop screen recording" { spawn "nyx-record-stop"; }
       ''
       ''active-color "${colors.base0D}"''
       ''inactive-color "${colors.base03}"''
@@ -400,7 +398,7 @@ let
     ]
     defaultConfig;
 in
-lib.mkIf config.nyx.desktop.niri.enable (lib.mkMerge [
+lib.mkIf config.my.desktop.niri.enable (lib.mkMerge [
 {
   hm.home.packages = with pkgs; [
     kdePackages.ark
@@ -409,7 +407,6 @@ lib.mkIf config.nyx.desktop.niri.enable (lib.mkMerge [
     ffmpegthumbnailer
     kew
     mpv
-    nyx-recorder
     swayimg
     iconPackage
     thunar

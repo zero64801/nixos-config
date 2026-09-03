@@ -8,7 +8,7 @@ in
   system.stateVersion = "25.11";
   networking.hostName = hostname;
 
-  nyx = {
+  my = {
     flakePath = "/home/${username}/nixos";
 
     flake.user = username;
@@ -84,7 +84,7 @@ in
         steam = {
           enable = true;
           compatPackages = [
-            pkgs.dwproton-bin
+            # pkgs.dwproton-bin
             pkgs.proton-cachyos-v3-bin
           ];
         };

@@ -3,7 +3,7 @@
 let
   commit = "54ea580e35d8f3c96ab6177ff284d1d047796bf7";
   version = "B7-822-54ea580e";
-  hash = "sha256-Z5+JfMuG4hVDjZber7pBwdiM/T45mve0/NWaMGL0E1k=";
+  hash = "sha256-gHVred8rgwTeRTW0AXxMlnz/ovXv6w9SyknVHiW3pKU=";
 
   src = final.fetchFromGitHub {
     owner = "gnif";

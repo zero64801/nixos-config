@@ -13,7 +13,7 @@
       "tss"
       "gamemode"
       "video"
-    ] ++ config.nyx.security.serviceAdminGroups;
+    ] ++ config.my.security.serviceAdminGroups;
 
     hashedPasswordFile = "/persist/local/secrets/passwd/dx";
   };

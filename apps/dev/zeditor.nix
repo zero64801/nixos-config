@@ -1,10 +1,10 @@
 { config, lib, ... }:
 
 let
-  cfg = config.nyx.apps.zeditor;
+  cfg = config.my.apps.zeditor;
 in
 {
-  options.nyx.apps.zeditor = {
+  options.my.apps.zeditor = {
     enable = lib.mkEnableOption "Zed editor";
     context_servers = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;

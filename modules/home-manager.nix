@@ -3,17 +3,17 @@
 {
   imports = [
     inputs.home-manager.nixosModules.home-manager
-    (lib.mkAliasOptionModule [ "hm" ] [ "home-manager" "users" config.nyx.flake.user ])
+    (lib.mkAliasOptionModule [ "hm" ] [ "home-manager" "users" config.my.flake.user ])
   ];
 
   # A plain bool, not a users.users check: home-manager's useUserPackages contributes users.users names, so gating on them infinitely recurses.
-  options.nyx.homeManager.enable = lib.mkOption {
+  options.my.homeManager.enable = lib.mkOption {
     type = lib.types.bool;
     default = true;
-    description = "Instantiate home-manager for nyx.flake.user. Disable on hosts without that user.";
+    description = "Instantiate home-manager for my.flake.user. Disable on hosts without that user.";
   };
 
-  config = lib.mkIf config.nyx.homeManager.enable {
+  config = lib.mkIf config.my.homeManager.enable {
     home-manager = {
       useGlobalPkgs = true;
       useUserPackages = true;
@@ -29,6 +29,6 @@
     };
 
     hm.home.stateVersion = lib.mkDefault config.system.stateVersion;
-    hm.gtk.gtk4.theme = lib.mkIf config.nyx.desktop.enable (lib.mkDefault null);
+    hm.gtk.gtk4.theme = lib.mkIf config.my.desktop.enable (lib.mkDefault null);
   };
 }

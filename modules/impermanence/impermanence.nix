@@ -12,7 +12,7 @@ let
   inherit (lib) mkEnableOption mkIf mkMerge mkOption optional optionals optionalString;
   inherit (lib.types) bool nullOr path str;
 
-  cfg      = config.nyx.impermanence;
+  cfg      = config.my.impermanence;
   hostname = config.networking.hostName;
 
   persistenceConfigPath =
@@ -62,7 +62,7 @@ let
   allUsers       = persistenceConfig.users or { };
 
   /*
-  masterPersistence is used only by the nyx-persist CLI tool.
+  masterPersistence is used only by the persist CLI tool.
 
   Built exclusively from direct source inputs rather than reading back from
   config.environment.persistence (which this module writes to). Reading our
@@ -99,17 +99,17 @@ let
       ]
     ) (builtins.attrNames allUsers);
 
-  nyxPersistence =
-    if config.nyx ? persistence then
+  myPersistence =
+    if config.my ? persistence then
       let
-        nyxCfg  = config.nyx.persistence;
-        user    = config.nyx.flake.user;
+        myCfg  = config.my.persistence;
+        user    = config.my.flake.user;
         homeDir = config.users.users.${user}.home or "/home/${user}";
       in
-      [ { type = "directories"; paths = nyxCfg.directories; }
-        { type = "files";       paths = nyxCfg.files; }
-        { type = "directories"; paths = map (resolveEntry homeDir) nyxCfg.home.directories; }
-        { type = "files";       paths = map (resolveEntry homeDir) nyxCfg.home.files; }
+      [ { type = "directories"; paths = myCfg.directories; }
+        { type = "files";       paths = myCfg.files; }
+        { type = "directories"; paths = map (resolveEntry homeDir) myCfg.home.directories; }
+        { type = "files";       paths = map (resolveEntry homeDir) myCfg.home.files; }
       ]
     else [];
 
@@ -139,7 +139,7 @@ let
           (lib.flatten
             (map (x: x.paths) (lib.filter (x: x.type == type) lists)))));
 
-  allPersistencePaths = localPersistence ++ nyxPersistence ++ hmPersistence;
+  allPersistencePaths = localPersistence ++ myPersistence ++ hmPersistence;
 
   masterPersistence = {
     directories = aggregate "directories" allPersistencePaths;
@@ -149,7 +149,7 @@ let
   masterPersistenceJson = pkgs.writeText "master-persistence.json"
     (builtins.toJSON masterPersistence);
 
-  nyx-persist = pkgs.callPackage ./_cli.nix {
+  persist = pkgs.callPackage ./_cli.nix {
     inherit (cfg) persistentStoragePath configRepoPath;
     inherit hostname persistenceConfigPath;
     inherit masterPersistenceJson;
@@ -213,8 +213,8 @@ in
     inputs.impermanence.nixosModules.impermanence
   ];
 
-  options.nyx.impermanence = {
-    enable = mkEnableOption "impermanence with nyx management";
+  options.my.impermanence = {
+    enable = mkEnableOption "impermanence under my.*";
 
     persistentStoragePath = mkOption {
       type    = str;
@@ -224,9 +224,9 @@ in
 
     configRepoPath = mkOption {
       type    = nullOr str;
-      default = config.nyx.flakePath;
+      default = config.my.flakePath;
       example = "/home/dx/nixos";
-      description = "Path to the NixOS configuration repository. Defaults to nyx.flakePath.";
+      description = "Path to the NixOS configuration repository. Defaults to my.flakePath.";
     };
 
     persistenceConfigFile = mkOption {
@@ -264,11 +264,11 @@ in
       assertions = [
         {
           assertion = options ? environment.persistence;
-          message   = "nyx.impermanence requires the impermanence module.";
+          message   = "my.impermanence requires the impermanence module.";
         }
         {
           assertion = cfg.btrfs.enable -> config.boot.initrd.systemd.enable;
-          message   = "nyx.impermanence.btrfs requires boot.initrd.systemd.enable = true";
+          message   = "my.impermanence.btrfs requires boot.initrd.systemd.enable = true";
         }
       ];
 
@@ -279,15 +279,18 @@ in
         users       = allUsers;
       };
 
-      environment.systemPackages = [ nyx-persist ];
+      environment.systemPackages = [
+        persist
+        (pkgs.writeTextDir "share/fish/vendor_completions.d/persist.fish" (builtins.readFile ./_completions.fish))
+      ];
 
       warnings = optional (cfg.persistenceConfigFile == null)
-        "nyx.impermanence: persistenceConfigFile is unset; persist.json cannot be read under pure evaluation, so only presets apply. Set persistenceConfigFile = ./persist.json;";
+        "my.impermanence: persistenceConfigFile is unset; persist.json cannot be read under pure evaluation, so only presets apply. Set persistenceConfigFile = ./persist.json;";
 
       # Owned by the flake user: the file lives in their git working tree.
       systemd.tmpfiles.rules =
         lib.optionals (persistenceConfigPath != null) [
-          ''f ${persistenceConfigPath} 0644 ${config.nyx.flake.user} users - {"directories":[],"files":[],"users":{}}''
+          ''f ${persistenceConfigPath} 0644 ${config.my.flake.user} users - {"directories":[],"files":[],"users":{}}''
         ];
     }
 

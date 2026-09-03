@@ -4,12 +4,12 @@ let
   inherit (lib) mkEnableOption mkIf;
 in
 {
-  options.nyx.security.yubikey.enable = mkEnableOption "YubiKey support";
+  options.my.security.yubikey.enable = mkEnableOption "YubiKey support";
 
-  config = mkIf config.nyx.security.yubikey.enable {
+  config = mkIf config.my.security.yubikey.enable {
     services.pcscd.enable = true;
 
-    environment.systemPackages = mkIf config.nyx.desktop.enable [
+    environment.systemPackages = mkIf config.my.desktop.enable [
       pkgs.yubioath-flutter
     ];
 
@@ -23,6 +23,6 @@ in
       };
     };
 
-    nyx.persistence.files = [ "/etc/u2f_keys" ];
+    my.persistence.files = [ "/etc/u2f_keys" ];
   };
 }

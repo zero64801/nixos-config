@@ -8,10 +8,10 @@ let
   inherit (lib) mkEnableOption mkForce mkIf mkOption;
   inherit (lib.types) int str;
 
-  cfg = config.nyx.virtualisation.sambaShare;
+  cfg = config.my.virtualisation.sambaShare;
 in
 {
-  options.nyx.virtualisation.sambaShare = {
+  options.my.virtualisation.sambaShare = {
     enable = mkEnableOption "on-demand Samba shares reachable only from the isolated libvirt bridge";
 
     user = mkOption {
@@ -68,7 +68,7 @@ in
   };
 
   config = mkIf cfg.enable {
-    nyx.virtualisation.base.networkIsolation.allowedHostTCPPorts = [ 445 ];
+    my.virtualisation.base.networkIsolation.allowedHostTCPPorts = [ 445 ];
 
     users.users.${cfg.user} = {
       isSystemUser = true;

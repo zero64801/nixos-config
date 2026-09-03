@@ -1,11 +1,11 @@
 { config, inputs, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.discord;
+  cfg = config.my.apps.discord;
   sources = pkgs.util.importPins ./sources.json;
 in
 {
-  options.nyx.apps.discord = {
+  options.my.apps.discord = {
     enable = lib.mkEnableOption "Discord (Nixcord + Vencord)";
 
     commandLineArgs = lib.mkOption {
@@ -51,7 +51,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    nyx.persistence.home.directories = [
+    my.persistence.home.directories = [
       ".config/discord"
     ];
 

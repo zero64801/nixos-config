@@ -1,10 +1,10 @@
 { config, lib, ... }:
 
 let
-  cfg = config.nyx.apps.direnv;
+  cfg = config.my.apps.direnv;
 in
 {
-  options.nyx.apps.direnv.enable = lib.mkEnableOption "Direnv with nix-direnv";
+  options.my.apps.direnv.enable = lib.mkEnableOption "Direnv with nix-direnv";
 
   config = lib.mkIf cfg.enable {
     programs.direnv = {
@@ -26,7 +26,7 @@ in
       '';
     };
 
-    nyx.persistence.home.directories = [
+    my.persistence.home.directories = [
       ".local/share/direnv"
     ];
   };

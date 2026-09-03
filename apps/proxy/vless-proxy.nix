@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.vlessProxy;
+  cfg = config.my.apps.vlessProxy;
 
   vlessLinkToOutbound = pkgs.writeShellScriptBin "vless-link-to-outbound" ''
     exec ${pkgs.python3}/bin/python3 - "$@" <<'PY'
@@ -193,7 +193,7 @@ PY
   '';
 in
 {
-  options.nyx.apps.vlessProxy = {
+  options.my.apps.vlessProxy = {
     enable = lib.mkEnableOption "local sing-box SOCKS5 proxy backed by a VLESS outbound";
 
     outboundFile = lib.mkOption {
@@ -266,7 +266,7 @@ in
       };
     }
 
-    (lib.mkIf (cfg.discordWrapper.enable && config.nyx.apps.discord.enable) {
+    (lib.mkIf (cfg.discordWrapper.enable && config.my.apps.discord.enable) {
       hm.imports = [
         ({ config, lib, pkgs, ... }:
           let

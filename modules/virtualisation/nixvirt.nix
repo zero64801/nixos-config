@@ -10,7 +10,7 @@ let
   inherit (lib) getExe mkEnableOption mkIf mkOption;
   inherit (lib.types) bool listOf nullOr path submodule;
 
-  cfg = config.nyx.virtualisation.nixvirt;
+  cfg = config.my.virtualisation.nixvirt;
 
   # Appended to snapshotFixup, which runs at ExecStartPost after every declarative domain has been (re)defined.
   # libvirt keeps <name>_VARS.fd when a domain is undefined, so dropping a domain from the list leaves its UEFI vars behind.
@@ -1206,7 +1206,7 @@ in
 {
   imports = [ inputs.nixvirt.nixosModules.default ];
 
-  options.nyx.virtualisation.nixvirt = {
+  options.my.virtualisation.nixvirt = {
     enable = mkEnableOption "declarative libvirt domain management via NixVirt";
 
     domains = mkOption {

@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  gamescopeRt = config.nyx.apps.gaming.gamescopeRt;
+  gamescopeRt = config.my.apps.gaming.gamescopeRt;
   library = "/mnt/vault/Games/Steam";
 
   portalOpen = lib.getExe' pkgs.flatpak-xdg-utils "xdg-open";
@@ -48,9 +48,9 @@ let
   };
 in
 # Without the guard the wrapper, persistence dir and warning exist with Steam disabled.
-lib.mkIf config.nyx.apps.gaming.steam.enable {
+lib.mkIf config.my.apps.gaming.steam.enable {
   # install = false, programs.steam itself puts the package in the system profile.
-  nyx.confine.apps.steam = {
+  my.confine.apps.steam = {
     package = steamWithPortalOpen;
     appId = "com.valvesoftware.Steam";
     install = false;
@@ -109,5 +109,5 @@ lib.mkIf config.nyx.apps.gaming.steam.enable {
   };
 
   # The wrapper re-confines programs.steam's compatibility tool override.
-  programs.steam.package = config.nyx.confine.packages.steam;
+  programs.steam.package = config.my.confine.packages.steam;
 }

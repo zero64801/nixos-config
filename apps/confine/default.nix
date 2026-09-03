@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.confine;
+  cfg = config.my.confine;
 
   wrap = pkgs.callPackage ./_lib/wrap.nix { };
   importTool = pkgs.callPackage ./_lib/import.nix { };
@@ -63,7 +63,7 @@ let
   );
 in
 {
-  options.nyx.confine = {
+  options.my.confine = {
     apps = lib.mkOption {
       type = lib.types.attrsOf appType;
       default = { };
@@ -83,13 +83,13 @@ in
   };
 
   config = {
-    nyx.confine.packages = wrapped;
+    my.confine.packages = wrapped;
 
     environment.systemPackages =
       lib.attrValues (lib.filterAttrs (name: _: cfg.apps.${name}.install) wrapped)
       ++ lib.optional (cfg.apps != { }) importTool;
 
-    nyx.persistence.home.directories = map (
+    my.persistence.home.directories = map (
       name: ".local/share/confine/${(permsOf name).appId}"
     ) privateHomes;
 
@@ -98,30 +98,30 @@ in
         {
           # xwayland-satellite is itself a Wayland client, so isolated X11 needs wayland.
           assertion = (permsOf name).x11 != "isolated" || (permsOf name).wayland;
-          message = "nyx.confine.apps.${name}: x11 = \"isolated\" needs wayland = true.";
+          message = "my.confine.apps.${name}: x11 = \"isolated\" needs wayland = true.";
         }
         {
           # Closed charset, the id also names paths and is interpolated into the launcher.
           assertion = builtins.match "[A-Za-z0-9][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]+)+" app.appId != null;
-          message = "nyx.confine.apps.${name}: appId ${app.appId} must be reverse-DNS, e.g. com.vendor.App.";
+          message = "my.confine.apps.${name}: appId ${app.appId} must be reverse-DNS, e.g. com.vendor.App.";
         }
         {
           # The a11y bus rides the dbus proxy, without it the bus silently vanishes.
           assertion = (permsOf name).dbus.filter || !(permsOf name).a11y;
-          message = "nyx.confine.apps.${name}: a11y needs dbus.filter = true, the proxy is what carries it.";
+          message = "my.confine.apps.${name}: a11y needs dbus.filter = true, the proxy is what carries it.";
         }
         {
           # The unfiltered path binds only the session bus, system rules would silently no-op.
           assertion =
             (permsOf name).dbus.filter
             || ((permsOf name).dbus.system.talk == [ ] && (permsOf name).dbus.system.call == [ ]);
-          message = "nyx.confine.apps.${name}: dbus.system rules need dbus.filter = true.";
+          message = "my.confine.apps.${name}: dbus.system rules need dbus.filter = true.";
         }
         {
           # Home and runtime dir are keyed on appId, a shared id merges two sandboxes.
           assertion =
             lib.length (lib.filter (other: other.appId == app.appId) (lib.attrValues cfg.apps)) == 1;
-          message = "nyx.confine.apps.${name}: appId ${app.appId} is used by more than one app.";
+          message = "my.confine.apps.${name}: appId ${app.appId} is used by more than one app.";
         }
       ]) cfg.apps
     );
@@ -133,12 +133,12 @@ in
           p = permsOf name;
         in
         lib.optional (p.home == "host")
-          "nyx.confine.apps.${name}: home = \"host\" gives the app the whole home directory."
+          "my.confine.apps.${name}: home = \"host\" gives the app the whole home directory."
         ++ lib.optional (!p.seccomp.enable)
-          "nyx.confine.apps.${name}: seccomp is off, so terminal injection and the namespace group are unfiltered."
+          "my.confine.apps.${name}: seccomp is off, so terminal injection and the namespace group are unfiltered."
         # X abstract sockets are netns scoped, host networking bypasses any x11 setting.
         ++ lib.optional (p.network == "host" || p.network == true)
-          "nyx.confine.apps.${name}: network = \"host\" also exposes host abstract sockets, including the real X server."
+          "my.confine.apps.${name}: network = \"host\" also exposes host abstract sockets, including the real X server."
       ) cfg.apps
     );
   };

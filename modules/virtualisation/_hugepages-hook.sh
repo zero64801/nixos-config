@@ -10,7 +10,7 @@ STATE_NAME="$3"
 # Acts only on domains whose XML requests <hugepages/>.
 # Runs before the per-domain hooks (10- prefix ordering).
 HP_DIR="${HUGEPAGES_DIR:-/sys/kernel/mm/hugepages/hugepages-2048kB}"
-CLAIM_DIR="/run/nyx/hugepages"
+CLAIM_DIR="/run/my/hugepages"
 
 XML=$(cat || true)
 

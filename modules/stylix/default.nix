@@ -1,7 +1,7 @@
 { config, inputs, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.stylix;
+  cfg = config.my.stylix;
   inherit (pkgs.util.importPins ./sources.json) schemes;
 in
 {
@@ -9,8 +9,8 @@ in
     inputs.stylix.nixosModules.stylix
   ];
 
-  options.nyx.stylix = {
-    enable = lib.mkEnableOption "Stylix theming with nyx management";
+  options.my.stylix = {
+    enable = lib.mkEnableOption "Stylix theming under my.*";
 
     scheme = lib.mkOption {
       type = lib.types.str;

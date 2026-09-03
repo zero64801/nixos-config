@@ -72,13 +72,13 @@ let
     export __GLX_VENDOR_LIBRARY_NAME=mesa
   '';
 
-  cfg = config.nyx.graphics;
+  cfg = config.my.graphics;
 
   amdEnabled = cfg.backend == "amd" || cfg.amd.enable;
   nvidiaEnabled = cfg.backend == "nvidia" || cfg.nvidia.enable;
 in
 {
-  options.nyx.graphics = {
+  options.my.graphics = {
     enable = mkEnableOption "graphics configuration";
 
     backend = mkOption {

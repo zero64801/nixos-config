@@ -16,7 +16,7 @@
 }:
 
 writeShellApplication {
-  name = "nyx-pin";
+  name = "pin";
 
   runtimeInputs = [
     coreutils
@@ -33,9 +33,9 @@ writeShellApplication {
   text = ''
     set -euo pipefail
 
-    FLAKE_PATH="''${NYX_FLAKE_PATH:-${if flakePath != null then flakePath else ""}}"
-    HOST="''${NYX_HOST:-${if hostName != null then hostName else ""}}"
-    PINS_FILE="''${NYX_PINS_FILE:-${if pinsFilePath != null then pinsFilePath else ""}}"
+    FLAKE_PATH="''${MY_FLAKE_PATH:-${if flakePath != null then flakePath else ""}}"
+    HOST="''${MY_HOST:-${if hostName != null then hostName else ""}}"
+    PINS_FILE="''${MY_PINS_FILE:-${if pinsFilePath != null then pinsFilePath else ""}}"
     if [[ -z "$PINS_FILE" && -n "$FLAKE_PATH" && -n "$HOST" ]]; then
       PINS_FILE="$FLAKE_PATH/hosts/$HOST/pins.json"
     fi
@@ -43,10 +43,10 @@ writeShellApplication {
     ${util.cliPrelude}
 
     ensure_paths() {
-      [[ -n "$FLAKE_PATH" ]]  || die "FLAKE_PATH not set. Set nyx.pinning.flakePath or NYX_FLAKE_PATH."
+      [[ -n "$FLAKE_PATH" ]]  || die "FLAKE_PATH not set. Set my.pinning.flakePath or MY_FLAKE_PATH."
       [[ -d "$FLAKE_PATH" ]]  || die "Flake directory not found: $FLAKE_PATH"
       [[ -f "$FLAKE_PATH/flake.lock" ]] || die "No flake.lock found in $FLAKE_PATH"
-      [[ -n "$PINS_FILE" ]]   || die "PINS_FILE not set. Set nyx.pinning.pinsFile, NYX_PINS_FILE, or NYX_HOST."
+      [[ -n "$PINS_FILE" ]]   || die "PINS_FILE not set. Set my.pinning.pinsFile, MY_PINS_FILE, or MY_HOST."
       if [[ ! -f "$PINS_FILE" ]]; then
         mkdir -p "$(dirname "$PINS_FILE")"
         echo '{"pins":{}}' > "$PINS_FILE"
@@ -398,7 +398,7 @@ writeShellApplication {
 
       remove_pin "$input"
       ok "Unpinned ''${bold}$input''${reset} (was $pin_type)"
-      echo -e "  ''${DIM}This input will be updated on next 'nyx-pin update'.''${NC}"
+      echo -e "  ''${DIM}This input will be updated on next 'pin update'.''${NC}"
     }
 
     cmd_update() {
@@ -510,10 +510,10 @@ writeShellApplication {
       locked_rev=$(get_locked_rev "$input")
       if [[ -z "$locked_rev" ]]; then
         echo -e "\n  ''${yellow}⚠ Not in flake.lock''${reset} (input removed from the flake?)"
-        echo -e "  ''${DIM}Run 'nyx-pin unpin $input' to drop the stale pin.''${NC}"
+        echo -e "  ''${DIM}Run 'pin unpin $input' to drop the stale pin.''${NC}"
       elif [[ "$locked_rev" != "$rev" ]]; then
         echo -e "\n  ''${yellow}⚠ Lock file rev differs:''${reset} ''${locked_rev:0:12}"
-        echo -e "  ''${DIM}Run 'nyx-pin update' to reconcile.''${NC}"
+        echo -e "  ''${DIM}Run 'pin update' to reconcile.''${NC}"
       fi
     }
 
@@ -599,7 +599,7 @@ writeShellApplication {
       locked_rev=$(get_locked_rev "$input")
       if [[ -z "$locked_rev" ]]; then
         warn "'$input' is not in flake.lock (input removed from the flake?)."
-        echo -e "  ''${DIM}Run 'nyx-pin unpin $input' to drop the stale pin.''${NC}"
+        echo -e "  ''${DIM}Run 'pin unpin $input' to drop the stale pin.''${NC}"
         return 1
       fi
 
@@ -611,7 +611,7 @@ writeShellApplication {
         echo -e "\n  ''${green}Lock matches pin — in sync.''${reset}"
       else
         echo -e "\n  ''${yellow}Lock differs from pin.''${reset}"
-        echo -e "  ''${DIM}Run 'nyx-pin update' to restore pin, or 'nyx-pin unpin $input' to track latest.''${NC}"
+        echo -e "  ''${DIM}Run 'pin update' to restore pin, or 'pin unpin $input' to track latest.''${NC}"
       fi
 
       local node
@@ -668,13 +668,13 @@ writeShellApplication {
       if [[ "$all_ok" == "true" ]]; then
         ok "All pins are in sync with flake.lock"
       else
-        warn "Some pins are out of sync. Run ''${bold}nyx-pin update''${reset} to reconcile."
+        warn "Some pins are out of sync. Run ''${bold}pin update''${reset} to reconcile."
       fi
 
       report_subflakes
     }
 
-    # Report-only: sub-flakes pin their inputs through their own committed flake.lock, outside pins.json and `nyx-pin update`.
+    # Report-only: sub-flakes pin their inputs through their own committed flake.lock, outside pins.json and `pin update`.
     # Listing them here keeps check honest about what it does not manage.
     report_subflakes() {
       local lock dir line
@@ -824,9 +824,9 @@ writeShellApplication {
     }
 
     show_help() {
-      echo -e "''${bold}nyx-pin''${reset} — Manage flake input pinning
+      echo -e "''${bold}pin''${reset} — Manage flake input pinning
 
-''${green}''${bold}Usage:''${reset} nyx-pin [COMMAND] [OPTIONS] [ARGS]
+''${green}''${bold}Usage:''${reset} pin [COMMAND] [OPTIONS] [ARGS]
 
 ''${green}''${bold}Commands:''${reset}
   ''${yellow}status, ls''${reset}                      Show all inputs with their pin/freeze status.
@@ -862,31 +862,31 @@ writeShellApplication {
 ''${green}''${bold}Workflow Examples:''${reset}
 
   ''${bold}Freeze nixpkgs so it won't update:''${reset}
-    nyx-pin freeze nixpkgs --reason \"stable baseline\"
+    pin freeze nixpkgs --reason \"stable baseline\"
 
   ''${bold}Pin stylix to a specific old revision:''${reset}
-    nyx-pin pin stylix abc123def456 --reason \"v2.0 broke my theme\"
+    pin pin stylix abc123def456 --reason \"v2.0 broke my theme\"
 
   ''${bold}Update everything except pinned inputs:''${reset}
-    nyx-pin update
+    pin update
 
   ''${bold}Force-update a frozen input anyway:''${reset}
-    nyx-pin update nixpkgs --force
+    pin update nixpkgs --force
 
   ''${bold}Unfreeze nixpkgs and let it track latest again:''${reset}
-    nyx-pin unpin nixpkgs
+    pin unpin nixpkgs
 
   ''${bold}Check that lock file matches all pins:''${reset}
-    nyx-pin check
+    pin check
 
   ''${bold}Restore pins after an accidental 'nix flake update':''${reset}
-    nyx-pin restore
+    pin restore
 
   ''${bold}See why something is pinned:''${reset}
-    nyx-pin why nixpkgs
+    pin why nixpkgs
 
   ''${bold}Dry-run to see what would update:''${reset}
-    nyx-pin update --dry-run
+    pin update --dry-run
 "
       exit 0
     }
@@ -962,7 +962,7 @@ writeShellApplication {
           esac
           ;;
         *)
-          die "Unknown command: $1. Run 'nyx-pin help' for usage."
+          die "Unknown command: $1. Run 'pin help' for usage."
           ;;
       esac
     }

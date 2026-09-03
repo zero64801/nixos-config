@@ -1,7 +1,7 @@
 { pkgs, config, lib, ... }:
 
 {
-  config = lib.mkIf config.nyx.desktop.enable {
+  config = lib.mkIf config.my.desktop.enable {
     fonts = {
       fontDir.enable = lib.mkDefault true;
 

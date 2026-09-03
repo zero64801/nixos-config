@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.wgProxy;
+  cfg = config.my.apps.wgProxy;
 
   # Assembled at runtime because the endpoint file holds the private key and must never enter the store.
   configScript = pkgs.writeShellScript "sing-box-wg-proxy" ''
@@ -50,7 +50,7 @@ let
   '';
 in
 {
-  options.nyx.apps.wgProxy = {
+  options.my.apps.wgProxy = {
     enable = lib.mkEnableOption "local HTTP/SOCKS proxy through a userspace WireGuard tunnel";
 
     endpointFile = lib.mkOption {

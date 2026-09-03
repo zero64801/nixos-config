@@ -1,7 +1,7 @@
 { config, inputs, lib, pkgs, ... }:
 
 let
-  proxy = config.nyx.apps.vlessProxy;
+  proxy = config.my.apps.vlessProxy;
   proxied = proxy.enable && proxy.discordWrapper.enable;
 
   nixcordPkgs = inputs.nixcord.packages.${pkgs.stdenv.hostPlatform.system};
@@ -13,8 +13,8 @@ let
   };
 in
 # Both launchers run this one build: discord-proxy execs bin/Discord out of the profile, which is the confined shim.
-lib.mkIf config.nyx.apps.discord.enable {
-  nyx.confine.apps.discord = {
+lib.mkIf config.my.apps.discord.enable {
+  my.confine.apps.discord = {
     package = discord;
     appId = "com.discordapp.Discord";
     # nixcord installs the package, and it overrides to inject Vencord.
@@ -74,5 +74,5 @@ lib.mkIf config.nyx.apps.discord.enable {
   systemd.user.sockets.speech-dispatcher.wantedBy = [ "sockets.target" ];
 
   # The override forwards through the wrapper and re-confines, so the Vencord injection cannot hand back an unsandboxed build.
-  hm.programs.nixcord.discord.package = config.nyx.confine.packages.discord;
+  hm.programs.nixcord.discord.package = config.my.confine.packages.discord;
 }

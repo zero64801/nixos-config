@@ -9,10 +9,10 @@ let
   inherit (lib) mkEnableOption mkIf mkMerge mkOption concatStringsSep optional optionals optionalString;
   inherit (lib.types) bool listOf port str;
 
-  cfg = config.nyx.virtualisation.base;
+  cfg = config.my.virtualisation.base;
 in
 {
-  options.nyx.virtualisation.base = {
+  options.my.virtualisation.base = {
     enable = mkEnableOption "base KVM/QEMU/Libvirt support";
 
     openSpicePort = mkEnableOption "connection to Spice through remote-viewer";
@@ -135,7 +135,7 @@ in
         };
       };
 
-      nyx.virtualisation.base.cgroupDeviceACL = [
+      my.virtualisation.base.cgroupDeviceACL = [
         "/dev/null"
         "/dev/full"
         "/dev/zero"
@@ -220,7 +220,7 @@ in
           config.virtualisation.libvirtd.qemu.vhostUserPackages;
       };
 
-      nyx.security.serviceAdminGroups = [
+      my.security.serviceAdminGroups = [
         "libvirtd"
         "kvm"
       ]
@@ -236,7 +236,7 @@ in
 
       boot.extraModprobeConfig = concatStringsSep "\n" cfg.extraModprobeConfigLines;
 
-      nyx.persistence.directories = [
+      my.persistence.directories = [
         {
           directory = "/var/lib/libvirt";
           user = "root";

@@ -1,7 +1,7 @@
 { config, inputs, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.zen;
+  cfg = config.my.apps.zen;
   profilePath = ".config/zen/default";
 
   addons = if cfg.addonPins == null then { } else pkgs.util.importAddons cfg.addonPins;
@@ -70,7 +70,7 @@ let
   );
 in
 {
-  options.nyx.apps.zen = {
+  options.my.apps.zen = {
     enable = lib.mkEnableOption "Zen Browser";
 
     addonPins = lib.mkOption {
@@ -141,12 +141,12 @@ in
     environment.systemPackages = [ (pkgs.callPackage ./_addon-pin.nix { }) ];
 
     # Persist the whole profile: SQLite -wal files and rename-replaced json/txt break under per-file bind mounts.
-    nyx.persistence.home.directories = [
+    my.persistence.home.directories = [
       profilePath
     ];
 
   }
-  (lib.mkIf (config.nyx.stylix.enable or false) {
+  (lib.mkIf (config.my.stylix.enable or false) {
     hm.stylix.targets.zen-browser.profileNames = [ "default" ];
   })
   ]);

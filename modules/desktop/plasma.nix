@@ -1,14 +1,14 @@
 { pkgs, lib, config, ... }:
 
 let
-  cfg = config.nyx.desktop.plasma6;
+  cfg = config.my.desktop.plasma6;
   spectacleOcrLanguages = lib.unique ([ "eng" ] ++ cfg.extraSpectacleOcrLanguages);
   spectacleWithOcr = pkgs.kdePackages.spectacle.override {
     tesseractLanguages = spectacleOcrLanguages;
   };
 in
 {
-  options.nyx.desktop.plasma6 = {
+  options.my.desktop.plasma6 = {
     enable = lib.mkEnableOption "Plasma 6 desktop environment";
 
     extraSpectacleOcrLanguages = lib.mkOption {

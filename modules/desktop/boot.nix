@@ -1,7 +1,7 @@
 { config, lib, ... }:
 
 {
-  config = lib.mkIf config.nyx.desktop.enable {
+  config = lib.mkIf config.my.desktop.enable {
     boot.loader = {
       systemd-boot.enable = lib.mkDefault true;
       systemd-boot.configurationLimit = lib.mkDefault 15;

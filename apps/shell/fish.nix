@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.fish;
+  cfg = config.my.apps.fish;
 
   rosepine-fzf = [
     "fg:#908caa"
@@ -25,7 +25,7 @@ let
   );
 in
 {
-  options.nyx.apps.fish.enable = lib.mkEnableOption "Fish shell";
+  options.my.apps.fish.enable = lib.mkEnableOption "Fish shell";
 
   config = lib.mkIf cfg.enable {
     users.users.root.shell = pkgs.fish;
@@ -37,8 +37,8 @@ in
       generateCompletions = false;
 
       shellAbbrs = {
-        ns = "nyx switch";
-        nu = "nyx update";
+        ns = "nh os switch";
+        nu = "pin update";
         nsh = "nix shell nixpkgs#";
         nrn = "nix run nixpkgs#";
 
@@ -134,7 +134,7 @@ in
       fzf
     ];
 
-    nyx.persistence.home.directories = [
+    my.persistence.home.directories = [
       ".local/share/fish"
     ];
   };

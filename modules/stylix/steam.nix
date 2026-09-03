@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  stylixEnabled = config.nyx.stylix.enable;
+  stylixEnabled = config.my.stylix.enable;
 
   /*
   Steam updates re-extract steamui/ and wipe the injected CSS, so the theme

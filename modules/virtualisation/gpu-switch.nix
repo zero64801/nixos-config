@@ -4,8 +4,8 @@ let
   inherit (lib) mkEnableOption mkIf mkMerge mkOption concatStringsSep;
   inherit (lib.types) bool enum;
 
-  cfg = config.nyx.virtualisation.gpuSwitch;
-  vfioCfg = config.nyx.virtualisation.desktop.vfio;
+  cfg = config.my.virtualisation.gpuSwitch;
+  vfioCfg = config.my.virtualisation.desktop.vfio;
 
   /*
   nvidia-smi, only when an nvidia host driver is actually configured. Used to
@@ -67,7 +67,7 @@ let
       NVIDIA_SMI="${nvidiaSmi}"
 
       if [ "''${#PCI_ADDRS[@]}" -eq 0 ]; then
-        echo "gpu-switch: no PCI addresses configured (nyx.virtualisation.desktop.vfio.pciAddresses)" >&2
+        echo "gpu-switch: no PCI addresses configured (my.virtualisation.desktop.vfio.pciAddresses)" >&2
         exit 1
       fi
 
@@ -533,7 +533,7 @@ let
   '';
 in
 {
-  options.nyx.virtualisation.gpuSwitch = {
+  options.my.virtualisation.gpuSwitch = {
     enable = mkEnableOption "runtime GPU driver switching between vfio-pci and the native host driver";
 
     defaultMode = mkOption {

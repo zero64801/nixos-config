@@ -9,7 +9,7 @@ let
   inherit (lib) mkEnableOption mkIf mkOption;
   inherit (lib.types) str;
 
-  cfg = config.nyx.virtualisation.gamepad;
+  cfg = config.my.virtualisation.gamepad;
 
   deviceXml = pkgs.writeText "vm-pad-hostdev.xml" ''
     <hostdev mode="subsystem" type="usb" managed="yes">
@@ -75,7 +75,7 @@ let
   };
 in
 {
-  options.nyx.virtualisation.gamepad = {
+  options.my.virtualisation.gamepad = {
     enable = mkEnableOption "vm-pad CLI for hot-attaching a USB gamepad to libvirt domains";
 
     vendorId = mkOption {

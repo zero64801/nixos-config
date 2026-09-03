@@ -5,7 +5,7 @@ in
 {
   util = {
     # Content pins (plain source trees) from a sources.json next to the consuming module.
-    # Managed by `nyx-pin sources`.
+    # Managed by `pin sources`.
     importPins = path:
       lib.mapAttrs
         (_: pin: final.fetchFromGitHub { inherit (pin) owner repo rev hash; })
@@ -46,7 +46,7 @@ in
       in
       lib.mapAttrs mkAddon (builtins.fromJSON (builtins.readFile path));
 
-    # Shared scaffold for the nyx CLI scripts.
+    # Shared scaffold for the CLI scripts.
     # SC2034/SC2329 disabled because not every script uses every color or helper.
     cliPrelude = ''
       # shellcheck disable=SC2034,SC2329

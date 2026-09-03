@@ -1,10 +1,10 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.nyx.apps.llamaCpp;
+  cfg = config.my.apps.llamaCpp;
 in
 {
-  options.nyx.apps.llamaCpp = {
+  options.my.apps.llamaCpp = {
     enable = lib.mkEnableOption "Llama-cpp app";
 
     vulkan = lib.mkOption {

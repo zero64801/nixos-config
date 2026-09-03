@@ -5,7 +5,7 @@ let
   inherit (lib.types) str listOf;
 in
 {
-  options.nyx = {
+  options.my = {
     flakePath = mkOption {
       description = "Path to the NixOS flake repository";
       type = str;

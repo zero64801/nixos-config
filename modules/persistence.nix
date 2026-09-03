@@ -3,14 +3,14 @@
 let
   inherit (lib) mkOption mkIf types;
 
-  cfg  = config.nyx.persistence;
-  user = config.nyx.flake.user;
-  persistentPath = config.nyx.impermanence.persistentStoragePath;
+  cfg  = config.my.persistence;
+  user = config.my.flake.user;
+  persistentPath = config.my.impermanence.persistentStoragePath;
 
   hasHomeEntries = cfg.home.directories != [] || cfg.home.files != [];
 in
 {
-  options.nyx.persistence = {
+  options.my.persistence = {
     directories = mkOption {
       type    = types.listOf (types.either types.str (types.attrsOf types.anything));
       default = [];
@@ -38,7 +38,7 @@ in
     };
   };
 
-  config = mkIf config.nyx.impermanence.enable {
+  config = mkIf config.my.impermanence.enable {
     environment.persistence.${persistentPath} = {
       inherit (cfg) directories files;
 

@@ -9,8 +9,8 @@ let
   inherit (lib) literalExpression mkEnableOption mkIf mkMerge mkOption concatStringsSep;
   inherit (lib.types) attrsOf int listOf path str;
 
-  cfg = config.nyx.virtualisation.desktop;
-  gpuSwitchCfg = config.nyx.virtualisation.gpuSwitch;
+  cfg = config.my.virtualisation.desktop;
+  gpuSwitchCfg = config.my.virtualisation.gpuSwitch;
 
   hugepagesHook = pkgs.writeShellScript "libvirt-hook-hugepages" (
     ''
@@ -21,7 +21,7 @@ let
   );
 in
 {
-  options.nyx.virtualisation.desktop = {
+  options.my.virtualisation.desktop = {
     enable = mkEnableOption "desktop virtualisation features (vfio, looking-glass, libvirt hooks)";
 
     vfio = {
@@ -99,13 +99,13 @@ in
         "kvm.ignore_msrs=1"
       ];
 
-      nyx.virtualisation.base.extraModprobeConfigLines =
+      my.virtualisation.base.extraModprobeConfigLines =
         mkIf (cfg.vfio.ids != [ ] && (!gpuSwitchCfg.enable || gpuSwitchCfg.defaultMode == "vfio"))
           [
             "options vfio-pci ids=${concatStringsSep "," cfg.vfio.ids}"
           ];
 
-      nyx.virtualisation.base.cgroupDeviceACL = [ "/dev/vfio/vfio" ];
+      my.virtualisation.base.cgroupDeviceACL = [ "/dev/vfio/vfio" ];
     })
 
     (mkIf cfg.looking-glass.enable {
@@ -116,11 +116,11 @@ in
         SUBSYSTEM=="kvmfr", OWNER="qemu-libvirtd", GROUP="kvm", MODE="0660"
       '';
 
-      nyx.virtualisation.base.extraModprobeConfigLines = [
+      my.virtualisation.base.extraModprobeConfigLines = [
         "options kvmfr static_size_mb=${toString cfg.looking-glass.staticSizeMb}"
       ];
 
-      nyx.virtualisation.base.cgroupDeviceACL = [ "/dev/kvmfr0" ];
+      my.virtualisation.base.cgroupDeviceACL = [ "/dev/kvmfr0" ];
 
       environment.systemPackages = [ pkgs.looking-glass-client ];
 

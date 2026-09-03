@@ -9,7 +9,7 @@ let
   inherit (lib) mkEnableOption mkIf mkOption;
   inherit (lib.types) attrsOf enum listOf int str submodule;
 
-  cfg = config.nyx.virtualisation.cpuPinning;
+  cfg = config.my.virtualisation.cpuPinning;
 
   virsh = "${pkgs.libvirt}/bin/virsh";
 
@@ -35,8 +35,8 @@ let
     # libvirt's hook PATH has no util-linux (flock)
     export PATH="${lib.makeBinPath [ pkgs.util-linux pkgs.coreutils ]}:$PATH"
 
-    STATE_DIR=/var/lib/nyx/vm-mode
-    OVERRIDE_DIR=/run/nyx/vm-mode
+    STATE_DIR=/var/lib/my/vm-mode
+    OVERRIDE_DIR=/run/my/vm-mode
     RUN_DIR=${cfg.claimDir}
 
     # One-shot override (vm-mode --once) wins over the persistent state file.
@@ -218,8 +218,8 @@ ${modeCase}
 
   vm-mode = pkgs.writeShellScriptBin "vm-mode" ''
     set -euo pipefail
-    STATE_DIR=/var/lib/nyx/vm-mode
-    OVERRIDE_DIR=/run/nyx/vm-mode
+    STATE_DIR=/var/lib/my/vm-mode
+    OVERRIDE_DIR=/run/my/vm-mode
     DOMAINS="${lib.concatStringsSep " " cfg.domains}"
     MODES="${lib.concatStringsSep " " (lib.attrNames cfg.modes)}"
 
@@ -299,12 +299,12 @@ ${modeCase}
   '';
 in
 {
-  options.nyx.virtualisation.cpuPinning = {
+  options.my.virtualisation.cpuPinning = {
     enable = mkEnableOption "per-domain CPU pinning profiles switchable at runtime via vm-mode";
 
     claimDir = mkOption {
       type = str;
-      default = "/run/nyx/vm-cpus";
+      default = "/run/my/vm-cpus";
       description = ''
         Runtime directory holding one file per running domain listing its
         claimed CPUs. Read by anything that must leave claimed cores alone.
@@ -359,20 +359,20 @@ in
     assertions = [
       {
         assertion = cfg.modes ? ${cfg.defaultMode};
-        message = "nyx.virtualisation.cpuPinning.defaultMode '${cfg.defaultMode}' is not among the defined modes.";
+        message = "my.virtualisation.cpuPinning.defaultMode '${cfg.defaultMode}' is not among the defined modes.";
       }
     ];
 
     environment.systemPackages = [ vm-mode ];
 
     systemd.tmpfiles.rules = [
-      "d /var/lib/nyx 0755 root root -"
-      "d /var/lib/nyx/vm-mode 2775 root libvirtd -"
-      "d /run/nyx 0755 root root -"
-      "d /run/nyx/vm-mode 2775 root libvirtd -"
+      "d /var/lib/my 0755 root root -"
+      "d /var/lib/my/vm-mode 2775 root libvirtd -"
+      "d /run/my 0755 root root -"
+      "d /run/my/vm-mode 2775 root libvirtd -"
     ];
 
-    nyx.persistence.directories = [ "/var/lib/nyx/vm-mode" ];
+    my.persistence.directories = [ "/var/lib/my/vm-mode" ];
 
     virtualisation.libvirtd.hooks.qemu."15-cpu-pin" = cpuPinHook;
     systemd.services.libvirtd-config.restartTriggers = [ cpuPinHook ];

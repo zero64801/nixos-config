@@ -91,8 +91,8 @@ let
   '';
 in
 {
-  config = lib.mkIf config.nyx.desktop.plasma6.enable {
-    nyx.desktop.plasma6.extraSpectacleOcrLanguages = [
+  config = lib.mkIf config.my.desktop.plasma6.enable {
+    my.desktop.plasma6.extraSpectacleOcrLanguages = [
       "jpn"
       "jpn_vert"
     ];
@@ -254,7 +254,7 @@ in
     # Output recreation (monitor sleep, input switch, replug) makes kwin re-derive priority from connector order, stealing primary from the center monitor.
     # Re-assert on DRM changes.
     services.udev.extraRules = ''
-      ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="${pkgs.systemd}/bin/systemctl --no-block -M ${config.nyx.flake.user}@ --user start display-layout.service"
+      ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="${pkgs.systemd}/bin/systemctl --no-block -M ${config.my.flake.user}@ --user start display-layout.service"
     '';
 
     # A user service instead of plasma-manager's startupScript: those only re-run when their content changes, so a regenerated kwin output config was never re-corrected on login.

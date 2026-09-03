@@ -1,7 +1,7 @@
 { config, lib, ... }:
 
 {
-  config = lib.mkIf config.nyx.desktop.enable {
+  config = lib.mkIf config.my.desktop.enable {
     services.pulseaudio.enable = false;
     security.rtkit.enable = true;
 
