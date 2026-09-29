@@ -2,7 +2,10 @@
   my.apps.discord = {
     commandLineArgs = [ "--enable-blink-features=MiddleClickAutoscroll" ];
 
-    localPlugins.MyServerRoles = ./local-plugins/myServerRoles;
+    localPlugins = {
+      CopyWithReplies = ./local-plugins/copyWithReplies;
+      MyServerRoles = ./local-plugins/myServerRoles;
+    };
 
     vencordConfig = {
       frameless = true;
@@ -42,6 +45,10 @@
 
     extraConfig.plugins = {
       AccountPanelServerProfile.enabled = false;
+      CopyWithReplies = {
+        enabled = true;
+        anonymize = false;
+      };
       MyServerRoles.enabled = true;
     };
 

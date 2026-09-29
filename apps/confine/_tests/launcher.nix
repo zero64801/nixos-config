@@ -120,6 +120,8 @@ pkgs.runCommand "confine-launcher-behaviour"
         3000
         2081
       ];
+      # A pasta spec string, binding the forward to one host address family.
+      networkPorts.fromHost = [ "0.0.0.0/8000" ];
     };
     isolatedX11Script = scriptOf {
       profile = [
@@ -160,6 +162,10 @@ pkgs.runCommand "confine-launcher-behaviour"
     # The info fifo read blocks forever if the launch chain died before bwrap.
     grep -q 'timeout 10 cat "$instance/info"' "$isolatedScript" \
       || fail "the bwrapinfo read is unbounded again"
+
+    # --- port specs reach pasta verbatim --------------------------------------
+    grep -q -- "-t '0.0.0.0/8000' -u '0.0.0.0/8000'" "$isolatedScript" \
+      || fail "a string networkPorts entry is not passed to pasta as given"
 
     # --- nothing may start the app outside the sandbox ------------------------
     for f in share/dbus-1/services/com.test.Svc.service \

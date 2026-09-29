@@ -23,9 +23,10 @@ let
     export QT_QPA_PLATFORM=wayland
 
     # Monitors are identified by EDID serial so the layout survives connector renumbering.
-    LEFT_SERIAL="J1FYHV3"
-    CENTER_SERIAL="GM0NNP3"
-    RIGHT_SERIAL="2S6YHV3"
+    LEFT_SERIAL="HX5L500216"
+    CENTER_SERIAL="HX5L400073"
+    RIGHT_SERIAL="HX5L500186"
+    MODE="2560x1440@180"
 
     # kwin's output management comes up slightly after its socket.
     # The probe still dies in Qt's init_platform until then, so keep its cores out of coredumpctl.
@@ -36,14 +37,22 @@ let
 
     current=$("$KSCREEN" -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
 
-    # True when the connector already has the wanted position, vrr policy and (optionally) priority.
+    # True when the connector already has the wanted position, mode, vrr policy and (optionally) priority.
     matches() {
-      printf '%s\n' "$current" | awk -v conn="$1" -v pos="$2" -v vrr="$3" -v prio="$4" '
+      printf '%s\n' "$current" | awk -v conn="$1" -v pos="$2" -v mode="$3" -v vrr="$4" -v prio="$5" '
         $1 == "Output:" { cur = $3; next }
         cur == conn && $1 == "Geometry:" && $2 == pos { g = 1 }
-        cur == conn && $1 == "Vrr:" && tolower($2) == vrr { v = 1 }
+        # The current mode is starred and printed with a fractional rate (2560x1440@179.98), while mode names round it.
+        cur == conn && $1 == "Modes:" {
+          for (i = 2; i <= NF; i++) if ($i ~ /\*/) {
+            split($i, f, /[:@*]/)
+            if (f[2] "@" int(f[3] + 0.5) == mode) m = 1
+          }
+        }
+        # Adaptive Sync disabled in the monitor OSD reports incapable, which no policy can fix, so it must not count as drift.
+        cur == conn && $1 == "Vrr:" && (tolower($2) == vrr || $2 == "incapable") { v = 1 }
         cur == conn && $1 == "priority" && (prio == "" || $2 == prio) { p = 1 }
-        END { exit !(g && v && p) }
+        END { exit !(g && m && v && p) }
       '
     }
 
@@ -72,8 +81,8 @@ let
         continue
       fi
 
-      matches "$conn" "$pos" "$vrr" "$prio" || all_ok=0
-      args="$args output.$conn.enable output.$conn.position.$pos output.$conn.vrrpolicy.$vrr output.$conn.brightness.100"
+      matches "$conn" "$pos" "$MODE" "$vrr" "$prio" || all_ok=0
+      args="$args output.$conn.enable output.$conn.position.$pos output.$conn.mode.$MODE output.$conn.vrrpolicy.$vrr output.$conn.brightness.100"
     done
 
     [ -n "$args" ] || exit 0

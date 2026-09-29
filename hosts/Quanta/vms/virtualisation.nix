@@ -61,6 +61,17 @@
       };
     };
 
+    gpuMode = {
+      enable = true;
+      domains = {
+        win11 = { };
+        win11-re = { };
+      };
+      modes.virtual.resolution = "2560x1440";
+      modes.virtual.accel3d = true;
+      renderNode = "/dev/dri/renderD128";
+    };
+
     gpuSwitch = {
       enable = true;
       defaultMode = "host";

@@ -220,10 +220,11 @@ let
     ports:
     if ports == [ ] then
       "none"
-    else if lib.all lib.isInt ports then
+    # Strings pass through in pasta's own form, "ADDR/PORT" binds a forward to one host address family.
+    else if lib.all (p: lib.isInt p || lib.isString p) ports then
       lib.concatMapStringsSep "," toString ports
     else
-      throw "confine: networkPorts entries must be integers";
+      throw "confine: networkPorts entries must be integers or pasta port specs";
 
   filter = mkFilter { inherit (cfg.seccomp) nesting multiarch devel bluetooth can; };
 

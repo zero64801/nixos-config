@@ -35,3 +35,4 @@ Desktop workstation with KDE Plasma 6, AMD graphics, impermanence (btrfs rollbac
 - `nh clean all --keep 5` — delete old generations and collect garbage.
 - `pin` — flake input pins and content pins (`pin status`, `pin update`, `pin freeze <input>`, `pin sources update <name>`).
 - `persist` — impermanence paths (`persist list`, `persist add <path>`, `persist junk`).
+- `vm-gpu` — start passthrough domains with or without the GPU (`vm-gpu`, `vm-gpu win11-re virtual --once`, `vm-gpu start win11-re`). Modes are per host edits on the persistent XML, applied to a transient start only.

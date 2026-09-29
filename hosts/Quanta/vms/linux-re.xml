@@ -81,20 +81,19 @@
     <input type="tablet" bus="usb"/>
     <input type="mouse" bus="virtio"/>
     <input type="keyboard" bus="virtio"/>
-    <!-- GL rendering happens on the egl-headless display (renderD128 is the 9070 XT, renderD129 the passthrough 5090), spice shows the readback. -->
+    <!-- Spice GL hands rendered frames to the local viewer as dmabufs (zero copy). renderD128 is the 9070 XT, renderD129 the passthrough 5090. -->
     <graphics type="spice">
       <listen type="none"/>
       <image compression="off"/>
-      <gl enable="no"/>
-    </graphics>
-    <graphics type="egl-headless">
-      <gl rendernode="/dev/dri/renderD128"/>
+      <gl enable="yes" rendernode="/dev/dri/renderD128"/>
     </graphics>
     <sound model="ich9"/>
     <audio id="1" type="spice"/>
     <video>
       <model type="virtio" heads="1" primary="yes" blob="on">
         <acceleration accel3d="yes"/>
+        <!-- Preferred EDID mode; spice does not forward the host monitor, the refresh rates live in the guest xorg.conf.d. -->
+        <resolution x="2560" y="1440"/>
       </model>
     </video>
     <rng model="virtio">

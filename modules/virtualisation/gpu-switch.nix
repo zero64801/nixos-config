@@ -65,6 +65,8 @@ let
       PCI_ADDRS=(${concatStringsSep " " (map (a: "\"${a}\"") vfioCfg.pciAddresses)})
       DEFAULT_MODE="${cfg.defaultMode}"
       NVIDIA_SMI="${nvidiaSmi}"
+      SYSTEMCTL="${pkgs.systemd}/bin/systemctl"
+      LACT_ENABLED="${if config.services.lact.enable then "1" else "0"}"
 
       if [ "''${#PCI_ADDRS[@]}" -eq 0 ]; then
         echo "gpu-switch: no PCI addresses configured (my.virtualisation.desktop.vfio.pciAddresses)" >&2
@@ -278,6 +280,11 @@ let
         if [ "$has_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ] && lsmod | awk '{print $1}' | grep -qx nvidia; then
           "$NVIDIA_SMI" -pm 0 >/dev/null 2>&1 || true
         fi
+        # lact holds the card for metrics; fuser -k would SIGKILL it and leave /run/lactd.sock behind, which blocks its next start.
+        if [ "$LACT_ENABLED" = 1 ] && "$SYSTEMCTL" is-active -q lactd; then
+          echo "  stopping lactd"
+          "$SYSTEMCTL" stop lactd || true
+        fi
         release_compositor_holds "''${addrs[@]}"
         for addr in "''${addrs[@]}"; do
           unbind_device "$addr"
@@ -330,6 +337,10 @@ let
         if [ "$bound_nvidia" = 1 ] && [ -n "$NVIDIA_SMI" ]; then
           echo "  enabling nvidia persistence mode (idle zero-RPM fan)"
           "$NVIDIA_SMI" -pm 1 >/dev/null 2>&1 || echo "  (nvidia-smi -pm 1 failed; fan may spin at idle)"
+        fi
+        if [ "$LACT_ENABLED" = 1 ]; then
+          echo "  starting lactd"
+          "$SYSTEMCTL" start lactd || echo "  (lactd failed to start)"
         fi
         echo "done."
       }
@@ -559,6 +570,9 @@ in
 
     (mkIf (cfg.libvirtHook.enable && vfioCfg.enable && vfioCfg.pciAddresses != [ ]) {
       virtualisation.libvirtd.hooks.qemu."00-gpu-vfio-prepare" = libvirtGpuVfioHook;
+
+      # lact refuses to start over a leftover socket; after a SIGKILL (hold release, crash) that is always stale.
+      systemd.services.lactd.serviceConfig.ExecStartPre = mkIf config.services.lact.enable "-${pkgs.coreutils}/bin/rm -f /run/lactd.sock";
       systemd.services.libvirtd-config.restartTriggers = [ libvirtGpuVfioHook ];
     })
 
