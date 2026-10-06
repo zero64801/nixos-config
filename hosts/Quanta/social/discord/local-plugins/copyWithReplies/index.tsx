@@ -144,7 +144,7 @@ function postFromRecord(msg: Message): Post {
         author: msg.author,
         content: msg.content,
         forwarded: msg.messageSnapshots?.[0]?.message.content,
-        attachments: msg.attachments
+        attachments: [...msg.attachments, ...(msg.messageSnapshots?.[0]?.message.attachments ?? [])]
     };
 }
 
@@ -166,7 +166,7 @@ async function fetchPost(channelId: string, messageId: string): Promise<Post | n
             author: { id: json.author.id, username: json.author.username, globalName: json.author.global_name },
             content: json.content,
             forwarded: json.message_snapshots?.[0]?.message.content,
-            attachments: json.attachments ?? []
+            attachments: [...(json.attachments ?? []), ...(json.message_snapshots?.[0]?.message.attachments ?? [])]
         };
     } catch {
         return null;

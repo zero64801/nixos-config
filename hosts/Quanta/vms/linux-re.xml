@@ -96,6 +96,12 @@
         <resolution x="2560" y="1440"/>
       </model>
     </video>
+    <!-- Rear USB xHCI, shared with the win11 domains: only one of them can run at a time. -->
+    <hostdev mode="subsystem" type="pci" managed="no">
+      <source>
+        <address domain="0x0000" bus="0x6f" slot="0x00" function="0x4"/>
+      </source>
+    </hostdev>
     <rng model="virtio">
       <backend model="random">/dev/urandom</backend>
     </rng>

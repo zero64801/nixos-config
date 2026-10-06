@@ -5,6 +5,7 @@
     localPlugins = {
       CopyWithReplies = ./local-plugins/copyWithReplies;
       MyServerRoles = ./local-plugins/myServerRoles;
+      SaveAs = ./local-plugins/saveAs;
     };
 
     vencordConfig = {
@@ -50,6 +51,7 @@
         anonymize = false;
       };
       MyServerRoles.enabled = true;
+      SaveAs.enabled = true;
     };
 
     settings = {

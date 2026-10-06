@@ -18,6 +18,7 @@
   "include": [
     "*/index.ts",
     "*/index.tsx",
+    "*/native.ts",
     "types/**/*.d.ts"
   ]
 }

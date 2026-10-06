@@ -1,5 +1,13 @@
 declare module "*.css";
 
+declare const DiscordNative: any;
+declare const VencordNative: any;
+
+declare module "electron" {
+  export type IpcMainInvokeEvent = unknown;
+  export const net: { fetch(url: string): Promise<Response>; };
+}
+
 declare namespace React {
   type ReactNode = unknown;
 
@@ -62,6 +70,12 @@ declare module "@utils/modal" {
 }
 
 declare module "@utils/types" {
+  export type PluginNative<T extends Record<string, (event: any, ...args: any[]) => any>> = {
+    [K in keyof T]: T[K] extends (event: any, ...args: infer A) => infer R
+      ? (...args: A) => R extends Promise<any> ? R : Promise<R>
+      : never;
+  };
+
   export const OptionType: {
     BOOLEAN: number;
     [key: string]: number;
@@ -98,6 +112,10 @@ declare module "@vencord/discord-types" {
     messageSnapshots?: {
       message: {
         content: string;
+        attachments: {
+          filename: string;
+          url: string;
+        }[];
       };
     }[];
   }
@@ -128,9 +146,11 @@ declare module "@webpack/common" {
   export const Menu: any;
   export const MessageStore: any;
   export const RestAPI: any;
+  export const showToast: (message: string, type?: number) => void;
   export const SelectedChannelStore: any;
   export const SelectedGuildStore: any;
   export const Text: any;
+  export const Toasts: any;
   export const UserProfileActions: any;
   export const UserStore: any;
 }
