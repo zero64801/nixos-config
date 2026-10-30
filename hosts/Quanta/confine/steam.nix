@@ -76,7 +76,7 @@ lib.mkIf config.my.apps.gaming.steam.enable {
         # Socket connect needs the rw bind.
         gamescopeRt.socketPath
 
-        # Real path so the stylix CSS adwsteamgtk injects into steamui/ is seen.
+        # Real path so the stylix CSS steam-restyle injects into steamui/ is seen.
         # .local/share/vulkan stays out, an implicit layer loads into every GPU app.
         ".local/share/Steam"
         ".steam"

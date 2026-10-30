@@ -107,6 +107,21 @@ let
         networkPorts.toHost = [ 6463 ];
       }).networkPorts.toHost == [ 6463 ];
 
+    # A setup runs as root of pasta's namespace, without one it would run on the host.
+    networkSetupsNeedIsolatedNetwork =
+      !(builtins.tryEval (build { networkSetups.tun = "/bin/true"; }).drvPath).success
+      && (builtins.tryEval (build {
+        network = "isolated";
+        networkSetups.tun = "/bin/true";
+      }).drvPath).success;
+
+    # The names become case patterns in the launcher.
+    networkSetupsRejectBadNames =
+      !(builtins.tryEval (build {
+        network = "isolated";
+        networkSetups."a)b" = "/bin/true";
+      }).drvPath).success;
+
     # The a11y bus carries keystrokes, so gui must not drag it in.
     a11yIsOptIn = !bare.a11y && !(perms { profile = [ "gui" ]; }).a11y && (perms { profile = [ "a11y" ]; }).a11y;
 

@@ -3,14 +3,14 @@
   steamDisplayName ? "proton-cachyos-v3",
 }:
 let
-  version = "cachyos-11.0-20260703-slr";
+  version = "cachyos-11.0-20261015-slr";
 in
 util.mkProtonBin {
   pname = "proton-cachyos-v3-bin";
   inherit version steamDisplayName;
 
   url = "https://github.com/CachyOS/proton-cachyos/releases/download/${version}/proton-${version}-x86_64_v3.tar.xz";
-  hash = "sha256-8Y7orUvnFOG0zSqCrMyvmclmy3JInj7d8A2h0Y7RwhE=";
+  hash = "sha256-USZ7wVV069xmGJdtyg6b/pdv7qqLkUkSZEyHiiVIs1o=";
   vdfInternalName = "proton-${version}-x86_64_v3";
 
   description = ''

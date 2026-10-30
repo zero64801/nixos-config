@@ -19,13 +19,13 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "marinara-engine";
-  version = "2.4.1";
+  version = "2.5.1";
 
   src = fetchFromGitHub {
     owner = "Pasta-Devs";
     repo = "Marinara-Engine";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-/SBZZwAFR8ZZAZi0gTOz2jxKPkbxMEGoyTnczmkeauE=";
+    hash = "sha256-TY+04kSwz14hcC6U0YM4Filpm5uv5ng8EVrVA9Khc+w=";
   };
 
   pnpmDeps = fetchPnpmDeps {
@@ -36,7 +36,7 @@ stdenv.mkDerivation (finalAttrs: {
       mkdir -p $out
       sed -i '/^store-dir=/d' .npmrc
     '';
-    hash = "sha256-Dov4Ez7To52j+4MWaNlV5/+fbZDrGFNg70qr6cGPy/0=";
+    hash = "sha256-s19xFQW4rXsRkFENj8DRMyD3xKDmag2+7vT8iteU0g8=";
   };
 
   nativeBuildInputs = [

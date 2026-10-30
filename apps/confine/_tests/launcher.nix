@@ -123,6 +123,10 @@ pkgs.runCommand "confine-launcher-behaviour"
       # A pasta spec string, binding the forward to one host address family.
       networkPorts.fromHost = [ "0.0.0.0/8000" ];
     };
+    tunnelScript = scriptOf {
+      network = "isolated";
+      networkSetups.probe = pkgs.writeShellScript "probe-setup" "true";
+    };
     isolatedX11Script = scriptOf {
       profile = [
         "gui"
@@ -162,6 +166,25 @@ pkgs.runCommand "confine-launcher-behaviour"
     # The info fifo read blocks forever if the launch chain died before bwrap.
     grep -q 'timeout 10 cat "$instance/info"' "$isolatedScript" \
       || fail "the bwrapinfo read is unbounded again"
+
+    # --- network setups -------------------------------------------------------
+    grep -q 'probe) export CONFINE_NETWORK_SETUP_BIN=' "$tunnelScript" \
+      || fail "a declared network setup cannot be selected"
+    # A path planted in the environment would otherwise run outside bwrap.
+    grep -qx 'unset CONFINE_NETWORK_SETUP_BIN' "$tunnelScript" \
+      || fail "an inherited CONFINE_NETWORK_SETUP_BIN is not cleared"
+    # Anything the setup leaves running would otherwise hold the seccomp and info descriptors.
+    setup_line=$(grep -n 'CONFINE_NETWORK_SETUP_BIN:-' "$tunnelScript" | head -1 | cut -d: -f1)
+    seccomp_line=$(grep -n 'exec {confine_seccomp_fd}' "$tunnelScript" | head -1 | cut -d: -f1)
+    [ -n "$setup_line" ] && [ -n "$seccomp_line" ] || fail "could not locate the network setup"
+    [ "$setup_line" -lt "$seccomp_line" ] \
+      || fail "the network setup runs after the sandbox descriptors are open"
+    # resolved's socket would carry lookups around the tunnel.
+    grep '^args=(' "$tunnelScript" | grep -q 'systemd/resolve' \
+      && fail "the resolved socket is bound unconditionally"
+    grep -A1 'if \[ -z "${"$"}{CONFINE_NETWORK_SETUP_BIN:-}" \]; then' "$tunnelScript" \
+      | grep -q -- '--ro-bind-try /run/systemd/resolve' \
+      || fail "the resolved socket is not bound for launches without a network setup"
 
     # --- port specs reach pasta verbatim --------------------------------------
     grep -q -- "-t '0.0.0.0/8000' -u '0.0.0.0/8000'" "$isolatedScript" \
@@ -252,6 +275,12 @@ pkgs.runCommand "confine-launcher-behaviour"
     touch "$XDG_RUNTIME_DIR/confine-shared/marker" "$XDG_RUNTIME_DIR/host-secret"
     export CONFINE_HOSTVAR=host-copied CONFINE_DECLARED=host-loses
     "$offlineApp/bin/env" > observed || fail "the sandbox did not run"
+
+    # A launch that asked for a tunnel must not start without one.
+    CONFINE_NETWORK_SETUP=probe "$offlineApp/bin/env" > refused 2>&1 \
+      && fail "a launch asking for an undeclared network setup started anyway"
+    grep -q 'has no network setup named probe' refused \
+      || fail "an undeclared network setup failed for the wrong reason: $(cat refused)"
 
     # --- xdg-run binds and symlinks -------------------------------------------
     "$offlineApp/bin/ls" "$XDG_RUNTIME_DIR/confine-shared" > rtdir \

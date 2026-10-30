@@ -85,7 +85,10 @@ in
       final.stdenvNoCC.mkDerivation {
         inherit pname version passthru;
 
-        src = final.fetchzip { inherit url hash; };
+        src = final.fetchzip {
+          name = "${pname}-${version}-source";
+          inherit url hash;
+        };
 
         dontUnpack = true;
         dontConfigure = true;

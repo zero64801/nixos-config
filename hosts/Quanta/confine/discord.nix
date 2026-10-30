@@ -1,9 +1,6 @@
 { config, inputs, lib, pkgs, ... }:
 
 let
-  proxy = config.my.apps.vlessProxy;
-  proxied = proxy.enable && proxy.discordWrapper.enable;
-
   nixcordPkgs = inputs.nixcord.packages.${pkgs.stdenv.hostPlatform.system};
 
   # nixcord ships its own Discord, ahead of the one in nixpkgs.
@@ -30,11 +27,10 @@ lib.mkIf config.my.apps.discord.enable {
 
     /*
     Isolated keeps Discord off host loopback, where the llama.cpp servers, the
-    samba share and the libvirt sockets live. The SOCKS port is punched back
-    through for the proxy launcher, which connects to 127.0.0.1 on the host.
+    samba share and the libvirt sockets live. The proxy launcher tunnels the
+    whole namespace, vless-proxy.nix adds the setup it picks.
     */
     network = "isolated";
-    networkPorts.toHost = lib.optional proxied proxy.socks.port;
 
     # The bundled keybind module segfaults the renderer in a loop without an X display.
     # The UI stays on Wayland, X serves only that module.

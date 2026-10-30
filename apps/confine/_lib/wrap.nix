@@ -71,6 +71,13 @@ let
       fromHost = [ ];
     };
     extraPastaArgs = [ ];
+    /*
+    Name to executable, run as root of the isolated namespace before the sandbox
+    when CONFINE_NETWORK_SETUP names it, so one build serves a direct and a
+    tunnelled launcher. It gets CONFINE_INSTANCE for private files and returns
+    once the network is up, whatever it leaves running dies with the sandbox.
+    */
+    networkSetups = { };
     seccomp = {
       enable = true;
       nesting = false;
@@ -181,6 +188,11 @@ let
       throw "confine: symlinks entries must be { link, target } string pairs"
     else if !lib.elem cfg.runtimeDir [ "private" "shared" ] then
       throw "confine: runtimeDir must be private or shared, not ${builtins.toJSON cfg.runtimeDir}"
+    # The names become case patterns in the launcher.
+    else if lib.any (n: builtins.match "[A-Za-z0-9_-]+" n == null) (lib.attrNames cfg.networkSetups) then
+      throw "confine: networkSetups names may only contain letters, digits, dash and underscore"
+    else if cfg.networkSetups != { } && !isolatedNetwork then
+      throw "confine: networkSetups need network = \"isolated\", they run inside pasta's namespace"
     else
       x: x;
   name = if cfg.name != null then cfg.name else package.pname or package.name;
@@ -234,8 +246,14 @@ let
 
   # pasta closes inherited descriptors, so the filter opens on its far side.
   # The seccomp fd is allocated, a fixed number could collide with bash's own.
+  # The setup runs first so nothing it leaves running holds those descriptors.
   innerScript =
-    lib.optionalString cfg.seccomp.enable ''
+    lib.optionalString (cfg.networkSetups != { }) ''
+      if [ -n "''${CONFINE_NETWORK_SETUP_BIN:-}" ]; then
+        "$CONFINE_NETWORK_SETUP_BIN" || exit 1
+      fi
+    ''
+    + lib.optionalString cfg.seccomp.enable ''
       exec {confine_seccomp_fd}<"$CONFINE_FILTER"
     ''
     + "exec bwrap "
@@ -312,11 +330,6 @@ let
       "--ro-bind"
       "/etc"
       "/etc"
-    ]
-    ++ lib.optionals hasNetwork [
-      "--ro-bind-try"
-      "/run/systemd/resolve"
-      "/run/systemd/resolve"
     ]
     ++ lib.optionals cfg.sysfs (
       lib.concatMap (d: [
@@ -402,6 +415,23 @@ let
       trap 'exit 130' INT
       trap 'exit 143' TERM
 
+      # A launch that asked for a tunnel must not quietly start without one.
+      # Only a declared setup may run outside bwrap, never a path from the environment.
+      unset CONFINE_NETWORK_SETUP_BIN
+      case "''${CONFINE_NETWORK_SETUP:-}" in
+        "") ;;
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (
+            n: setup:
+            "${n}) export CONFINE_NETWORK_SETUP_BIN=${lib.escapeShellArg "${setup}"} CONFINE_INSTANCE=\"$instance\" ;;"
+          ) cfg.networkSetups
+        )}
+        *)
+          echo "confine: ${appId} has no network setup named $CONFINE_NETWORK_SETUP" >&2
+          exit 1
+          ;;
+      esac
+
       ${lib.optionalString (isolatedNetwork && cfg.portals) ''
         # pasta adds a PID namespace, so the child-pid bwrap reports means nothing on the host.
         # Match descendants by mnt namespace inode instead.
@@ -444,6 +474,13 @@ let
       ''}
 
       args=(${lib.escapeShellArgs staticArgs})
+
+      ${lib.optionalString hasNetwork ''
+        # resolved answers over a unix socket, which would carry lookups around a network setup's tunnel.
+        if [ -z "''${CONFINE_NETWORK_SETUP_BIN:-}" ]; then
+          args+=(--ro-bind-try /run/systemd/resolve /run/systemd/resolve)
+        fi
+      ''}
 
       # Masks only land on existing paths, the /etc bind is read-only.
       ${lib.concatMapStrings (f: ''

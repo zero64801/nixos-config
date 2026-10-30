@@ -191,6 +191,129 @@ PY
     mv "$tmp_config" "$config_file"
     exec ${lib.getExe pkgs.sing-box} run -c "$config_file"
   '';
+
+  tunMark = 1;
+  tunTable = 100;
+  ip = lib.getExe' pkgs.iproute2 "ip";
+  # Blocks namespaces, mounts and ptrace, none of which sing-box needs.
+  strictFilter = pkgs.callPackage ../confine/_lib/seccomp.nix { } { };
+
+  # A confine network setup: everything the app sends, UDP included, leaves through the VLESS outbound.
+  tunSetup = pkgs.writeShellScript "sing-box-vless-tun" ''
+    set -euo pipefail
+    umask 077
+
+    config="''${CONFINE_INSTANCE:?}/sing-box-tun.json"
+
+    # pasta copies the host's LAN and global v6 addresses in, and the app could read and report them.
+    # sing-box only needs some v4 path out, pasta forwards whatever address the namespace uses.
+    # Done before sing-box starts, an address change under it stalls the connections it has open.
+    uplink=$(${ip} -j -4 route show default | ${lib.getExe pkgs.jq} -r '.[0].dev // empty')
+    if [ -z "$uplink" ]; then
+      echo "sing-box-vless-tun: the namespace has no v4 default route" >&2
+      exit 1
+    fi
+    ${ip} -4 addr flush dev "$uplink"
+    ${ip} addr add 10.0.2.15/24 dev "$uplink"
+    ${ip} route add default via 10.0.2.2 dev "$uplink"
+    if [ -d /proc/sys/net/ipv6 ]; then
+      ${ip} -6 addr flush dev "$uplink" scope global
+    fi
+
+    # The local resolver only looks up the VLESS server itself, its queries carry the mark and leave directly.
+    # The built in Mozilla roots keep the host's certificate store out of the sandbox below.
+    ${lib.getExe pkgs.jq} \
+      -n \
+      --arg dns ${lib.escapeShellArg cfg.tunnelDns} \
+      --argjson mark ${toString tunMark} \
+      --slurpfile outbound ${lib.escapeShellArg cfg.outboundFile} \
+      '
+        ($outbound[0] + { tag: ($outbound[0].tag // "vless-out") }) as $out |
+        {
+          log: { level: "warn", timestamp: true },
+          certificate: { store: "mozilla" },
+          dns: {
+            servers: [
+              { type: "tcp", tag: "tunnel-dns", server: $dns, detour: $out.tag },
+              { type: "local", tag: "local" }
+            ],
+            final: "tunnel-dns",
+            strategy: "ipv4_only"
+          },
+          inbounds: [
+            {
+              type: "tun",
+              tag: "tun-in",
+              interface_name: "tun0",
+              address: [ "172.19.0.1/30" ],
+              stack: "mixed",
+              auto_route: false
+            }
+          ],
+          outbounds: [ $out ],
+          route: {
+            rules: [
+              { action: "sniff" },
+              { protocol: "dns", action: "hijack-dns" }
+            ],
+            final: $out.tag,
+            default_mark: $mark,
+            default_domain_resolver: "local"
+          }
+        }
+      ' > "$config"
+
+    ${lib.getExe pkgs.sing-box} check -c "$config"
+
+    # sing-box parses everything the app sends, so it gets a sandbox of its own.
+    # It keeps pasta's user and network namespaces, the tun and the routing mark need CAP_NET_ADMIN over them.
+    # Left running, it dies with the app's sandbox, which is PID 1 of this namespace.
+    exec {filter_fd}<${strictFilter}
+    ${lib.getExe pkgs.bubblewrap} \
+      --unshare-ipc --unshare-pid --unshare-uts --unshare-cgroup-try \
+      --new-session --clearenv \
+      --cap-drop ALL --cap-add CAP_NET_ADMIN \
+      --seccomp "$filter_fd" \
+      --ro-bind /nix/store /nix/store \
+      --proc /proc \
+      --dev /dev \
+      --dev-bind /dev/net/tun /dev/net/tun \
+      --tmpfs /tmp \
+      --ro-bind-try /etc/resolv.conf /etc/resolv.conf \
+      --ro-bind "$config" /run/sing-box.json \
+      -- ${lib.getExe pkgs.sing-box} run -c /run/sing-box.json </dev/null &
+    sing_box=$!
+    exec {filter_fd}<&-
+
+    up=0
+    for _ in $(${lib.getExe' pkgs.coreutils "seq"} 100); do
+      if [[ $(${ip} -o link show tun0 2>/dev/null) == *,UP* ]]; then
+        up=1
+        break
+      fi
+      kill -0 "$sing_box" 2>/dev/null || break
+      ${lib.getExe' pkgs.coreutils "sleep"} 0.05
+    done
+    if [ "$up" != 1 ]; then
+      echo "sing-box-vless-tun: the tun never came up" >&2
+      exit 1
+    fi
+
+    # Only sing-box's marked sockets keep pasta's routes, the rest enter the tun.
+    # The unreachable fallback outlives the tun, so a crash cuts the app off instead of letting it out directly.
+    ${ip} route add default dev tun0 table ${toString tunTable}
+    ${ip} route add unreachable default metric 4294967295 table ${toString tunTable}
+    ${ip} rule add fwmark ${toString tunMark} lookup main priority 100
+    ${ip} rule add lookup ${toString tunTable} priority 200
+
+    # The tunnel carries no v6, refusing it makes clients fall back to v4 at once.
+    # Skipped only where the kernel has no v6, a failure anywhere else aborts the launch.
+    if [ -d /proc/sys/net/ipv6 ]; then
+      ${ip} -6 route add unreachable default table ${toString tunTable}
+      ${ip} -6 rule add fwmark ${toString tunMark} lookup main priority 100
+      ${ip} -6 rule add lookup ${toString tunTable} priority 200
+    fi
+  '';
 in
 {
   options.my.apps.vlessProxy = {
@@ -224,18 +347,19 @@ in
       description = "Start the proxy automatically at user login instead of on demand.";
     };
 
-    discordWrapper = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Add a separate Discord launcher that uses the local SOCKS5 proxy.";
-      };
+    tunnelDns = lib.mkOption {
+      type = lib.types.str;
+      default = "1.1.1.1";
+      description = "Resolver the tunnelled launcher queries over the VLESS outbound, so lookups do not leak.";
+    };
 
-      stopProxyOnExit = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Stop the user proxy service when the proxied Discord launcher exits.";
-      };
+    discordWrapper.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Add a separate Discord launcher whose whole namespace, voice and
+        screenshare UDP included, is tunnelled through the VLESS outbound.
+      '';
     };
   };
 
@@ -267,53 +391,16 @@ in
     }
 
     (lib.mkIf (cfg.discordWrapper.enable && config.my.apps.discord.enable) {
+      # The voice engine sends its own UDP and ignores Chromium's proxy switch, only a tun catches it.
+      my.confine.apps.discord.networkSetups.vless = tunSetup;
+
       hm.imports = [
         ({ config, lib, pkgs, ... }:
           let
-            proxyUrl = "socks5://${cfg.socks.listen}:${toString cfg.socks.port}";
             nixcordDiscord = "${config.home.profileDirectory}/bin/Discord";
-            stopProxy = lib.optionalString cfg.discordWrapper.stopProxyOnExit ''
-              systemctl --user stop sing-box-vless-socks.service || true
-            '';
             discordProxy = pkgs.writeShellScriptBin "discord-proxy" ''
-              set -euo pipefail
-
-              service="sing-box-vless-socks.service"
-              proxy_host=${lib.escapeShellArg cfg.socks.listen}
-              proxy_port=${toString cfg.socks.port}
-
-              systemctl --user start "$service"
-
-              ready=0
-              for _ in $(${lib.getExe' pkgs.coreutils "seq"} 1 100); do
-                if ${lib.getExe pkgs.netcat-openbsd} -z "$proxy_host" "$proxy_port" 2>/dev/null; then
-                  ready=1
-                  break
-                fi
-                sleep 0.1
-              done
-
-              if [ "$ready" != 1 ]; then
-                systemctl --user status "$service" --no-pager || true
-                exit 1
-              fi
-
-              ${lib.escapeShellArg nixcordDiscord} --proxy-server=${lib.escapeShellArg proxyUrl} "$@" &
-              discord_pid=$!
-
-              cleanup() {
-                if [ -n "''${discord_pid:-}" ]; then
-                  kill "$discord_pid" 2>/dev/null || true
-                fi
-                ${stopProxy}
-              }
-
-              trap cleanup INT TERM EXIT
-              wait "$discord_pid"
-              status=$?
-              trap - INT TERM EXIT
-              ${stopProxy}
-              exit "$status"
+              export CONFINE_NETWORK_SETUP=vless
+              exec ${lib.escapeShellArg nixcordDiscord} "$@"
             '';
           in
           {
@@ -324,7 +411,7 @@ in
             xdg.desktopEntries.discord-proxy = {
               name = "Discord (Proxy)";
               genericName = "Internet Messenger";
-              comment = "Launch Discord through the local VLESS SOCKS5 proxy";
+              comment = "Launch Discord with all of its traffic tunnelled through VLESS";
               exec = "${discordProxy}/bin/discord-proxy";
               icon = "discord";
               terminal = false;

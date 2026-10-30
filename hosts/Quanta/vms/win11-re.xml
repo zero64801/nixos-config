@@ -35,8 +35,8 @@
       <entry name="sku">Default string</entry>
     </chassis>
   </sysinfo>
-  <memory unit="KiB">33554432</memory>
-  <currentMemory unit="KiB">33554432</currentMemory>
+  <memory unit="KiB">67108864</memory>
+  <currentMemory unit="KiB">67108864</currentMemory>
   <memoryBacking>
     <hugepages/>
     <source type="memfd"/>
