@@ -23,7 +23,6 @@ let
 
   emptyPersistence = { directories = [ ]; files = [ ]; users = { }; };
 
-  # tmpfiles bootstraps persist.json, so tolerate an empty file on first boot.
   persistenceConfig =
     if cfg.persistenceConfigFile != null && builtins.pathExists cfg.persistenceConfigFile then
       let raw = builtins.readFile cfg.persistenceConfigFile; in
@@ -61,20 +60,11 @@ let
   allFiles       = (persistenceConfig.files or [ ])       ++ presetFiles;
   allUsers       = persistenceConfig.users or { };
 
-  /*
-  masterPersistence is used only by the persist CLI tool.
-
-  Built exclusively from direct source inputs rather than reading back from
-  config.environment.persistence (which this module writes to). Reading our
-  own output during the NixOS module fixed-point evaluation causes the entire
-  config block to fail to apply, breaking both rollback and bind mounts.
-  */
+  # masterPersistence is built from direct source inputs because reading back config.environment.persistence during the module fixed point breaks rollback and bind mounts.
 
   resolvePath = homeDir: p:
     if lib.hasPrefix "/" p then p else "${homeDir}/${p}";
 
-  # Home entries may be a bare path or an impermanence attrset carrying mode/user/group.
-  # Resolve the relative path inside whichever form.
   resolveEntry = homeDir: entry:
     if builtins.isString entry then
       resolvePath homeDir entry
@@ -163,8 +153,7 @@ let
       previousSnapshot = cfg.btrfs.previousSnapshot;
     in
     ''
-      # The systemd initrd only ships bash, coreutils and btrfs-progs: no sed, grep or awk.
-      # pipefail so a missing tool aborts instead of feeding the loop an empty list (that once left root undeletable and blocked boot).
+      # The systemd initrd ships no sed, grep or awk, and pipefail makes a missing tool abort instead of feeding the loop an empty list.
       set -o pipefail
 
       echo "impermanence: mounting btrfs volume"
@@ -172,7 +161,7 @@ let
       mount ${device} /mnt
 
       echo "impermanence: cleaning up nested subvolumes under ${rootSubvolume}"
-      # Full list (not -o: grandchildren too), prefix strip keeps paths with spaces, reverse sort deletes children before their parents.
+      # The full list rather than -o catches grandchildren, the prefix strip keeps paths with spaces and the reverse sort deletes children before their parents.
       btrfs subvolume list /mnt \
         | while IFS= read -r line; do printf '%s\n' "''${line#* path }"; done \
         | sort -r \
@@ -287,7 +276,6 @@ in
       warnings = optional (cfg.persistenceConfigFile == null)
         "my.impermanence: persistenceConfigFile is unset; persist.json cannot be read under pure evaluation, so only presets apply. Set persistenceConfigFile = ./persist.json;";
 
-      # Owned by the flake user: the file lives in their git working tree.
       systemd.tmpfiles.rules =
         lib.optionals (persistenceConfigPath != null) [
           ''f ${persistenceConfigPath} 0644 ${config.my.flake.user} users - {"directories":[],"files":[],"users":{}}''
@@ -297,22 +285,19 @@ in
     (mkIf cfg.btrfs.enable {
       boot.initrd.systemd.services.impermanence-rollback =
         let
-          # Wait for the backing device itself, not just the unlocker.
-          # Without it the mount can race udev when unlockDevice is unset.
+          # Wait for the backing device itself, not just the unlocker, or the mount can race udev when unlockDevice is unset.
           deviceUnit = "${utils.escapeSystemdPath cfg.btrfs.device}.device";
         in
         {
           description = "Rollback btrfs root to blank snapshot";
           wantedBy    = [ "initrd.target" ];
           before      = [ "sysroot.mount" ];
-          # requiredBy makes a failed rollback stop the boot instead of silently coming up on the stale root.
           requiredBy  = [ "sysroot.mount" ];
           after       = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
           requires    = [ deviceUnit ] ++ optional (cfg.btrfs.unlockDevice != null) cfg.btrfs.unlockDevice;
           unitConfig = {
             DefaultDependencies = "no";
-            # The switch-root isolate re-propagates sysroot.mount's Requires as a fresh start job.
-            # This blocks any second run against the already-mounted root (it would wipe it live).
+            # The switch-root isolate re-propagates sysroot.mount's Requires as a fresh start job, and a second run would wipe the mounted root live.
             ConditionPathIsMountPoint = "!/sysroot";
           };
           serviceConfig = {

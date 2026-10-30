@@ -1,6 +1,3 @@
-/* Port of Flatpak's setup_seccomp() from common/flatpak-run.c. Emits compiled
- * BPF to stdout so the filter is a fixed store path, not rebuilt per launch. */
-
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -54,8 +51,7 @@ block_arg (int errnum, int syscall_nr, struct scmp_arg_cmp arg)
     fail ("seccomp_rule_add", r);
 }
 
-/* _exact avoids the i386 socketcall rewrite that fails open (libseccomp issue #8).
- * Errors ignored as upstream, so under --multiarch this covers the 64-bit arch only. */
+/* _exact avoids the i386 socketcall rewrite that fails open (libseccomp issue #8) and errors are ignored as upstream, so under --multiarch this covers the 64-bit arch only. */
 static void
 block_family (int family)
 {
@@ -108,7 +104,6 @@ main (int argc, char **argv)
   if (ctx == NULL)
     fail ("seccomp_init", ENOMEM);
 
-  /* Without the x86 arch token the filter does not apply to 32-bit binaries. */
   if (multiarch)
     {
       r = seccomp_arch_add (ctx, SCMP_ARCH_X86);
@@ -116,17 +111,17 @@ main (int argc, char **argv)
         fail ("seccomp_arch_add", r);
     }
 
-  block (EPERM, SCMP_SYS (syslog));           /* dmesg */
+  block (EPERM, SCMP_SYS (syslog));
   block (EPERM, SCMP_SYS (uselib));
-  block (EPERM, SCMP_SYS (acct));             /* disabling accounting */
+  block (EPERM, SCMP_SYS (acct));
   block (EPERM, SCMP_SYS (quotactl));
 
-  /* Kernel keyring, which is not namespaced. */
+  /* The kernel keyring is not namespaced. */
   block (EPERM, SCMP_SYS (add_key));
   block (EPERM, SCMP_SYS (keyctl));
   block (EPERM, SCMP_SYS (request_key));
 
-  /* VM and NUMA plumbing with a poor bug history. */
+  /* VM and NUMA plumbing has a poor bug history. */
   block (EPERM, SCMP_SYS (move_pages));
   block (EPERM, SCMP_SYS (mbind));
   block (EPERM, SCMP_SYS (get_mempolicy));
@@ -137,14 +132,13 @@ main (int argc, char **argv)
   if (!multiarch)
     block (EPERM, SCMP_SYS (modify_ldt));
 
-  /* TIOCSTI/TIOCLINUX fake input into the controlling terminal (CVE-2017-5226,
-   * CVE-2023-28100). Blocking them avoids needing --new-session. */
+  /* TIOCSTI/TIOCLINUX fake input into the controlling terminal (CVE-2017-5226, CVE-2023-28100), and blocking them avoids needing --new-session. */
   block_arg (EPERM, SCMP_SYS (ioctl),
              SCMP_A1 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, (int) TIOCSTI));
   block_arg (EPERM, SCMP_SYS (ioctl),
              SCMP_A1 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, (int) TIOCLINUX));
 
-  /* Mount namespace escape route. pressure-vessel and Chromium's zygote need it. */
+  /* These are a mount namespace escape route, which pressure-vessel and Chromium's zygote need. */
   if (!nesting)
     {
       block (EPERM, SCMP_SYS (unshare));
@@ -157,8 +151,7 @@ main (int argc, char **argv)
       block_arg (EPERM, SCMP_SYS (clone),
                  SCMP_A0 (SCMP_CMP_MASKED_EQ, CLONE_NEWUSER, CLONE_NEWUSER));
 
-      /* seccomp cannot inspect clone3()'s struct clone_args. ENOSYS makes
-       * glibc fall back to inspectable clone(). */
+      /* seccomp cannot inspect clone3()'s struct clone_args, and ENOSYS makes glibc fall back to the inspectable clone(). */
       block (ENOSYS, SCMP_SYS (clone3));
 
       /* The new mount API is another mount-table route (CVE-2021-41133). */
@@ -180,8 +173,7 @@ main (int argc, char **argv)
                  SCMP_A0 (SCMP_CMP_NE, PER_LINUX));
     }
 
-  /* Socket families outside this list are refused. Keep it numerically
-   * ordered, the gap walk below depends on it. */
+  /* Keep this list numerically ordered, the gap walk below depends on it. */
   allowed[n_allowed++] = AF_UNSPEC;
   allowed[n_allowed++] = AF_LOCAL;
   allowed[n_allowed++] = AF_INET;

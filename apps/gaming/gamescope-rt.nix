@@ -1,20 +1,6 @@
 { config, lib, pkgs, ... }:
 
-/*
-Grants gamescope realtime scheduling without a user-wide rlimit and
-without capSysNice's setcap wrapper, which aborts inside Steam's
-pressure-vessel container (no_new_privs blocks ambient caps,
-nixpkgs#351516).
-
-A socket-activated helper holds CAP_SYS_NICE. The client connects, then
-execs gamescope on its own pid. The daemon reads that pid from
-SO_PEERCRED (valid across pid namespaces), waits for the exec, verifies
-/proc/<pid>/exe is an allowed gamescope build and applies SCHED_RR.
-Connect-then-exec needs no forks, so Steam's fork-killing launch chain
-and flatpak sandboxes use the same mechanism. Flatpak hosts deploy the
-sandbox client exposed under the gamescopeRt options and grant
-socketPath in the app override.
-*/
+# A socket-activated CAP_SYS_NICE helper replaces capSysNice, whose setcap wrapper aborts inside pressure-vessel because no_new_privs blocks ambient caps (nixpkgs#351516).
 
 let
   cfg = config.my.apps.gaming;
@@ -34,7 +20,7 @@ let
     import time
 
     HOST_PREFIX = "${gamescopeStore}/"
-    # the extension's bin/gamescope is a wrapper script that execs the gamescope-brokey ELF, hence the glob
+    # The extension's bin/gamescope is a wrapper script that execs the gamescope-brokey ELF, hence the glob.
     FLATPAK_GLOB = "${flatpakGamescopeDeploy}*/*/active/files/bin/gamescope*"
     RT_PRIO = 1
     EXEC_WAIT_S = 5.0
@@ -52,8 +38,7 @@ let
 
 
     def exe_allowed(pid):
-        # readlink of /proc/<pid>/exe renders sandbox paths for other mount namespaces, useless against host prefixes.
-        # Opening the magic link reaches the real file and bind mounts keep inode identity, so flatpak gamescope is matched by inode.
+        # readlink renders sandbox paths for other mount namespaces, so flatpak gamescope is matched by the inode the opened magic link reaches.
         try:
             fd = os.open(f"/proc/{pid}/exe", os.O_PATH)
         except OSError:
@@ -87,7 +72,6 @@ let
 
 
     def client_gone(conn):
-        # the client never writes, so a readable socket means EOF
         readable, _, _ = select.select([conn], [], [], 0)
         return bool(readable)
 
@@ -98,7 +82,6 @@ let
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             pid, peer_uid, _ = struct.unpack("3i", creds)
 
-            # pidfd pins the pid against reuse while we wait and apply
             pidfd = os.pidfd_open(pid)
             try:
                 deadline = time.monotonic() + EXEC_WAIT_S
@@ -110,11 +93,10 @@ let
                 if proc_uid(pid) != peer_uid:
                     return
 
-                # RESET_ON_FORK keeps processes gamescope spawns out of the realtime class
                 set_all_threads(
                     pid, os.SCHED_RR | os.SCHED_RESET_ON_FORK, RT_PRIO)
 
-                # re-verify to close the pid-reuse window between the exe check and the sched calls
+                # Re-verify to close the pid reuse window between the exe check and the sched calls.
                 if not exe_allowed(pid):
                     set_all_threads(pid, os.SCHED_OTHER, 0)
             finally:
@@ -131,19 +113,8 @@ let
         threading.Thread(target=handle, args=(client,), daemon=True).start()
   '';
 
-  /*
-  Steam's LD_PRELOAD overlay must not load into gamescope itself: it
-  degrades the compositor over time (gamescope#163). Strip it for
-  gamescope, restore it for the game after the -- separator.
-
-  stage2: under flatpak, pressure-vessel spawns SLR games as a flatpak
-  sub-sandbox whose setup resets DISPLAY to the host X server, bypassing
-  gamescope. stage2 runs as gamescope's child, where DISPLAY is the
-  nested server, and splices `env DISPLAY=:N` after the SLR entry
-  point's -- so the value reapplies inside the container. The nested X
-  socket stays reachable there via its abstract socket in the shared
-  network namespace.
-  */
+  # Steam's LD_PRELOAD overlay degrades gamescope over time (gamescope#163), so it is stripped for gamescope and restored for the game after the -- separator.
+  # Under flatpak the SLR sub-sandbox resets DISPLAY to the host X server, so stage2 runs as gamescope's child and splices env DISPLAY=:N after the SLR entry point's --.
   mkClient = { python, gamescope, envBin }: ''
     #!${python}
     import os
@@ -182,8 +153,7 @@ let
     if game:
         game = [sys.argv[0], "--stage2", *game]
 
-    # The daemon promotes this pid once its exe becomes gamescope.
-    # The fd survives the exec and its close tells the daemon the process died.
+    # The inheritable fd survives the exec so its close tells the daemon the process died.
     try:
         sock = socket.socket(socket.AF_UNIX)
         sock.settimeout(2)
@@ -191,7 +161,7 @@ let
         sock.setblocking(True)
         sock.set_inheritable(True)
     except OSError:
-        pass  # no daemon reachable: run without realtime
+        pass
 
     env = dict(os.environ)
     preload = env.pop("LD_PRELOAD", "")
@@ -239,7 +209,7 @@ in
     };
   };
 
-  # daemon gates on gaming alone: the Steam flatpak needs it with native Steam disabled
+  # The daemon gates on gaming alone because the Steam flatpak needs it with native Steam disabled.
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ client ];
     programs.steam.extraPackages = lib.mkIf cfg.steam.enable [ client ];

@@ -85,7 +85,7 @@ in
 
         home.activation = lib.mkIf (cfg.settings != { }) {
           extraDiscordSettings = config.lib.dag.entryAfter [ "writeBoundary" ] ''
-            # Subshell keeps set -euo pipefail from leaking into later activation entries
+            # The subshell keeps set -euo pipefail from leaking into later activation entries.
             (
               set -euo pipefail
               mkdir -p "${config.programs.nixcord.discord.configDir}"

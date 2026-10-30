@@ -23,7 +23,6 @@ let
   defaults = {
     name = null;
     binaries = null;
-    # Renames the shims to bin/<prefix><name> so a confined and unconfined build of the same package install side by side.
     binPrefix = "";
     profile = [ ];
     network = false;
@@ -42,13 +41,7 @@ let
       ro = [ ];
       rw = [ ];
     };
-    /*
-    { link, target } pairs created inside the sandbox. connect(2) follows them,
-    so this reaches another sandbox's socket. bind(2) does not, a server needs
-    runtimeDir = "shared" instead.
-    */
     symlinks = [ ];
-    # "shared" puts the runtime dir on the host at app/<appId> so sockets the app creates there are reachable by other sandboxes.
     runtimeDir = "private";
     dbus = {
       filter = true;
@@ -71,12 +64,6 @@ let
       fromHost = [ ];
     };
     extraPastaArgs = [ ];
-    /*
-    Name to executable, run as root of the isolated namespace before the sandbox
-    when CONFINE_NETWORK_SETUP names it, so one build serves a direct and a
-    tunnelled launcher. It gets CONFINE_INSTANCE for private files and returns
-    once the network is up, whatever it leaves running dies with the sandbox.
-    */
     networkSetups = { };
     seccomp = {
       enable = true;
@@ -89,7 +76,6 @@ let
     extraBwrapArgs = [ ];
   };
 
-  # Profile lists append rather than replace, derivations are leaves.
   merge =
     a: b:
     a
@@ -106,14 +92,12 @@ let
         bv
     ) b;
 
-  # NixOS /etc is mostly symlinks into /etc/static, partial rebinds break lookups.
   maskedFiles = [
     "/etc/shadow"
     "/etc/gshadow"
   ];
   maskedDirs = [ "/etc/ssh" ];
 
-  # Flatpak's sysfs allowlist, enough for libdrm to map a card node to its PCI device.
   sysfsDirs = [
     "/sys/block"
     "/sys/bus"
@@ -132,19 +116,12 @@ let
     else
       b;
 
-  /*
-  Routes xdg-open through the OpenURI portal, so opening a file or link hands off
-  to the host instead of exec'ing a host app inside the sandbox, where a
-  single-instance handoff over the filtered bus would fail. Only xdg-open and
-  xdg-email are linked, flatpak-spawn means nothing here.
-  */
   xdgPortalOpen = runCommand "confine-xdg-open" { } ''
     mkdir -p $out/bin
     ln -s ${flatpak-xdg-utils}/bin/xdg-open $out/bin/xdg-open
     ln -s ${flatpak-xdg-utils}/bin/xdg-email $out/bin/xdg-email
   '';
 
-  # Flatpak grants these implicitly, single-instance activation and MPRIS need them.
   ownedNames = id: [
     id
     "${id}.*"
@@ -152,7 +129,6 @@ let
   ];
 in
 
-# fix so overriding a confined package reruns the whole wrap.
 lib.fix (
   confine: settings:
 
@@ -175,20 +151,17 @@ let
     # appId is interpolated into the launcher unquoted, so revalidate here.
     else if builtins.match "[A-Za-z0-9][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]+)+" appId == null then
       throw "confine: appId must be reverse-DNS, e.g. com.vendor.App, not ${builtins.toJSON appId}"
-    # The names are interpolated into the launcher's copy loop.
     else if
       lib.any (v: !lib.isString v || builtins.match "[A-Za-z_][A-Za-z0-9_]*" v == null)
         cfg.envPassthrough
     then
       throw "confine: envPassthrough entries must be environment variable names"
-    # The prefix lands in file names and Exec lines.
     else if !lib.isString cfg.binPrefix || builtins.match "[A-Za-z0-9_.-]*" cfg.binPrefix == null then
       throw "confine: binPrefix may only contain letters, digits, dot, dash and underscore"
     else if !lib.all (s: s ? link && s ? target && lib.isString s.link && lib.isString s.target) cfg.symlinks then
       throw "confine: symlinks entries must be { link, target } string pairs"
     else if !lib.elem cfg.runtimeDir [ "private" "shared" ] then
       throw "confine: runtimeDir must be private or shared, not ${builtins.toJSON cfg.runtimeDir}"
-    # The names become case patterns in the launcher.
     else if lib.any (n: builtins.match "[A-Za-z0-9_-]+" n == null) (lib.attrNames cfg.networkSetups) then
       throw "confine: networkSetups names may only contain letters, digits, dash and underscore"
     else if cfg.networkSetups != { } && !isolatedNetwork then
@@ -196,12 +169,9 @@ let
     else
       x: x;
   name = if cfg.name != null then cfg.name else package.pname or package.name;
-  # Carry the wrapped version so the wrapper is not a versionless sibling in closure diffs.
   version = package.version or "";
   confinedName = "${name}-confined" + lib.optionalString (version != "") "-${version}";
 
-  # "isolated" runs a pasta userspace stack, host loopback and other host subnets are unreachable but the LAN still routes.
-  # Booleans mean none/host.
   networkMode =
     if lib.isBool cfg.network then
       (if cfg.network then "host" else "none")
@@ -213,17 +183,12 @@ let
   isolatedNetwork = networkMode == "isolated";
   hasNetwork = networkMode != "none";
 
-  /*
-  Controls what $HOME contains, the path is never relocated like Flatpak's
-  ~/.var/app. Booleans are rejected, "home = false" would read as no home.
-  */
   homeMode =
     if lib.elem cfg.home [ "private" "ephemeral" "host" ] then
       cfg.home
     else
       throw "confine: home must be private, ephemeral or host, not ${builtins.toJSON cfg.home}";
 
-  # A misspelled permission would otherwise silently skip a restriction.
   unknownKeys = lib.subtractLists (lib.attrNames defaults ++ [ "package" "appId" ]) (
     lib.attrNames settings
   );
@@ -232,7 +197,6 @@ let
     ports:
     if ports == [ ] then
       "none"
-    # Strings pass through in pasta's own form, "ADDR/PORT" binds a forward to one host address family.
     else if lib.all (p: lib.isInt p || lib.isString p) ports then
       lib.concatMapStringsSep "," toString ports
     else
@@ -244,9 +208,7 @@ let
   useProxy = cfg.dbus.filter;
   isolatedX11 = cfg.x11 == "isolated";
 
-  # pasta closes inherited descriptors, so the filter opens on its far side.
-  # The seccomp fd is allocated, a fixed number could collide with bash's own.
-  # The setup runs first so nothing it leaves running holds those descriptors.
+  # pasta closes inherited descriptors, so the filter and info fds open on its far side, after the setup so nothing it leaves running holds them.
   innerScript =
     lib.optionalString (cfg.networkSetups != { }) ''
       if [ -n "''${CONFINE_NETWORK_SETUP_BIN:-}" ]; then
@@ -275,10 +237,6 @@ let
     ++ map (n: "--talk=${n}") (lib.unique cfg.dbus.system.talk)
     ++ map (n: "--call=${n}") (lib.unique cfg.dbus.system.call);
 
-  /*
-  From flatpak_run_add_a11y_dbus_args() in common/flatpak-run-dbus.c. The a11y
-  bus carries keystrokes, so per-method rules rather than a talk rule.
-  */
   a11yProxyArgs = [
     "--filter"
     "--sloppy-names"
@@ -312,18 +270,14 @@ let
       "/dev"
       "--tmpfs"
       "/tmp"
-      # Some programs scratch in /var/tmp and fail when it does not exist.
       "--tmpfs"
       "/var/tmp"
-      # Only named /run paths exist inside, keeping /run/wrappers setuid out.
       "--ro-bind"
       "/nix/store"
       "/nix/store"
-      # -try so this works where no NixOS system profile exists.
       "--ro-bind-try"
       "/run/current-system"
       "/run/current-system"
-      # Keeps the booted generation resolving after a rebuild.
       "--ro-bind-try"
       "/run/booted-system"
       "/run/booted-system"
@@ -389,7 +343,6 @@ let
       instance_id=$$
       instance="$runtime_dir/confine/${appId}.$instance_id"
       flatpak_dir="$runtime_dir/.flatpak/$instance_id"
-      # A pid can be reused, clear anything a previous run left behind.
       rm -rf "$instance"
       mkdir -p "$instance"
       chmod 700 "$instance"
@@ -407,7 +360,6 @@ let
         done
         rm -rf "$instance" "$flatpak_dir"
         ${lib.optionalString useWaylandProxy ''
-          # The proxy socket lives in the runtime dir, not the instance dir.
           rm -f "$runtime_dir/confine-${appId}.$instance_id"
         ''}
       }
@@ -415,7 +367,6 @@ let
       trap 'exit 130' INT
       trap 'exit 143' TERM
 
-      # A launch that asked for a tunnel must not quietly start without one.
       # Only a declared setup may run outside bwrap, never a path from the environment.
       unset CONFINE_NETWORK_SETUP_BIN
       case "''${CONFINE_NETWORK_SETUP:-}" in
@@ -433,8 +384,7 @@ let
       esac
 
       ${lib.optionalString (isolatedNetwork && cfg.portals) ''
-        # pasta adds a PID namespace, so the child-pid bwrap reports means nothing on the host.
-        # Match descendants by mnt namespace inode instead.
+        # pasta adds a PID namespace, so bwrap's child-pid is replaced by the descendant whose mnt namespace inode matches.
         resolve_host_pid() {
           local info="$flatpak_dir/bwrapinfo.json" want frontier next pid kid _try
           want=$(sed -n 's/.*"mnt-namespace": *\([0-9]*\).*/\1/p' "$info")
@@ -465,7 +415,6 @@ let
       ''}
 
       ${lib.optionalString cfg.portals ''
-        # xdg-desktop-portal reads /proc/<peer>/root/.flatpak-info, and the bus peer it sees is the proxy, so the proxy needs this before starting.
         printf '[Application]\nname=%s\n\n[Instance]\ninstance-id=%s\nsession-bus-proxy=%s\nsystem-bus-proxy=%s\n' \
           ${lib.escapeShellArg appId} "$instance_id" \
           ${lib.escapeShellArg (lib.boolToString useProxy)} \
@@ -494,9 +443,7 @@ let
         fi
       '') maskedDirs}
 
-      # --clearenv strips everything, a missing var crashes deep inside GTK or Qt.
-      # Host plugin trees (QT_PLUGIN_PATH, GTK_PATH, QML2_IMPORT_PATH) stay out, mismatched toolkit plugins crash apps.
-      # GIO_EXTRA_MODULES stays out so GSettings falls back to the keyfile backend inside the sandbox.
+      # Host plugin trees (QT_PLUGIN_PATH, GTK_PATH, QML2_IMPORT_PATH, GIO_EXTRA_MODULES) stay out because mismatched toolkit plugins crash apps and GSettings must fall back to the keyfile backend.
       for var in TERM LANG LOCALE_ARCHIVE TZDIR TERMINFO_DIRS \
                  XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP \
                  DESKTOP_SESSION XDG_CONFIG_DIRS XDG_MENU_PREFIX \
@@ -516,8 +463,6 @@ let
       done
 
       ${lib.optionalString cfg.gpu ''
-        # Multi GPU host policy: the session env pins the default card and offload wrappers override it per command.
-        # Stripped, Vulkan apps enumerate every card and ignore the host default.
         for var in __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE \
                    VK_DRIVER_FILES VK_ICD_FILENAMES LIBVA_DRIVER_NAME DRI_PRIME \
                    __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME \
@@ -530,7 +475,6 @@ let
       ''}
 
       ${lib.optionalString (cfg.envPassthrough != [ ]) ''
-        # App declared copies of host vars whose value is only known at launch.
         for var in ${lib.escapeShellArgs cfg.envPassthrough}; do
           value=''${!var:-}
           if [ -n "$value" ]; then
@@ -550,8 +494,6 @@ let
       ${
         if cfg.runtimeDir == "shared" then
           ''
-            # bind(2) refuses to create a socket at a name that exists, symlinks included.
-            # A server's socket is only shareable by backing the directory it writes to with a host one.
             mkdir -p "$runtime_dir/app/${appId}"
             chmod 700 "$runtime_dir/app/${appId}"
             args+=(--bind "$runtime_dir/app/${appId}" "$runtime_dir")
@@ -563,7 +505,7 @@ let
       }
 
       # Last, the final --setenv wins in bwrap and declared env outranks host values.
-      # Always quoted, escapeShellArgs leaves commas bare and those read as element separators inside an array.
+      # Always quoted, escapeShellArgs leaves commas bare and shellcheck fails the build on them inside an array (SC2054).
       args+=(${
         lib.concatMapStringsSep " " (s: "'${lib.replaceStrings [ "'" ] [ "'\\''" ] s}'") (
           lib.concatMap (n: [
@@ -574,10 +516,7 @@ let
         )
       })
 
-      # The per-app runtime dir Flatpak apps expect, single-instance locks and RPC sockets live here.
-      # Shared across instances, so kept on exit.
       mkdir -p "$runtime_dir/app/${appId}"
-      # The default umask would leave per-app state readable by other apps.
       chmod 700 "$runtime_dir/app/${appId}"
       args+=(--bind "$runtime_dir/app/${appId}" "$runtime_dir/app/${appId}")
 
@@ -590,7 +529,6 @@ let
           ''
         else if homeMode == "ephemeral" then
           ''
-            # A dir on the sandbox root, writable and gone on exit.
             args+=(--dir "$HOME")
           ''
         else
@@ -600,7 +538,6 @@ let
       }
 
       ${lib.optionalString (cfg.binds.ro != [ ] || cfg.binds.rw != [ ]) ''
-        # Relative paths resolve against the real home, xdg-run/ against the runtime directory.
         add_bind() {
           local mode=$1 from=$2 to=$3 src dest
           case "$from" in
@@ -635,7 +572,6 @@ let
       ''}
 
       ${lib.optionalString (cfg.symlinks != [ ]) ''
-        # connect(2) follows these, so they reach a socket in a bound directory.
         add_symlink() {
           local target=$1 link=$2 dest
           case "$link" in
@@ -654,7 +590,6 @@ let
       ${lib.optionalString (cfg.devices != [ ]) ''
         add_devices() {
           local pattern=$1 dev matches
-          # nullglob so an unmatched pattern expands to nothing.
           shopt -s nullglob
           # shellcheck disable=SC2206 # the pattern is a glob on purpose
           matches=($pattern)
@@ -696,8 +631,7 @@ let
       ''}
 
       ${lib.optionalString useWaylandProxy ''
-        # Withholds zwlr_data_control_manager_v1, unfocused clipboard reads that KWin's blacklist misses.
-        # Opt-in, it also drops fractional scaling.
+        # Withholds zwlr_data_control_manager_v1, whose unfocused clipboard reads KWin's blacklist misses, and stays off by default because it drops fractional scaling.
         wayland_socket=confine-${appId}.$instance_id
         wayland-proxy-virtwl --wayland-display="$wayland_socket" &
         wayland_proxy_pid=$!
@@ -721,7 +655,6 @@ let
       ''}
 
       ${lib.optionalString isolatedX11 ''
-        # The host X server would let the app read every window's keystrokes.
         # --unshare-net matters, abstract X sockets are scoped by network namespace.
         x11_dir="$instance/X11"
         mkdir -p "$x11_dir"
@@ -743,7 +676,6 @@ let
         )
 
         ${lib.optionalString cfg.gpu ''
-          # Without the GPU Xwayland falls back to software and offers no GLX visual.
           satellite_args+=(
             --dev-bind-try /dev/dri /dev/dri
             --ro-bind-try /run/opengl-driver /run/opengl-driver
@@ -820,7 +752,6 @@ let
               proxy_args+=(unix:path=/run/dbus/system_bus_socket "$instance/system-bus" ${lib.escapeShellArgs systemProxyArgs})
             ''}
             ${lib.optionalString useA11y ''
-              # xdg-dbus-proxy takes several bus triples in one invocation.
               a11y_address=''${AT_SPI_BUS_ADDRESS:-}
               if [ -z "$a11y_address" ]; then
                 a11y_address=$(dbus-send --session --print-reply=literal \
@@ -913,7 +844,6 @@ let
         # --no-map-gw and the outbound pin close the other routes.
         pasta_args=(
           --config-net --no-map-gw --quiet
-          # Quoted because several ports render as a comma list.
           -t '${portSpec cfg.networkPorts.fromHost}' -u '${portSpec cfg.networkPorts.fromHost}'
           -T '${portSpec cfg.networkPorts.toHost}'   -U '${portSpec cfg.networkPorts.toHost}'
           ${lib.escapeShellArgs cfg.extraPastaArgs}
@@ -928,7 +858,6 @@ let
         fi
       ''}
 
-      # Last so extraBwrapArgs can override anything generated above.
       args+=(${lib.escapeShellArgs cfg.extraBwrapArgs})
 
       # shellcheck disable=SC2016 # the inner script must not expand out here
@@ -942,15 +871,13 @@ let
       ${
         if cfg.portals then
           ''
-            # The portal resolves instance-id to bwrapinfo.json and opens a pidfd on child-pid.
-            # Since 1.19 a missing file fails the whole lookup.
+            # The portal opens a pidfd on child-pid from the instance's bwrapinfo.json, and since 1.19 a missing file fails the whole lookup.
             mkdir -p "$flatpak_dir"
             mkfifo -m 600 "$instance/info"
 
             "''${launch[@]}"${closeSyncFd} &
             launch_pid=$!
 
-            # The fifo blocks until bwrap opens it, timeout guards a chain that died first.
             if ! timeout 10 cat "$instance/info" > "$flatpak_dir/bwrapinfo.json"; then
               echo "confine: the sandbox never started" >&2
               exit 1
@@ -974,7 +901,6 @@ let
   binaryList =
     if cfg.binaries == null then ''$(cd "${package}/bin" && ls)'' else lib.escapeShellArgs cfg.binaries;
 
-  # "sandbox-" reads as "sandbox" in menu entry names.
   binPrefixLabel =
     let
       m = builtins.match "(.*[A-Za-z0-9])[-_.]*" cfg.binPrefix;
@@ -1003,7 +929,6 @@ checked (runCommand confinedName
       ) (lib.functionArgs (package.override or (x: x)));
 
       overrideAttrs = f: confineAgain (package.overrideAttrs f);
-      # The rules the proxy enforces, with the app's own names folded in.
       dbusArgs = {
         session = sessionProxyArgs;
         system = systemProxyArgs;
@@ -1013,7 +938,6 @@ checked (runCommand confinedName
   ''
     mkdir -p "$out/bin"
 
-    # The held back trees all contain launch paths of their own.
     for entry in ${package}/*; do
       case "$(basename "$entry")" in
         bin|share|etc) ;;
@@ -1032,7 +956,6 @@ checked (runCommand confinedName
     fi
 
     # foot keeps terminfo in a separate output, losing it breaks terminals inside.
-    # Only the top level merges, nested collisions still lose files.
     ${lib.concatMapStrings (o: ''
       if [ -d ${package.${o}}/share ]; then
         mkdir -p "$out/share"
@@ -1073,7 +996,6 @@ checked (runCommand confinedName
       chmod +x "$out/bin/${cfg.binPrefix}$bin"
     done
 
-    # Launchers must reach the wrapper, never the store path behind it.
     if [ -d ${package}/share/applications ]; then
       mkdir -p "$out/share/applications"
       entries=(${package}/share/applications/*.desktop)
@@ -1089,11 +1011,9 @@ checked (runCommand confinedName
         cp "$desktop" "$dest"
         chmod +w "$dest"
         for bin in "''${binaries[@]}"; do
-          # '#' delimits because the pattern itself alternates on '|'.
           sed -i -E "s#^(Exec|TryExec)=([^ ]*/)?$bin([[:space:]]|\$)#\1=$out/bin/${cfg.binPrefix}$bin\3#" "$dest"
         done
         ${lib.optionalString (cfg.binPrefix != "") ''
-          # Tells the confined menu entry apart from the unconfined one.
           sed -i "0,/^Name=/s/^Name=\(.*\)/Name=\1 (${binPrefixLabel})/" "$dest"
         ''}
       done

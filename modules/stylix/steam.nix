@@ -3,7 +3,6 @@
 let
   stylixEnabled = config.my.stylix.enable;
 
-  # Pinned: adwsteamgtk fetched the latest release at activation, and 4.4 renamed every color variable.
   adwaitaForSteam = pkgs.fetchFromGitHub {
     owner = "tkashkin";
     repo = "Adwaita-for-Steam";
@@ -11,7 +10,6 @@ let
     hash = "sha256-wH0z2LZ94j5ErRI40f9IRBJXJ6yuL+NLgjmj9G8odxU=";
   };
 
-  # !important so the palette also wins over a color theme that sets its own.
   customCss =
     let
       colors = config.hm.lib.stylix.colors;
@@ -81,14 +79,6 @@ let
       }
     '';
 
-  /*
-  Steam updates re-extract steamui/ and wipe the injected CSS, so the theme
-  needs reapplying (`steam-restyle`, then restart Steam). Steam presence is
-  detected at run time, not from nix options, so it works no matter how Steam
-  was installed. Installation paths, not data dirs: app data (~/.var,
-  persisted here) outlives an uninstall, while the deploy dir under
-  flatpak/app only exists while installed.
-  */
   steamRestyle = pkgs.writeShellScriptBin "steam-restyle" ''
     set -u
     if [ ! -x /run/current-system/sw/bin/steam ] \
@@ -98,19 +88,18 @@ let
       exit 0
     fi
 
-    # With no Steam directory at all the installer exits non-zero, which would fail activation on a fresh install.
     if [ ! -d "$HOME/.steam/steam/steamui" ] \
       && [ ! -d "$HOME/.var/app/com.valvesoftware.Steam/.steam/steam/steamui" ]; then
       echo "Steam has not unpacked its UI yet; nothing to theme." >&2
       exit 0
     fi
 
-    # The installer copies its own tree with modes intact, from the store that leaves a skin the next run cannot replace.
+    # The installer copies its own tree with modes intact, so running it from the store leaves a skin the next run cannot replace.
     work=$(${pkgs.coreutils}/bin/mktemp -d)
     trap '${pkgs.coreutils}/bin/rm -rf "$work"' EXIT
     ${pkgs.coreutils}/bin/cp -r --no-preserve=mode ${adwaitaForSteam} "$work/adwaita-for-steam"
 
-    # It exits 0 when a target fails, so its own error line counts as failure too.
+    # The installer exits 0 when a target fails, so its own error line counts as failure too.
     if out=$(cd "$work/adwaita-for-steam" \
         && ${pkgs.coreutils}/bin/timeout 60s ${lib.getExe pkgs.python3} install.py --custom-css ${customCss} 2>&1) \
       && ! printf '%s' "$out" | ${pkgs.gnugrep}/bin/grep -qE 'Failed to install|Traceback'; then

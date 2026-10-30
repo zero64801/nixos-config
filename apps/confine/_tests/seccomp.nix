@@ -1,5 +1,4 @@
 # nix build --impure --no-link --expr 'import ./apps/confine/_tests/seccomp.nix { }'
-# The "none" column proves a change comes from the filter, not unprivileged refusal.
 {
   pkgs ? import <nixpkgs> { },
 }:
@@ -17,17 +16,14 @@ let
     strict = mkFilter { };
     nesting = mkFilter { nesting = true; };
     devel = mkFilter { devel = true; };
-    # A second arch token changes which rules libseccomp will accept at all.
     steam = mkFilter {
       nesting = true;
       multiarch = true;
       bluetooth = true;
     };
-    # The one escape hatch whose effect a probe can actually observe here.
     can = mkFilter { can = true; };
   };
 
-  # nesting must reopen only the namespace group, devel only the debugging group.
   expected = ''
     none          keyctl        ok
     none          userns        ok

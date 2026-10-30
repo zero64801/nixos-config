@@ -195,19 +195,16 @@ PY
   tunMark = 1;
   tunTable = 100;
   ip = lib.getExe' pkgs.iproute2 "ip";
-  # Blocks namespaces, mounts and ptrace, none of which sing-box needs.
   strictFilter = pkgs.callPackage ../confine/_lib/seccomp.nix { } { };
 
-  # A confine network setup: everything the app sends, UDP included, leaves through the VLESS outbound.
   tunSetup = pkgs.writeShellScript "sing-box-vless-tun" ''
     set -euo pipefail
     umask 077
 
     config="''${CONFINE_INSTANCE:?}/sing-box-tun.json"
 
-    # pasta copies the host's LAN and global v6 addresses in, and the app could read and report them.
-    # sing-box only needs some v4 path out, pasta forwards whatever address the namespace uses.
-    # Done before sing-box starts, an address change under it stalls the connections it has open.
+    # pasta copies the host's LAN and global v6 addresses in, so they are replaced to keep the app from reading and reporting them.
+    # This runs before sing-box starts because an address change under it stalls the connections it has open.
     uplink=$(${ip} -j -4 route show default | ${lib.getExe pkgs.jq} -r '.[0].dev // empty')
     if [ -z "$uplink" ]; then
       echo "sing-box-vless-tun: the namespace has no v4 default route" >&2
@@ -220,7 +217,6 @@ PY
       ${ip} -6 addr flush dev "$uplink" scope global
     fi
 
-    # The local resolver only looks up the VLESS server itself, its queries carry the mark and leave directly.
     # The built in Mozilla roots keep the host's certificate store out of the sandbox below.
     ${lib.getExe pkgs.jq} \
       -n \
@@ -265,8 +261,7 @@ PY
 
     ${lib.getExe pkgs.sing-box} check -c "$config"
 
-    # sing-box parses everything the app sends, so it gets a sandbox of its own.
-    # It keeps pasta's user and network namespaces, the tun and the routing mark need CAP_NET_ADMIN over them.
+    # sing-box keeps pasta's user and network namespaces because the tun and the routing mark need CAP_NET_ADMIN over them.
     # Left running, it dies with the app's sandbox, which is PID 1 of this namespace.
     exec {filter_fd}<${strictFilter}
     ${lib.getExe pkgs.bubblewrap} \
@@ -299,15 +294,12 @@ PY
       exit 1
     fi
 
-    # Only sing-box's marked sockets keep pasta's routes, the rest enter the tun.
     # The unreachable fallback outlives the tun, so a crash cuts the app off instead of letting it out directly.
     ${ip} route add default dev tun0 table ${toString tunTable}
     ${ip} route add unreachable default metric 4294967295 table ${toString tunTable}
     ${ip} rule add fwmark ${toString tunMark} lookup main priority 100
     ${ip} rule add lookup ${toString tunTable} priority 200
 
-    # The tunnel carries no v6, refusing it makes clients fall back to v4 at once.
-    # Skipped only where the kernel has no v6, a failure anywhere else aborts the launch.
     if [ -d /proc/sys/net/ipv6 ]; then
       ${ip} -6 route add unreachable default table ${toString tunTable}
       ${ip} -6 rule add fwmark ${toString tunMark} lookup main priority 100
@@ -391,7 +383,7 @@ in
     }
 
     (lib.mkIf (cfg.discordWrapper.enable && config.my.apps.discord.enable) {
-      # The voice engine sends its own UDP and ignores Chromium's proxy switch, only a tun catches it.
+      # The voice engine sends its own UDP and ignores Chromium's proxy switch, so only a tun catches it.
       my.confine.apps.discord.networkSetups.vless = tunSetup;
 
       hm.imports = [

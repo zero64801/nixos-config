@@ -7,7 +7,6 @@ let
   vfioCfg = config.my.virtualisation.desktop.vfio;
   lgEnabled = config.my.virtualisation.desktop.looking-glass.enable or false;
 
-  # "01:00.0" or "0000:01:00.0" -> XPath predicate on a hostdev's source address, matching libvirt's own 0x formatting.
   pciPredicate = addr:
     let
       parts = lib.splitString ":" addr;
@@ -46,7 +45,6 @@ let
     ++ [ m.extraEdits ]
   );
 
-  # A domain may override any field of any mode; null means inherit the global mode.
   effectiveMode = dom: name:
     let
       base = cfg.modes.${name};
@@ -82,7 +80,6 @@ let
       MODES="${concatStringsSep " " (lib.attrNames cfg.modes)}"
       DEFAULT_MODE="${cfg.defaultMode}"
       NS=(-N qemu=http://libvirt.org/schemas/domain/qemu/1.0)
-      # Global so the EXIT trap can see it after cmd_start returns.
       TMPXML=""
       trap '[ -n "$TMPXML" ] && rm -f "$TMPXML"' EXIT
 
@@ -124,14 +121,12 @@ let
         esac
       }
 
-      # Persistent definition plus the mode's edits, on stdout.
       render_xml() {
         local dom="$1" mode="$2"
         mode_vars "$dom" "$mode"
         local xml
         xml=$(virsh dumpxml "$dom" --inactive --security-info)
         if [ "''${#EDITS[@]}" -eq 0 ]; then printf '%s\n' "$xml"; return; fi
-        # A mode that sets a video model needs a video element to edit; libvirt XMLs without one get a bare model.
         if [ -n "$VIDEO" ] && [ "$(printf '%s' "$xml" | xmlstarlet sel "''${NS[@]}" -t -v 'count(/domain/devices/video)')" = 0 ]; then
           xml=$(printf '%s' "$xml" | xmlstarlet ed "''${NS[@]}" -s /domain/devices -t elem -n video -v "" \
             -s "/domain/devices/video[last()]" -t elem -n model -v "" \
@@ -191,7 +186,6 @@ let
           echo "vm-gpu: starting $dom ($mode, transient definition; persistent XML untouched)"
           virsh create "$TMPXML" ''${paused:+--paused}
         fi
-        # A one-shot override is spent only by a start that actually happened.
         [ "$used_once" = 1 ] && rm -f "$OVERRIDE_DIR/$dom"
       }
 
@@ -310,7 +304,6 @@ in
   };
 
   config = mkIf cfg.enable {
-    # passthrough = the definition as written; virtual = the same guest on an emulated display, derived from what the host declares.
     my.virtualisation.gpuMode.modes = {
       passthrough = { };
       virtual = {

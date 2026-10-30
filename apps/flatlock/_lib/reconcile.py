@@ -382,7 +382,6 @@ def reconcile(manifest, scope, state_dir, override_dir):
     def progress(ref):
         nonlocal done
         done += 1
-        # EXTEND_TIMEOUT keeps a long download from tripping TimeoutStartSec
         sd_notify(
             f"STATUS=Reconciling {ref} ({done}/{total})",
             "EXTEND_TIMEOUT_USEC=1800000000",

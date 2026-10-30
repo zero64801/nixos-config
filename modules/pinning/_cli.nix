@@ -67,7 +67,6 @@ writeShellApplication {
       lock_file | jq --arg k "$node_key" '.nodes[$k]'
     }
 
-    # Stale pins: a missing lock node must yield empty output, not kill the script via set -e.
     get_locked_rev() {
       local input="$1"
       get_locked_node "$input" | jq -r '.locked.rev // empty' || true
@@ -674,8 +673,6 @@ writeShellApplication {
       report_subflakes
     }
 
-    # Report-only: sub-flakes pin their inputs through their own committed flake.lock, outside pins.json and `pin update`.
-    # Listing them here keeps check honest about what it does not manage.
     report_subflakes() {
       local lock dir line
       local found=false
@@ -731,8 +728,6 @@ writeShellApplication {
       jq '.' "$PINS_FILE"
     }
 
-    # Content pins: sources.json files next to modules, consumed via pkgs.util.importPins.
-    # Entries: {owner, repo, rev, hash, ref?, frozen?}.
     sources_files() {
       git -C "$FLAKE_PATH" ls-files --cached --others --exclude-standard -- '*sources.json' 2>/dev/null \
         | while IFS= read -r f; do echo "$FLAKE_PATH/$f"; done

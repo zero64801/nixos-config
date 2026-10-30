@@ -1,5 +1,3 @@
-/* One syscall per run, so no probe can affect the next. */
-
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -57,8 +55,7 @@ main (int argc, char **argv)
   else if (strcmp (argv[1], "userns") == 0)
     rc = unshare (CLONE_NEWUSER);
   else if (strcmp (argv[1], "clone3") == 0)
-    /* Unfiltered this is EINVAL, the filter answers ENOSYS so libc falls
-     * back to clone(). */
+    /* Unfiltered this is EINVAL, the filter answers ENOSYS so libc falls back to clone(). */
     rc = syscall (SYS_clone3, NULL, 0);
   else if (strcmp (argv[1], "tiocsti") == 0)
     rc = ioctl (0, TIOCSTI, "x");
@@ -66,8 +63,7 @@ main (int argc, char **argv)
     rc = socket (AF_PACKET, SOCK_DGRAM, 0);
   else if (strcmp (argv[1], "socket_inet") == 0)
     rc = socket (AF_INET, SOCK_STREAM, 0);
-  /* No bluetooth probe: the build sandbox's network namespace refuses
-   * AF_BLUETOOTH, so every variant would answer EAFNOSUPPORT. */
+  /* No bluetooth probe, the build sandbox's network namespace refuses AF_BLUETOOTH so every variant would answer EAFNOSUPPORT. */
   else if (strcmp (argv[1], "socket_can") == 0)
     rc = socket (AF_CAN, SOCK_RAW, 1 /* CAN_RAW */);
   else if (strcmp (argv[1], "ptrace") == 0)

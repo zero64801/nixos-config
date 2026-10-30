@@ -10,12 +10,7 @@ let
         paths = lib.attrValues (lib.filterAttrs (_: v: lib.isDerivation v) pkgs.scx);
       };
 
-  /*
-  This runs passwordless via polkit for wheel, so nothing from argv may
-  reach root execution unvalidated: the game profile is baked in at build
-  time and apply only accepts basenames resolved inside scx-env.
-  pkexec scrubs PATH, external binaries must be absolute store paths.
-  */
+  # This runs passwordless via polkit for wheel, so nothing from argv may reach root execution unvalidated and pkexec's scrubbed PATH needs absolute store paths.
   scx-switch = pkgs.writeShellScriptBin "scx-switch" ''
     set -f
     if [ "$EUID" -ne 0 ]; then
@@ -26,8 +21,7 @@ let
     stop_all() {
       systemctl stop scx 2>/dev/null || true
       systemctl stop scx-manual 2>/dev/null || true
-      # A dead scx-manual left loaded blocks creating the next one.
-      # Failed units clear with reset-failed, a leftover transient fragment only goes away by deleting it and reloading.
+      # A dead scx-manual blocks creating the next one, and a leftover transient fragment only goes away by deleting it and reloading.
       systemctl reset-failed scx-manual 2>/dev/null || true
       if [ -e /run/systemd/transient/scx-manual.service ]; then
         rm -f /run/systemd/transient/scx-manual.service
@@ -43,9 +37,7 @@ let
                   "$@"
     }
 
-    # Game EPP bias lives here since gamemoded's global governor flip is disabled: it stomped VM-claimed cores and a performance governor rejects every other EPP write.
-    # Cores with claims stay untouched, the pinning hook owns their EPP.
-    # The claim glob needs set +f, the script runs under noglob.
+    # Cores with VM claims stay untouched because the pinning hook owns their EPP.
     set_epp_unclaimed() {
       local claimed c
       claimed=" $(set +f; ${pkgs.coreutils}/bin/cat ${vmClaimDir}/* 2>/dev/null | ${pkgs.coreutils}/bin/tr '\n' ' ' || true) "
@@ -91,7 +83,7 @@ let
           echo "Scheduler binary not found: $BINARY"
           exit 1
         fi
-        # flags word-split intentionally: the GUI passes them as one string
+        # Flags word-split intentionally because the GUI passes them as one string.
         FLAGS="''${*:3}"
         stop_all
         run_manual "$BINARY" $FLAGS

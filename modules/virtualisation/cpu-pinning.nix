@@ -25,21 +25,14 @@ let
           ;;
   '') cfg.modes);
 
-  /*
-  Shared shell layer for the hook and the root helper. Host CPU ownership is
-  tracked through marker files under /run so concurrent VMs never clobber each
-  other's isolation: every recompute derives the host set from the union of
-  running claims instead of assuming it owns the whole machine.
-  */
   helpers = ''
-    # libvirt's hook PATH has no util-linux (flock)
+    # libvirt runs hooks with a PATH that lacks util-linux and its flock.
     export PATH="${lib.makeBinPath [ pkgs.util-linux pkgs.coreutils ]}:$PATH"
 
     STATE_DIR=/var/lib/my/vm-mode
     OVERRIDE_DIR=/run/my/vm-mode
     RUN_DIR=${cfg.claimDir}
 
-    # One-shot override (vm-mode --once) wins over the persistent state file.
     mode_of() {
       local m
       m=$(cat "$OVERRIDE_DIR/$1" 2>/dev/null || true)
@@ -67,7 +60,6 @@ ${modeCase}
     host_allowed_list() {
       local claimed f c out=""
       # The glob fails with no claims left, and under set -e that must not kill the cleanup.
-      # It only survives today through a subshell quirk.
       claimed=" $(cat "$RUN_DIR"/* 2>/dev/null | tr '\n' ' ' || true) "
       # nproc alone reports the caller affinity, and the hook runs inside an already restricted slice, which shrank the recomputed host set once.
       for c in $(seq 0 $(($(nproc --all) - 1))); do
@@ -96,7 +88,6 @@ ${modeCase}
       done
     }
 
-    # Keep device interrupts off the guest's cores while it runs.
     irq_steer() {
       local csv f c mask=0
       csv=$(list_to_cpuset "$1")
@@ -114,7 +105,6 @@ ${modeCase}
       irq_steer "$allowed"
     }
 
-    # Reset EPP only on cores no running VM still claims.
     epp_restore() {
       local claimed c
       # Same failing glob when the last claim goes, but this call is direct, so set -e kills the hook here and leaves EPP stuck on performance.
@@ -128,8 +118,7 @@ ${modeCase}
     }
   '';
 
-  # Runs outside hook context (libvirt hooks must never call back into the API).
-  # Waits for the domain then repins live.
+  # Runs outside hook context because libvirt hooks deadlock if they call back into the libvirt API.
   vm-pin-apply = pkgs.writeShellScript "vm-pin-apply" ''
     set -euo pipefail
     DOM="$1"
@@ -232,7 +221,6 @@ ${modeCase}
       esac
     }
 
-    # Effective mode: one-shot override beats the saved one.
     current_mode() {
       local m
       m=$(cat "$OVERRIDE_DIR/$1" 2>/dev/null || true)

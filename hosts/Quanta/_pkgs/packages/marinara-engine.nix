@@ -88,7 +88,6 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/share/marinara-engine $out/bin
     cp -r package.json pnpm-workspace.yaml .env.example node_modules packages docs $out/share/marinara-engine/
 
-    # onnxruntime-node ships prebuilt macOS and Windows libraries next to the linux one, none of which this host can load.
     onnx=$out/share/marinara-engine/node_modules/onnxruntime-node
     if [ -d "$onnx" ]; then
       find "$onnx" -type d \( -name darwin -o -name win32 \) -exec rm -rf {} +

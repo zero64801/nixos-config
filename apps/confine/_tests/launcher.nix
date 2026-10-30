@@ -1,6 +1,4 @@
 # nix build --impure --no-link --expr 'import ./apps/confine/_tests/launcher.nix { }'
-#
-# No session exists inside a build, so bus and compositor checks assert on script text.
 {
   pkgs ? import <nixpkgs> { },
 }:
@@ -43,7 +41,6 @@ let
     appId = "com.test.Svc";
   };
 
-  # Same package again with a prefix, as a confined twin next to an unconfined one.
   prefixedService = wrap {
     package = serviceApp;
     binaries = [ "svcapp" ];
@@ -63,7 +60,6 @@ let
     }
   ) (import ../_lib/profiles.nix);
 
-  # Needs no bus or compositor, so it can run inside the build.
   offline = wrap (base // {
     binaries = [
       "env"
@@ -72,7 +68,7 @@ let
     portals = false;
     dbus.filter = false;
     env.CONFINE_DECLARED = "declared-wins";
-    # Commas stay bare under escapeShellArgs and once broke the array syntax.
+    # Commas stay bare under escapeShellArgs and once failed the build on shellcheck SC2054.
     env.CONFINE_LIST = "a,b,c";
     envPassthrough = [
       "CONFINE_HOSTVAR"
@@ -87,7 +83,6 @@ let
     ];
   });
 
-  # The rename to <appId>.desktop applies only to a lone entry.
   noDesktop = wrap {
     package = pkgs.hello;
     appId = "com.test.NoDesktop";
@@ -120,7 +115,6 @@ pkgs.runCommand "confine-launcher-behaviour"
         3000
         2081
       ];
-      # A pasta spec string, binding the forward to one host address family.
       networkPorts.fromHost = [ "0.0.0.0/8000" ];
     };
     tunnelScript = scriptOf {
@@ -144,7 +138,6 @@ pkgs.runCommand "confine-launcher-behaviour"
   ''
     fail() { echo "confine: $1" >&2; exit 1; }
 
-    # --- descriptor collisions ------------------------------------------------
     # A literal fd number collided with the D-Bus sync pipe and the pulse config.
     grep -q -- '--seccomp 10' "$audioScript" \
       && fail "the seccomp descriptor is a literal again"
@@ -154,23 +147,17 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -vE '^[[:space:]]*#' "$audioScript" | grep -q -- '--ro-bind-data' \
       && fail "pulse is back on a descriptor, which pasta closes"
 
-    # --- declared env outranks the host passthrough ---------------------------
-    # The last --setenv wins in bwrap, so declared values must be emitted last.
     env_line=$(grep -n 'CONFINE_DECLARED' "${scriptOf { env.CONFINE_DECLARED = "x"; }}" | head -1 | cut -d: -f1)
     pass_line=$(grep -n 'for var in TERM LANG' "${scriptOf { env.CONFINE_DECLARED = "x"; }}" | head -1 | cut -d: -f1)
     [ -n "$env_line" ] && [ -n "$pass_line" ] || fail "could not locate the env blocks"
     [ "$env_line" -gt "$pass_line" ] \
       || fail "declared env is emitted before the host passthrough and loses to it"
 
-    # --- the launcher must not be able to wedge -------------------------------
-    # The info fifo read blocks forever if the launch chain died before bwrap.
     grep -q 'timeout 10 cat "$instance/info"' "$isolatedScript" \
       || fail "the bwrapinfo read is unbounded again"
 
-    # --- network setups -------------------------------------------------------
     grep -q 'probe) export CONFINE_NETWORK_SETUP_BIN=' "$tunnelScript" \
       || fail "a declared network setup cannot be selected"
-    # A path planted in the environment would otherwise run outside bwrap.
     grep -qx 'unset CONFINE_NETWORK_SETUP_BIN' "$tunnelScript" \
       || fail "an inherited CONFINE_NETWORK_SETUP_BIN is not cleared"
     # Anything the setup leaves running would otherwise hold the seccomp and info descriptors.
@@ -186,11 +173,9 @@ pkgs.runCommand "confine-launcher-behaviour"
       | grep -q -- '--ro-bind-try /run/systemd/resolve' \
       || fail "the resolved socket is not bound for launches without a network setup"
 
-    # --- port specs reach pasta verbatim --------------------------------------
     grep -q -- "-t '0.0.0.0/8000' -u '0.0.0.0/8000'" "$isolatedScript" \
       || fail "a string networkPorts entry is not passed to pasta as given"
 
-    # --- nothing may start the app outside the sandbox ------------------------
     for f in share/dbus-1/services/com.test.Svc.service \
              share/systemd/user/svcapp.service \
              etc/xdg/autostart/svcapp.desktop; do
@@ -200,8 +185,6 @@ pkgs.runCommand "confine-launcher-behaviour"
         || fail "$f does not point at the wrapper"
     done
 
-    # --- the private X server needs the GPU -----------------------------------
-    # Without /dev/dri Xwayland falls back to software and offers no GLX visual.
     grep -q 'satellite_args' "$isolatedX11Script" \
       || fail "the isolated X11 path no longer builds its arguments as expected"
     sed -n '/satellite_args=(/,/^        )/p' "$isolatedX11Script" > sat || true
@@ -211,8 +194,6 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -q -- '--ro-bind-try /run/opengl-driver' sat \
       || fail "the isolated X server is not given the driver tree"
 
-    # --- every profile's bus rules must be ones the proxy will accept ---------
-    # A rejected rule kills the launch only for the profiles that carry it.
     check_rules() {
       local label=$1 out
       shift
@@ -227,13 +208,10 @@ pkgs.runCommand "confine-launcher-behaviour"
       check_rules ${p.profileName}-system ${lib.escapeShellArgs p.system}
     '') profileRules}
 
-    # --- packaging edge shapes ------------------------------------------------
-    # A package with no desktop entry must still produce a usable wrapper.
     [ -x "$noDesktopApp/bin/hello" ] || fail "a package without a desktop entry lost its binary"
     [ -e "$noDesktopApp/share/applications" ] \
       && fail "an applications directory was invented for a package that has none"
 
-    # Several entries keep their own names, since only one could match the id.
     n=$(find "$multiDesktopApp/share/applications" -name '*.desktop' | wc -l)
     [ "$n" -ge 2 ] || fail "expected several desktop entries, found $n"
     [ -e "$multiDesktopApp/share/applications/com.test.MultiDesktop.desktop" ] \
@@ -241,17 +219,14 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -rq "${pkgs.foot}/bin" "$multiDesktopApp/share/applications" \
       && fail "a desktop entry still points at the unwrapped package"
 
-    # A lone entry is renamed, because portals resolve an id to <id>.desktop.
     lone="$outPath/share/applications/com.test.Svc.desktop"
     [ -e "$lone" ] || fail "the single desktop entry was not renamed to the application id"
 
-    # Field codes must survive the Exec rewrite, including under [Desktop Action].
     grep -qx "Exec=$outPath/bin/svcapp %U" "$lone" \
       || fail "the main Exec was not rewritten, or the field code was eaten"
     grep -qx "Exec=$outPath/bin/svcapp --new" "$lone" \
       || fail "the Exec under [Desktop Action] was left pointing elsewhere"
 
-    # --- binPrefix, the confined twin next to an unconfined build -------------
     [ -x "$prefixedApp/bin/sb-svcapp" ] || fail "the prefixed shim is missing"
     [ -e "$prefixedApp/bin/svcapp" ] \
       && fail "the unprefixed name is still exposed and collides with the bare package"
@@ -269,20 +244,17 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -qx 'Name=New' "$plone" \
       || fail "the [Desktop Action] name was suffixed too, only the entry name should be"
 
-    # --- and the sandbox actually runs ----------------------------------------
     export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/rt"
     mkdir -p "$HOME" "$XDG_RUNTIME_DIR/confine-shared"
     touch "$XDG_RUNTIME_DIR/confine-shared/marker" "$XDG_RUNTIME_DIR/host-secret"
     export CONFINE_HOSTVAR=host-copied CONFINE_DECLARED=host-loses
     "$offlineApp/bin/env" > observed || fail "the sandbox did not run"
 
-    # A launch that asked for a tunnel must not start without one.
     CONFINE_NETWORK_SETUP=probe "$offlineApp/bin/env" > refused 2>&1 \
       && fail "a launch asking for an undeclared network setup started anyway"
     grep -q 'has no network setup named probe' refused \
       || fail "an undeclared network setup failed for the wrong reason: $(cat refused)"
 
-    # --- xdg-run binds and symlinks -------------------------------------------
     "$offlineApp/bin/ls" "$XDG_RUNTIME_DIR/confine-shared" > rtdir \
       || fail "the xdg-run bind did not resolve against the runtime dir"
     grep -qx marker rtdir || fail "the bound runtime directory is empty inside"
@@ -302,7 +274,6 @@ pkgs.runCommand "confine-launcher-behaviour"
       || fail "envPassthrough did not copy the host value"
     grep -qx 'CONFINE_LIST=a,b,c' observed \
       || fail "a comma valued declared env did not arrive intact"
-    # CONFINE_DECLARED is both declared and passed through, the fixed value wins.
     grep -qx 'CONFINE_DECLARED=declared-wins' observed \
       || fail "declared env did not reach the sandbox or lost to envPassthrough"
     grep -qx "PATH=${pkgs.coreutils}/bin:/run/current-system/sw/bin" observed \
@@ -310,12 +281,9 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -q '^SSH_AUTH_SOCK=' observed \
       && fail "an agent socket leaked through --clearenv"
 
-    # --- and cleans up after itself -------------------------------------------
-    # A surviving instance directory leaks fifos and proxy sockets every launch.
     left=$(find "$XDG_RUNTIME_DIR/confine" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
     [ "$left" -eq 0 ] || fail "$left instance directories survived the run"
 
-    # The per-application directory is shared across runs and must stay private.
     appdir="$XDG_RUNTIME_DIR/app/com.test.Launcher"
     [ -d "$appdir" ] || fail "the per-application runtime directory was not created"
     [ "$(stat -c %a "$appdir")" = 700 ] || fail "the per-application directory is not private"

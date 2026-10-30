@@ -1,9 +1,6 @@
 { config, lib, ... }:
 
-/*
-Kept separate from default.nix on purpose: the VM check imports the module standalone (imports = [ ./default.nix ]), so the module itself must not reference my.*, hm or other repo infrastructure.
-This glue is auto imported into the full system config, where those options exist.
-*/
+# Kept separate from default.nix because the VM check imports the module standalone, so the module itself must not reference my.*, hm or other repo infrastructure.
 let
   cfg = config.flatlock;
 in
@@ -18,15 +15,14 @@ in
     (lib.mkIf cfg.enable {
       flatlock.configRepoPath = lib.mkDefault config.my.flakePath;
 
-      # Portals need an implementation. Headless hosts fail eval with a bare enable.
+      # Headless hosts fail eval with a bare portal enable because portals need an implementation.
       xdg.portal.enable = lib.mkIf config.my.desktop.enable (lib.mkDefault true);
 
-      # owned by the flake user, the file lives in their git working tree
       systemd.tmpfiles.rules = lib.optionals (cfg.lockFile != null && cfg.configRepoPath != null) [
         "f ${cfg.configRepoPath}/${cfg.lockFileRelativePath} 0644 ${config.my.flake.user} users - {}"
       ];
 
-      # user overrides outrank system overrides, binding the directory to the store keeps Flatseal from quietly loosening what the module declared
+      # User overrides outrank system overrides, so binding the directory to the store keeps Flatseal from quietly loosening what the module declared.
       hm.xdg.dataFile = lib.mkIf cfg.strictOverrides {
         "flatpak/overrides".source = cfg.overridesPackage;
       };

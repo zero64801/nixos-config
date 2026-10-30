@@ -4,8 +4,6 @@
   flatpak,
 }:
 
-# One-shot paste output, an upstream permission change can never quietly alter a build.
-# remote-info reports what ships after Flathub review.
 writeShellApplication {
   name = "confine-import";
   runtimeInputs = [ flatpak ];
@@ -56,7 +54,6 @@ writeShellApplication {
     flatpak remote-info --show-metadata "$remote" "$app_id" > "$meta" 2>/dev/null \
       || die "no metadata for $app_id on $remote"
 
-    # remote-info metadata is ini.
     value() {
       awk -v want="[$1]" -v key="$2" '
         $0 == want { inside = 1; next }
@@ -73,7 +70,6 @@ writeShellApplication {
       ' "$meta"
     }
 
-    # Flatpak packs list values as semicolon separated.
     items() { tr ';' '\n' | grep -v '^$' || true; }
 
     profiles=()
@@ -165,7 +161,6 @@ writeShellApplication {
         xdg-run/pipewire-0)
           add_profile audio
           return ;;
-        # Kept verbatim, the launcher resolves it against the runtime dir.
         xdg-run/*)
           path="$spec" ;;
         xdg-download*)  path="Downloads''${spec#xdg-download}" ;;
@@ -209,7 +204,6 @@ writeShellApplication {
     done < <(pairs "System Bus Policy")
 
     while IFS= read -r line; do
-      # /run/host exists only inside a Flatpak, the value would point at nothing here.
       case "''${line#*=}" in
         */run/host/*)
           notes+=("''${line%%=*} refers to /run/host, which is Flatpak-only, and was dropped")
@@ -218,7 +212,6 @@ writeShellApplication {
       envs+=("''${line%%=*} = \"$(esc "''${line#*=}")\";")
     done < <(pairs Environment)
 
-    # Electron ships Chromium, whose zygote needs a nested user namespace.
     if value Application base | grep -qi electron; then
       add_profile chromium
     fi
@@ -244,7 +237,6 @@ writeShellApplication {
       echo
     fi
 
-    # The last component is not always a Nix identifier, 7-zip needs quoting.
     name=''${app_id##*.}
     name=''${name,,}
     if [[ $name =~ ^[a-z_][a-z0-9_-]*$ ]]; then

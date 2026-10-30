@@ -1,6 +1,5 @@
 { pkgs, ... }:
 
-# Samba state under /var/lib is lost to the impermanence root reset, the bind mount keeps it on /mnt/storage.
 {
   fileSystems."/var/lib/samba" = {
     device = "/mnt/storage/samba";

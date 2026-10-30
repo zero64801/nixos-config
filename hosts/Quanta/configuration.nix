@@ -56,12 +56,10 @@ in
       discord.enable = true;
       vlessProxy = {
         enable = true;
-        # on vault so a root factory reset keeps the credentials
         outboundFile = "/mnt/vault/secrets/sing-box/vless-outbound.json";
       };
       wgProxy = {
         enable = true;
-        # on vault so a root factory reset keeps the key
         endpointFile = "/mnt/vault/secrets/sing-box/ivpn-wg-endpoint.json";
         tunnelDns = "172.16.0.1";
       };
@@ -80,11 +78,9 @@ in
         enable = true;
         x3dCacheBias = true;
 
-        # Confined in hosts/Quanta/confine/steam.nix.
         steam = {
           enable = true;
           compatPackages = [
-            # pkgs.dwproton-bin
             pkgs.proton-cachyos-v3-bin
           ];
         };
@@ -108,7 +104,6 @@ in
     user = username;
   };
 
-  # Publish over mDNS so LAN devices reach this host as Quanta.local without a static IP.
   services.avahi = {
     enable = true;
     ipv6 = false;

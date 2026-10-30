@@ -1,5 +1,4 @@
 # nix build --impure --no-link --print-out-paths --expr 'import ./apps/confine/_tests/mock-app.nix { }'
-# Needs a live session bus, compositor and sound server, so it cannot run at build time.
 {
   pkgs ? import <nixpkgs> { },
 }:
@@ -20,7 +19,6 @@ pkgs.writeShellApplication {
   text = ''
     say() { printf '  %-22s %s\n' "$1" "$2"; }
 
-    # A sandbox that swallows a reply must surface as a timeout, not hang the probe.
     call() { timeout 8 dbus-send --print-reply "$@" >/dev/null 2>&1; }
 
     say wayland "$(timeout 8 wayland-info >/dev/null 2>&1 && echo ok || echo denied)"
@@ -30,7 +28,6 @@ pkgs.writeShellApplication {
       [ "''${n:-0}" -gt 0 ] && echo "ok ($n devices)" || echo denied
     )"
 
-    # The document portal resolves the caller through bwrapinfo.json, a wrong pid fails the lookup.
     say portal-documents "$(
       call --session --dest=org.freedesktop.portal.Documents \
         /org/freedesktop/portal/documents \
@@ -58,7 +55,6 @@ pkgs.writeShellApplication {
 
     say audio-pulse "$(timeout 8 pactl info >/dev/null 2>&1 && echo ok || echo denied)"
 
-    # What Chromium's zygote needs. Denied unless seccomp.nesting is on.
     say nested-userns "$(timeout 8 unshare -Ur true >/dev/null 2>&1 && echo ok || echo denied)"
 
     # wayland-info exits non-zero, under pipefail a pipe would falsely report denied.

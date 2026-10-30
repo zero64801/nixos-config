@@ -156,26 +156,12 @@ in
 
       networking.firewall.allowedTCPPorts = mkIf cfg.openSpicePort [ 5900 ];
 
-      /*
-      INPUT side (VM -> host services):
-      nixos-fw default-drops anything from virbr0 (since we removed it
-      from trustedInterfaces). Just punch holes for DHCP + DNS so the
-      libvirt dnsmasq still works. Anything else from VM to host gets
-      default-dropped, exactly what we want.
-      */
       networking.firewall.interfaces.${cfg.networkIsolation.bridge} = mkIf cfg.networkIsolation.enable {
         allowedUDPPorts = [ 53 67 ] ++ cfg.networkIsolation.allowedHostUDPPorts;
         allowedTCPPorts = [ 53 ] ++ cfg.networkIsolation.allowedHostTCPPorts;
       };
 
-      /*
-      FORWARD side (VM -> LAN, VM -> DNAT'd host services):
-      nixos-fw forward chain has a built-in `ct status dnat accept`
-      that whitelists ALL port-forwarded traffic, so VMs can reach
-      any container/netns service via DNAT. To beat it, install our
-      drop rules in a SEPARATE nftables table at HIGHER priority
-      (lower number) so they run BEFORE nixos-fw's accept.
-      */
+      # nixos-fw's forward chain accepts all DNAT'd traffic via `ct status dnat accept`, so the drops live in a separate table at a lower priority number to run first.
       networking.nftables.enable = mkIf cfg.networkIsolation.enable true;
 
       networking.nftables.tables.vm-isolation = mkIf cfg.networkIsolation.enable {
@@ -205,15 +191,7 @@ in
         ${pkgs.libvirt}/bin/virsh net-start default || true
       '';
 
-      /*
-      libvirtd-config is Type=oneshot which exits immediately, becoming
-      `inactive (dead)`. NixOS's switch-to-configuration only restarts
-      ACTIVE units when restartTriggers change, so inactive oneshots
-      are skipped, meaning hook/vhostUserPackages edits never apply.
-
-      Fix: RemainAfterExit=yes keeps the unit "active" after success,
-      so restartTriggers actually fire on rebuild.
-      */
+      # switch-to-configuration skips inactive oneshots, so without RemainAfterExit the restartTriggers never fire and hook edits never apply.
       systemd.services.libvirtd-config = {
         serviceConfig.RemainAfterExit = true;
         restartTriggers =

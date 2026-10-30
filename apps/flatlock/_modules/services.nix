@@ -74,13 +74,7 @@ lib.mkMerge [
   })
 
   (lib.optionalAttrs (!isSystem) {
-    /*
-      The user profile shadows the system `flatlock` in PATH, so plain
-      `flatlock` would only ever reach the (usually empty) user installation.
-      Ship a flatpak-style dispatcher instead: default and `--system` go to the
-      system CLI where a host's declared apps live, `--user` to the real user
-      CLI. Falls back to the user CLI when no system flatlock is installed.
-    */
+    # The user profile shadows the system flatlock in PATH, so this dispatcher routes default and --system calls to the system CLI.
     home.packages = [
       (pkgs.writeShellApplication {
         name = "flatlock";

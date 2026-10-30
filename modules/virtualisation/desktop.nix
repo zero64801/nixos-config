@@ -14,7 +14,7 @@ let
 
   hugepagesHook = pkgs.writeShellScript "libvirt-hook-hugepages" (
     ''
-      # libvirt's hook PATH has no util-linux (flock)
+      # libvirt runs hooks with a PATH that lacks util-linux and its flock.
       export PATH="${lib.makeBinPath [ pkgs.util-linux ]}:$PATH"
     ''
     + builtins.readFile ./_hugepages-hook.sh

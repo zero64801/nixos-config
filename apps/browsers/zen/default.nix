@@ -11,7 +11,6 @@ let
     Status = "locked";
   };
 
-  # Hardening baseline. Taste and hardware belong to the host, these do not.
   basePolicies = {
     AutofillAddressEnabled = true;
     AutofillCreditCardEnabled = false;
@@ -46,7 +45,6 @@ let
     "browser.contentblocking.category" = lock "strict";
     "dom.private-attribution.submission.enabled" = lock false;
     "browser.ml.chat.enabled" = lock false;
-    # Required for the userChrome option to take effect at all.
     "toolkit.legacyUserProfileCustomizations.stylesheets" = lock true;
   };
 
@@ -137,7 +135,6 @@ in
       };
     };
 
-    # Updates the AMO pins that addonPins points at.
     environment.systemPackages = [ (pkgs.callPackage ./_addon-pin.nix { }) ];
 
     # Persist the whole profile: SQLite -wal files and rename-replaced json/txt break under per-file bind mounts.

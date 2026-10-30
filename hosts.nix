@@ -6,7 +6,6 @@ let
   importDir = dir:
     let
       allFiles = lib.filesystem.listFilesRecursive dir;
-      # _ escapes the auto-importer for whole directories, not just files.
       relParts = f: lib.splitString "/" (lib.removePrefix (toString dir + "/") (toString f));
       nixFiles = builtins.filter (f:
         let name = baseNameOf (toString f); in

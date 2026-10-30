@@ -1,13 +1,11 @@
 { pkgs, ... }:
 
 {
-  # CPU xHCI 6f:00.4 (rear USB-C + one type A)
   boot.kernelParams = [ "vfio-pci.ids=1022:15b7" ];
 
   my.virtualisation = {
     base.enable = true;
 
-    # Xbox 360 pad
     gamepad = {
       enable = true;
       vendorId = "045e";
@@ -46,13 +44,11 @@
       domains = [ "win11" "win11-re" ];
       defaultMode = "classic";
       modes = {
-        # CCD1 (8-15 + SMT 24-31): higher clocks, host keeps the X3D CCD.
         classic = {
           vcpuPins = [ 8 24 9 25 10 26 11 27 12 28 13 29 14 30 15 31 ];
           emulatorCpus = "0-1,16-17";
           iothreadCpus = "2,18";
         };
-        # CCD0 (0-7 + SMT 16-23): the V-Cache CCD goes to the guest.
         x3d = {
           vcpuPins = [ 0 16 1 17 2 18 3 19 4 20 5 21 6 22 7 23 ];
           emulatorCpus = "8-9,24-25";
@@ -110,6 +106,5 @@
     };
   };
 
-  # lspci, for IOMMU groups and passthrough debugging.
   environment.systemPackages = [ pkgs.pciutils ];
 }

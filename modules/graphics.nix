@@ -9,12 +9,6 @@ let
     pkgs.vulkan-loader
   ];
 
-  /*
-  Opt-in PRIME render offload onto the nvidia card. The session-wide ICD
-  hiding keeps every app off the card by default. This wrapper re-exposes
-  the ICDs and requests offload for one command, e.g. `nvrun steam` or
-  `nvrun %command%` in Steam launch options.
-  */
   nvrun = pkgs.writeShellScriptBin "nvrun" ''
     if [ "$#" -eq 0 ]; then
       echo "Usage: nvrun <command> [args...]" >&2
@@ -28,7 +22,6 @@ let
     exec "$@"
   '';
 
-  # Mirror of nvrun for nvidia-backend hosts: pins one command to the AMD/mesa stack.
   amdrun = pkgs.writeShellScriptBin "amdrun" ''
     if [ "$#" -eq 0 ]; then
       echo "Usage: amdrun <command> [args...]" >&2
@@ -41,13 +34,6 @@ let
     exec "$@"
   '';
 
-  /*
-  Zero-copy direct output: a gamescope DRM session owning the secondary GPU's
-  own connector, bypassing the desktop compositor entirely. Needs a monitor
-  cabled to that card. Flip the monitor input to play, flip back on exit.
-  The game runs under gamemoderun so the scx/x3d gamemode hooks still fire.
-  Extra gamescope flags go in GAMESCOPE_OPTS.
-  */
   mkScopeWrapper = name: env: pkgs.writeShellScriptBin name ''
     if [ "$#" -eq 0 ]; then
       echo "Usage: ${name} <command> [args...]" >&2
@@ -175,7 +161,7 @@ in
           "nvidia_drm.fbdev=0"
         ];
 
-      # Nothing else loads nvidia_drm on a Wayland-only host (X11 configs load it via the DDX).
+      # Nothing else loads nvidia_drm on a Wayland-only host because X11 configs load it via the DDX.
       boot.kernelModules =
         lib.optionals (cfg.backend != "nvidia" && cfg.nvidia.drm.enable) [ "nvidia_drm" ];
 
@@ -184,14 +170,11 @@ in
           install nvidia_drm /bin/true
         '';
 
-      # Keep desktop apps off the secondary card entirely: incidental EGL/Vulkan enumeration leaves device fds open, which gpu-switch then has to fuser -k (visible as app flashes).
-      # CUDA, ROCm and NVENC bypass both loaders, so compute is unaffected either way.
       environment.sessionVariables =
         if cfg.backend != "nvidia" then
           {
             __EGL_VENDOR_LIBRARY_FILENAMES = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json";
             VK_LOADER_DRIVERS_DISABLE = "nvidia_icd.json";
-            # Pin VA-API to the AMD card so no app can load nvidia_drv_video.so on the secondary node (its EGL is hidden above, so that path only ever fails).
             LIBVA_DRIVER_NAME = "radeonsi";
           }
         else

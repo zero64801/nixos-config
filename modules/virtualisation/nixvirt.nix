@@ -12,9 +12,7 @@ let
 
   cfg = config.my.virtualisation.nixvirt;
 
-  # Appended to snapshotFixup, which runs at ExecStartPost after every declarative domain has been (re)defined.
-  # libvirt keeps <name>_VARS.fd when a domain is undefined, so dropping a domain from the list leaves its UEFI vars behind.
-  # Any *.fd not referenced by a defined domain therefore belongs to a removed one.
+  # Safe only because snapshotFixup runs at ExecStartPost after every declarative domain is defined, so an unreferenced *.fd belongs to a removed domain.
   nvramReaper = lib.optionalString cfg.reapNvram ''
     nvdir=/var/lib/libvirt/qemu/nvram
     if [ -d "$nvdir" ]; then
@@ -44,8 +42,7 @@ let
     text = ''
       export LIBVIRT_DEFAULT_URI=qemu:///system
 
-      # virt-xml is avoided on purpose: it edits only <source> and leaves stale explicit <backingStore> elements behind.
-      # A stale backingStore left after repointing becomes self-referencing and the VM refuses to boot.
+      # Not virt-xml, which edits only <source> and leaves a stale <backingStore> that ends up pointing at itself and stops the VM from booting.
       redefine_disk() {
         local dom="$1" target="$2" file="$3" tmpf
         tmpf=$(mktemp)
@@ -75,8 +72,7 @@ let
               -v @name -o "|" -v "source/@file" -n \
           | while IFS="|" read -r target file; do
               [ -n "$target" ] && [ -n "$file" ] || continue
-              # Compare the persistent (inactive) config, since that is what gets repointed and what a shutdown reverts to.
-              # A running domain shows the overlay as its active disk, which would mask a stale persistent base until the next shutdown.
+              # Compare the inactive config because a running domain shows the overlay as its active disk, which masks a stale persistent base until the next shutdown.
               persistent=$(virsh domblklist "$dom" --inactive | awk -v t="$target" '$1 == t { print $2 }')
               if [ "$persistent" != "$file" ]; then
                 echo "$dom: repointing $target -> $file (snapshot $cur)"
@@ -133,8 +129,7 @@ let
         esac
       }
 
-      # virt-xml is avoided on purpose: it edits only <source> and leaves stale explicit <backingStore> elements behind.
-      # A stale backingStore left after repointing becomes self-referencing and the VM refuses to boot.
+      # Not virt-xml, which edits only <source> and leaves a stale <backingStore> that ends up pointing at itself and stops the VM from booting.
       repoint_disk() {
         local tdev="$1" newpath="$2" tmpf
         tmpf=$(mktemp)
@@ -213,8 +208,7 @@ let
           exit 1
         fi
 
-        # Seatbelt: another defined domain may reference the same disk image.
-        # Offline qemu-img/nbd surgery bypasses QEMU's runtime write lock.
+        # Offline qemu-img and nbd surgery bypasses QEMU's runtime write lock, so refuse while another live domain shares a disk image.
         while read -r src; do
           [ -n "$src" ] || continue
           while read -r other; do
@@ -317,9 +311,7 @@ let
           virsh snapshot-create-as "$dom" "$name" --disk-only --atomic
         fi
 
-        # NixVirt redefines each domain from the declarative XML on every service start, resetting the persistent disk source back to the base.
-        # Repointing the persistent config at the new overlay now means a rebuild or shutdown before the next snapshotFixup run cannot surface a stale base (see build_plan's DANGER check).
-        # Internal snapshots keep the same disk source, so nothing to repoint there.
+        # NixVirt resets the persistent disk source to the base on every service start, so repoint it now or a rebuild or shutdown before the next snapshotFixup surfaces a stale base.
         if [ "$internal" -ne 1 ]; then
           while IFS="|" read -r tdev file; do
             [ -n "$tdev" ] && [ -n "$file" ] || continue
@@ -1061,7 +1053,6 @@ let
         exit 1
       fi
 
-      # Seatbelt: refuse if any other defined domain sharing an image is live.
       while read -r src; do
         [ -n "$src" ] || continue
         while read -r other; do

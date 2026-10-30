@@ -388,7 +388,6 @@ class FlatlockCli:
     def write_lock(self):
         path = self.require_lock_path()
         value = self.collect_lock()
-        # masking mutates the installation and prompts for auth, so skip refs already masked
         masked = current_masks(self.scope)
         for ref in self.pin_requested:
             if ref in masked:
@@ -585,8 +584,6 @@ class FlatlockCli:
                 self.bundle_ref(ref, commit, directory)
 
     def logs(self, follow=False):
-        # reconcile output (flatpak's byte-level progress) lands in this unit's
-        # journal; the sd_notify STATUS line shows in `systemctl status`
         args = ["journalctl"]
         if self.installation == "user":
             args.append("--user")

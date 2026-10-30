@@ -17,7 +17,6 @@ let
     </hostdev>
   '';
 
-  # Plain virsh, no sudo: libvirtd group membership grants qemu:///system.
   vm-pad = pkgs.writeShellApplication {
     name = "vm-pad";
     runtimeInputs = [
@@ -30,7 +29,6 @@ let
         exit 2
       }
 
-      # Domains that actually hold the device, instead of a last-used state file that goes stale on manual detach or reboot.
       attached_domains() {
         virsh -c qemu:///system list --name | while IFS= read -r d; do
           [ -n "$d" ] || continue

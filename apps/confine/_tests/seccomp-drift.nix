@@ -1,6 +1,4 @@
 # nix build --impure --no-link --expr 'import ./apps/confine/_tests/seccomp-drift.nix { }'
-# Fails when the pinned flatpak filters a syscall _lib/seccomp.c never mentions.
-# Upstream source is read, not compiled, to keep flatpak C out of the trust boundary.
 {
   pkgs ? import <nixpkgs> { },
 }:
@@ -34,7 +32,6 @@ pkgs.runCommand "confine-seccomp-drift"
       exit 1
     fi
 
-    # Both forms reduce to syscall=errno, catching a verdict change names alone would miss.
     grep -ohE '\{[[:space:]]*SCMP_SYS[[:space:]]*\([[:space:]]*[a-z0-9_]+[[:space:]]*\)[[:space:]]*,[[:space:]]*E[A-Z]+' \
       common/flatpak-run*.c \
       | sed -E 's/.*\([[:space:]]*([a-z0-9_]+)[[:space:]]*\)[[:space:]]*,[[:space:]]*/\1=/' | sort -u > upstream-verdicts

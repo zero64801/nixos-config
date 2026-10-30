@@ -4,18 +4,13 @@ let
 in
 {
   util = {
-    # Content pins (plain source trees) from a sources.json next to the consuming module.
-    # Managed by `pin sources`.
     importPins = path:
       lib.mapAttrs
         (_: pin: final.fetchFromGitHub { inherit (pin) owner repo rev hash; })
         (builtins.fromJSON (builtins.readFile path));
 
-    # Gecko addons from a firefox-addons.json next to the consuming module, managed by `addon-pin`.
-    # XPIs come straight from addons.mozilla.org, pinned to the sha256 AMO publishes for the file, so no hash is ever computed from a local download.
     importAddons = path:
       let
-        # Firefox's own application ID. Extensions install beneath it.
         firefoxId = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}";
 
         mkAddon = name: pin:
@@ -46,8 +41,6 @@ in
       in
       lib.mapAttrs mkAddon (builtins.fromJSON (builtins.readFile path));
 
-    # Shared scaffold for the CLI scripts.
-    # SC2034/SC2329 disabled because not every script uses every color or helper.
     cliPrelude = ''
       # shellcheck disable=SC2034,SC2329
       {

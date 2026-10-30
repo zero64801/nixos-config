@@ -48,8 +48,7 @@ in
 
       programs.gamemode = {
         enable = true;
-        # The stock governor flip hits every core including VM claims, and while governor=performance the kernel rejects all other EPP writes.
-        # Same value both ways makes it a no-op, scx-switch sets game EPP claim-aware instead.
+        # The same governor both ways disables gamemode's flip because it hits VM-claimed cores and governor=performance rejects all other EPP writes.
         settings.general = {
           desiredgov = "powersave";
           defaultgov = "powersave";
@@ -59,11 +58,6 @@ in
           switch = "${scxCfg.package}/bin/scx-switch";
           scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
 
-          /*
-          X3D writes go directly - a udev rule chgrps the sysfs file to the
-          gamemode group when the driver binds, so no privilege escalation
-          is needed for the toggle.
-          */
           x3dStart = lib.optionalString cfg.x3dCacheBias ''
             for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do
               echo cache > "$f" 2>/dev/null || true
@@ -75,10 +69,6 @@ in
             done
           '';
 
-          /*
-          SCX switch still needs root (calls systemctl), so wrap only that
-          part in pkexec - keeps the X3D toggle privilege-free.
-          */
           startScript = pkgs.writeShellScript "gamemode-start" ''
             ${x3dStart}
             ${lib.optionalString scxEnabled "/run/wrappers/bin/pkexec ${switch} game"}
@@ -99,7 +89,7 @@ in
         ACTION=="add|bind", DRIVER=="amd_x3d_vcache", RUN+="${pkgs.runtimeShell} -c '${pkgs.coreutils}/bin/chgrp gamemode /sys%p/amd_x3d_mode; ${pkgs.coreutils}/bin/chmod g+w /sys%p/amd_x3d_mode'"
       '';
 
-      # realtime priority comes from the gamescope-rt helper, not capSysNice, which breaks inside Steam's container
+      # Realtime priority comes from the gamescope-rt helper because capSysNice breaks inside Steam's container.
       programs.gamescope.enable = true;
 
       programs.steam = lib.mkIf cfg.steam.enable {

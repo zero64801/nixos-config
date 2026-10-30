@@ -40,19 +40,16 @@ let
       && lib.elem "org.freedesktop.ScreenSaver" withProfiles.dbus.session.talk
       && lib.elem "org.example.Extra" withProfiles.dbus.session.talk;
 
-    # Portal access needs only the call rule, --talk would be strictly broader.
     portalNamesAreNotTalkable =
       !lib.any (lib.hasPrefix "org.freedesktop.portal.") (perms { profile = [ "gui" ]; }).dbus.session.talk
       && lib.elem "--call=org.freedesktop.portal.*=*" (sessionRules { profile = [ "gui" ]; });
 
     profileScalarsApply = withProfiles.wayland && withProfiles.portals;
 
-    # Electron's zygote needs the namespace, and that has to reach the filter.
     nestingReachesFilter =
       withProfiles.seccomp.nesting
       && filterName { profile = [ "chromium" ]; } == "confine-filter-allow-nesting.bpf";
 
-    # 32-bit games need the second arch token or the filter misses them.
     steamProfileIsMultiarch =
       (perms { profile = [ "steam" ]; }).seccomp.multiarch
       && filterName { profile = [ "steam" ]; }
@@ -64,18 +61,14 @@ let
         portals = false;
       }).portals;
 
-    # A typo in a profile name is a build failure, not a silently open sandbox.
     unknownProfileThrows = !(builtins.tryEval (perms { profile = [ "nope" ]; })).success;
 
-    # The names land in the launcher's copy loop, anything else must be rejected.
     envPassthroughRejectsBadName =
       !(builtins.tryEval (build { envPassthrough = [ "not-a-var" ]; }).drvPath).success;
 
-    # The prefix lands in file names and Exec lines, anything else must be rejected.
     binPrefixRejectsBadChars =
       !(builtins.tryEval (build { binPrefix = "no spaces"; }).drvPath).success;
 
-    # A bare string cannot say which side is the link, so the shape is enforced.
     symlinksRejectBareStrings =
       !(builtins.tryEval (build { symlinks = [ "xdg-run/discord-ipc-0" ]; }).drvPath).success;
 
@@ -88,7 +81,6 @@ let
       sessionRules { profile = [ "gui" ]; }
     );
 
-    # Without --own of its name, single-instance handoff and MPRIS registration fail.
     ownsItsOwnNames =
       lib.elem "--own=org.test.App" (sessionRules { })
       && lib.elem "--own=org.mpris.MediaPlayer2.org.test.App.*" (sessionRules { });
@@ -115,7 +107,6 @@ let
         networkSetups.tun = "/bin/true";
       }).drvPath).success;
 
-    # The names become case patterns in the launcher.
     networkSetupsRejectBadNames =
       !(builtins.tryEval (build {
         network = "isolated";
@@ -125,16 +116,12 @@ let
     # The a11y bus carries keystrokes, so gui must not drag it in.
     a11yIsOptIn = !bare.a11y && !(perms { profile = [ "gui" ]; }).a11y && (perms { profile = [ "a11y" ]; }).a11y;
 
-    # The Camera portal rides on portal.Desktop, no raw /dev/video node is needed.
     cameraNeedsNoDeviceNode = (perms { profile = [ "gui" ]; }).devices == [ ];
 
-    # Isolated mode must reach bwrap as --share-net to stay in pasta's namespace.
     isolatedNetworkKeepsPastaNamespace =
       (perms { network = "isolated"; }).network == "isolated"
-      # drvPath forces the launcher, where an unknown mode is rejected.
       && !(builtins.tryEval (build { network = "sideways"; }).drvPath).success;
 
-    # A stale or renamed permission key would leave a profile that grants nothing.
     everyProfileIsUsable =
       let
         names = lib.attrNames (import ../_lib/profiles.nix);
@@ -146,7 +133,6 @@ let
         p: (build { profile = [ p ]; }).drvPath != null && strip (perms { profile = [ p ]; }) != baseline
       ) names;
 
-    # The only path that never starts a proxy, nothing else exercises it.
     unfilteredBusStillBuilds = (build { dbus.filter = false; }).drvPath != null;
 
     # The Flatpak portal's Spawn is a process-spawning primitive outside the sandbox.

@@ -49,7 +49,6 @@ let
     # readOnly plus a default counts as two definitions and threw on read.
     packagesIsReadable = (evalWith { a = plain; }).my.confine.packages ? a;
 
-    # The assertion must read merged perms, wayland can come from a profile.
     isolatedX11WithProfileWayland =
       failures {
         a = plain // {
@@ -62,7 +61,6 @@ let
       failures { a = plain // { x11 = "isolated"; }; }
     );
 
-    # The id names the private home, sharing one silently merges two sandboxes.
     duplicateAppIdRejected = anyMatching "used by more than one" (
       failures {
         a = plain;
@@ -76,7 +74,6 @@ let
       && !(builtins.tryEval (failures { a = plain // { appId = "nodots"; }; })).success
       && failures { a = plain // { appId = "com.vendor.App-2"; }; } == [ ];
 
-    # Both ride on the bus proxy, without it they would look granted and do nothing.
     a11yNeedsTheProxy = anyMatching "a11y needs dbus.filter" (
       failures {
         a = plain // {
@@ -95,7 +92,6 @@ let
       }
     );
 
-    # Weakenings warn rather than fail, since each is sometimes the right call.
     hostHomeWarns = anyMatching "whole home directory" (
       warnings { a = plain // { home = "host"; }; }
     );
@@ -114,7 +110,6 @@ let
       && (evalWith { a = plain // { home = "host"; }; }).my.persistence.home.directories == [ ]
       && (evalWith { a = plain // { persist = false; }; }).my.persistence.home.directories == [ ];
 
-    # install = false keeps it out of the system profile but still wrapped.
     installIsRespected =
       lib.length (evalWith { a = plain // { install = false; }; }).environment.systemPackages
       < lib.length (evalWith { a = plain; }).environment.systemPackages;

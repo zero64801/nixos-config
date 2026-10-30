@@ -327,7 +327,6 @@ writeShellApplication {
 
       if [[ -n "$owner_user" ]]; then
         local rel_path="''${abs_path#"$owner_home/"}"
-        # Guard against a missing user entry: jq cannot iterate null with |=
         jq --arg u "$owner_user" --arg p "$rel_path" '
           if (.users[$u] | type) == "object" then
             .users[$u].directories = ((.users[$u].directories // []) | map(select(. != $p))) |
@@ -371,7 +370,6 @@ writeShellApplication {
       jq -r '.directories[]?, .files[]?' "$MASTER_JSON" | sort -u
     }
 
-    # Literal prefix match: does any master path live under system_path?
     master_has_child() {
       local system_path="$1" master_paths="$2" mp
       while IFS= read -r mp; do
