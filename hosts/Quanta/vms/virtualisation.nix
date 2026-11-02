@@ -103,6 +103,61 @@
           restart = false;
         }
       ];
+
+      untrusted = [
+        "win11-re"
+        "linux-re"
+      ];
+
+      dataDisks.win11-re = {
+        image = "/mnt/storage/VMs/images/win11-re.data.img";
+        serial = "S6PTNS0W418265K";
+        vendor = "Samsung";
+        product = "SSD 850 PRO 512G";
+        sourcePaths = [ "Projects" ];
+        highlight = {
+          "RUNS CODE" = [
+            "claude/settings.json"
+            "claude/settings.local.json"
+            "claude/managed-settings.json"
+            "claude/.claude.json"
+            "claude/plugins/*"
+            "claude/hooks/*"
+            "*/.claude/settings*.json"
+            "*/.mcp.json"
+          ];
+          "STEERS CLAUDE" = [
+            "claude/CLAUDE.md"
+            "claude/rules/*"
+            "claude/skills/*"
+            "claude/agents/*"
+            "claude/commands/*"
+            "claude/output-styles/*"
+            "claude/projects/*/memory/*"
+            "*/CLAUDE.md"
+            "*/CLAUDE.local.md"
+            "*/AGENTS.md"
+            "*/.claude/*"
+          ];
+        };
+        rescueRoot = "Users/sw";
+        rescueExclude = [
+          "AppData"
+          "NTUSER.DAT*"
+          "ntuser.*"
+        ];
+        windows = {
+          letter = "D";
+          carry = {
+            "Users/sw/Desktop/Tools" = "Tools";
+            "Users/sw/Desktop/Projects" = "Projects";
+            "Users/sw/.claude" = "claude";
+            "Users/sw/.claude.json" = "claude/.claude.json";
+            "Users/sw/.vscode" = "vscode";
+          };
+          userEnv.sw.CLAUDE_CONFIG_DIR = "D:\\claude";
+        };
+      };
     };
   };
 

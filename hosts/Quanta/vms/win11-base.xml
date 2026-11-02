@@ -101,7 +101,7 @@
     <disk type="file" device="disk">
       <driver name="qemu" type="qcow2" cache="none" io="native" discard="unmap"/>
       <source file="/mnt/storage/VMs/images/win11-base.qcow2"/>
-      <target dev="sda" bus="scsi"/>
+      <target dev="sda" bus="scsi" rotation_rate="1"/>
       <address type="drive" controller="0" bus="0" target="0" unit="0"/>
     </disk>
     <disk type="file" device="cdrom">

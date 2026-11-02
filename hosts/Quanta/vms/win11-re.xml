@@ -131,25 +131,11 @@
     <disk type="file" device="disk">
       <driver name="qemu" type="qcow2" cache="none" io="native" discard="unmap"/>
       <source file="/mnt/storage/VMs/images/win11-re.qcow2"/>
-      <target dev="sda" bus="scsi"/>
+      <target dev="sda" bus="scsi" rotation_rate="1"/>
       <serial>S7B5NS08528820</serial>
       <vendor>Samsung</vendor>
-      <product>SSD 980 PRO 2TB</product>
+      <product>SSD 860 PRO 512G</product>
       <address type="drive" controller="0" bus="0" target="0" unit="0"/>
-    </disk>
-    <disk type="file" device="cdrom">
-      <driver name="qemu" type="raw"/>
-      <source file="/mnt/storage/VMs/ISO/X23-81951_26100.1742.240906-0331.ge_release_svc_refresh_CLIENT_ENTERPRISES_OEM_x64FRE_en-us.iso"/>
-      <target dev="sdb" bus="sata"/>
-      <readonly/>
-      <address type="drive" controller="0" bus="0" target="0" unit="1"/>
-    </disk>
-    <disk type="file" device="cdrom">
-      <driver name="qemu" type="raw"/>
-      <source file="/mnt/storage/VMs/ISO/virtio-win-0.1.285.iso"/>
-      <target dev="sdc" bus="sata"/>
-      <readonly/>
-      <address type="drive" controller="0" bus="0" target="0" unit="2"/>
     </disk>
 
     <controller type="scsi" index="0" model="virtio-scsi">
