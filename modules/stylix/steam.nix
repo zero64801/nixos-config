@@ -100,8 +100,12 @@ let
     ${pkgs.coreutils}/bin/cp -r --no-preserve=mode ${adwaitaForSteam} "$work/adwaita-for-steam"
 
     # The installer exits 0 when a target fails, so its own error line counts as failure too.
+    # Window controls are pinned because auto detection reads XDG_CURRENT_DESKTOP, which the activation service lacks, and falls back to close only.
     if out=$(cd "$work/adwaita-for-steam" \
-        && ${pkgs.coreutils}/bin/timeout 60s ${lib.getExe pkgs.python3} install.py --custom-css ${customCss} 2>&1) \
+        && ${pkgs.coreutils}/bin/timeout 60s ${lib.getExe pkgs.python3} install.py \
+          --custom-css ${customCss} \
+          --windowcontrols-theme adwaita \
+          --windowcontrols-layout ':minimize,maximize,close' 2>&1) \
       && ! printf '%s' "$out" | ${pkgs.gnugrep}/bin/grep -qE 'Failed to install|Traceback'; then
       echo "Steam theme reapplied. Restart Steam to see it."
     else
