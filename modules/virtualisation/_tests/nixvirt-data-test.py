@@ -87,8 +87,8 @@ with open(CFG, "w") as f:
     }, "lx": {"paths": ["home/alice/notes"], "hashPaths": [], "sourcePaths": [], "highlight": {}, "definition": LDEFN}}}, f)
 
 
-def nv(*args, answers=""):
-    p = subprocess.run([sys.executable, TOOL, CFG] + list(args), input=answers, capture_output=True, text=True)
+def nv(*args, answers="", cfg=CFG):
+    p = subprocess.run([sys.executable, TOOL, cfg] + list(args), input=answers, capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -352,6 +352,46 @@ rc, out = nv("unlink", "t")
 check(rc == 0 and out.count("is already on the system disk") == 4 and "free drive" not in out and "next:" not in out, "unlink is idempotent", out)
 rc, out = nv("link", "t")
 check(rc == 0 and guest(W + "/r.qcow2", system_after, ro=True)[0] == links, "link works again after unlink", out)
+
+
+def dropped(dom, keys, env):
+    # The same config with some carry entries removed, as after an edit, to show unlink --only needs only the link itself.
+    with open(CFG) as f:
+        c = json.load(f)
+    block = c["domains"][dom]["windows" if dom == "t" else "linux"]
+    for k in keys:
+        del block["carry"][k]
+    block["userEnv"] = env
+    path = W + "/config-%s-dropped.json" % dom
+    with open(path, "w") as f:
+        json.dump(c, f)
+    return path
+
+
+def junctions(g):
+    g.mount_ro("/dev/sda2", "/")
+    u = "/Users/alice/"
+    state = {p: bool(g.is_symlink(u + p)) for p in ("Desktop/Kit", "Desktop/Work", ".agent")}
+    return state, None if state["Desktop/Work"] else bool(g.is_file(u + "Desktop/Work/parser/main.py", followsymlinks=False))
+
+
+rc, out = nv("unlink", "t", "--only", "Users/alice/Desktop/Work", "--dry-run")
+check(rc == 0 and "copy D:\\Work back to Users/alice/Desktop/Work" in out and "free drive" not in out and "AGENT_HOME" not in out,
+      "unlink --only plans just the named folder", out)
+rc, out = nv("unlink", "t", "--only", "Users/alice/Desktop/Work")
+state, work = guest(W + "/r.qcow2", junctions, ro=True)
+reg = registry(W + "/r.qcow2")
+check(rc == 0 and state == {"Desktop/Kit": True, "Desktop/Work": False, ".agent": True} and work
+      and reg["\\DosDevices\\D:"] == b"DMIO:ID:" + uuid.UUID(guid).bytes_le and "AGENT_HOME" in reg,
+      "unlink --only moves one folder back and keeps the drive letter, the other links and the environment", out + repr((state, work)))
+rc, out = nv("unlink", "t", "--only", "Users/alice/.agent", cfg=dropped("t", ["Users/alice/.agent", "Users/alice/.agent.json"], {}))
+state, _ = guest(W + "/r.qcow2", junctions, ro=True)
+reg = registry(W + "/r.qcow2")
+check(rc == 0 and not state[".agent"] and state["Desktop/Kit"] and "AGENT_HOME" not in reg and reg["TEMP"] == TEMP,
+      "after the entry left the config, unlink --only follows the junction and drops the variable pointing into it", out)
+rc, out = nv("link", "t")
+check(rc == 0 and guest(W + "/r.qcow2", system_after, ro=True)[0] == links and "AGENT_HOME" in registry(W + "/r.qcow2"),
+      "link puts everything back after unlink --only", out)
 
 live(BASE)
 rc, out = nv("link", "t")
@@ -751,6 +791,18 @@ rc, out = nv("unlink", "lx")
 check(rc == 0 and out.count("is already on the system disk") == 3 and "next:" not in out, "unlink is idempotent on Linux", out)
 rc, out = nv("link", "lx")
 check(rc == 0 and guest(LR, lx_system, ro=True)["kit"] == "/mnt/data/kit", "link works again after unlink on Linux", out)
+rc, out = nv("unlink", "lx", "--only", "home/alice/kit",
+             cfg=dropped("lx", ["home/alice/kit"], {"alice": {"AGENT_HOME": "/mnt/data/agent"}}))
+got = guest(LR, lx_system, ro=True)
+check(rc == 0 and got["kit"] is None and got["run"] == (b"#!/bin/sh\necho hi\n", 0o755) and got["agent"] == "/mnt/data/agent"
+      and got["env"] == b"AGENT_HOME=/mnt/data/agent\n" and "nixvirt-data: begin" in got["fstab"],
+      "on Linux, unlink --only follows the symlink and keeps the mount, the other links and unrelated variables", out + repr(got))
+rc, out = nv("unlink", "lx", "--only", "home/alice/.agent")
+got = guest(LR, lx_system, ro=True)
+check(rc == 0 and got["agent"] is None and got["env"] is None and "alice: remove AGENT_HOME" in out,
+      "unlink --only removes an environment.d line pointing into the folder", out + repr(got))
+rc, out = nv("link", "lx")
+check(rc == 0 and guest(LR, lx_system, ro=True)["agent"] == "/mnt/data/agent", "link restores the Linux links after unlink --only", out)
 
 rc, out = nv("revert-carry", "lx", "--pair", LS, LBASE, "--into", LN, answers="c\n")
 check(rc == 0 and "carried 2 change(s)" in out, "revert-carry works on a Linux guest with a separate /home", out)

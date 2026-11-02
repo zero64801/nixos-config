@@ -1525,10 +1525,10 @@ def tree_bytes(g, path, skip=None):
     return sum(e[1] for e in walk(g, path, skip).values() if e[0] == "r")
 
 
-def copy_back(g, req, root, data, target_of, is_ours):
+def copy_back(g, req, root, data, target_of, is_ours, nest=None):
     # Shared by both systems: each carried entry comes back from the data disk in place of its link.
     rw = not req["dry_run"]
-    dsts = [d for _, d in req["carry"]]
+    dsts = nest if nest is not None else [d for _, d in req["carry"]]
     steps, todo, need, where = [], [], {}, {}
     for src, dst in req["carry"]:
         s = root + "/" + checked(src)
@@ -1578,6 +1578,107 @@ def copy_back(g, req, root, data, target_of, is_ours):
     return steps, bool(todo)
 
 
+def junction_target(data):
+    # The substitute name Windows resolves, without its \??\ prefix.
+    if not data or len(data) < 16 or U32(data, 0)[0] != 0xA0000003:
+        return None
+    off, size = U16(data, 8)[0], U16(data, 10)[0]
+    name = data[16 + off:16 + off + size].decode("utf-16-le", "replace")
+    return name[4:] if name.startswith("\\??\\") else name
+
+
+def fstab_point(g, root):
+    path = root + "/etc/fstab"
+    if not g.is_file(path, followsymlinks=False):
+        return None
+    inside = False
+    for ln in g.read_file(path).decode("utf-8", "replace").splitlines():
+        if ln.strip() == FSTAB_BEGIN:
+            inside = True
+        elif ln.strip() == FSTAB_END:
+            inside = False
+        elif inside and len(ln.split()) >= 2:
+            return ln.split()[1].rstrip("/")
+    return None
+
+
+def drop_env_windows(g, root, targets, rw):
+    # Every profile is checked, since the entry that set a value may already be gone from the config.
+    steps = []
+    users = root + "/Users"
+    if not g.is_dir(users, followsymlinks=False):
+        return steps
+    low = [t.lower() for t in targets]
+    for name in sorted(g.ls(users)):
+        home = users + "/" + name
+        if g.is_symlink(home) or not g.is_dir(home, followsymlinks=False):
+            continue
+        hive = g.case_sensitive_path(home + "/NTUSER.DAT")
+        if not g.is_file(hive, followsymlinks=False):
+            continue
+        g.hivex_open(hive, write=False)
+        try:
+            node = g.hivex_node_get_child(g.hivex_root(), "Environment")
+            vals = hive_values(g, node) if node else {}
+        finally:
+            g.hivex_close()
+        drop = {}
+        for k, v in vals.items():
+            text = v.decode("utf-16-le", "replace").rstrip("\0").rstrip("\\").lower()
+            if any(text == t or text.startswith(t + "\\") for t in low):
+                drop[k] = v
+        if drop:
+            steps += ["%s: remove %s" % (name, k) for k in drop_values(g, hive, "Environment", drop, rw)]
+    return steps
+
+
+def drop_env_linux(g, root, targets, rw):
+    steps = []
+    for ln in g.read_file(root + "/etc/passwd").decode("utf-8", "replace").splitlines():
+        f = ln.split(":")
+        if len(f) < 7 or not f[5].strip("/"):
+            continue
+        path = root + "/" + f[5].strip("/") + "/" + ENV_FILE
+        if not g.is_file(path, followsymlinks=False):
+            continue
+        lines = g.read_file(path).decode("utf-8", "replace").splitlines()
+        keep = [x for x in lines if not any(x.partition("=")[2] == t or x.partition("=")[2].startswith(t + "/") for t in targets)]
+        if keep == lines:
+            continue
+        steps += ["%s: remove %s" % (f[0], x.partition("=")[0]) for x in lines if x not in keep]
+        if rw:
+            if keep:
+                g.write(path, ("\n".join(keep) + "\n").encode())
+            else:
+                g.rm(path)
+    return steps
+
+
+def unlink_only(g, req, root, data, link_of, dest_of, target_of, is_ours, drop_env):
+    # The link itself says where its data went, so this works whether or not the entry is still configured.
+    rw = not req["dry_run"]
+    config = dict(req["carry"])
+    steps, entries, targets = [], [], {}
+    for src in req["only"]:
+        s = root + "/" + checked(src)
+        target = link_of(s)
+        dst = dest_of(target) if target else None
+        if not dst and src in config and not lexists(g, s):
+            dst, target = config[src], target_of(config[src])
+        if not dst:
+            steps.append("%s does not link into the data disk, left alone" % src)
+            continue
+        entries.append((src, checked(dst)))
+        targets[dst] = target
+    more, changed = copy_back(g, dict(req, carry=entries), root, data, targets.__getitem__, is_ours,
+                              nest=[d for _, d in req["carry"]] + list(targets))
+    # A program pointed at a folder that left the data disk would keep using the data disk copy.
+    gone = drop_env(g, root, list(targets.values()), rw)
+    if rw:
+        g.sync()
+    return {"steps": steps + more + gone, "changed": changed or bool(gone)}
+
+
 def unlink(g, req, dev, fs, mp):
     system = req["systems"]["cs"]
     if system is None:
@@ -1591,8 +1692,22 @@ def unlink(g, req, dev, fs, mp):
     root = mp["cs"]
     if system["os"] == "linux":
         point = req["mount_point"].rstrip("/")
-        steps, changed = copy_back(g, req, root, mp["dd"], lambda dst: point + "/" + dst,
-                                   lambda s, target: g.is_symlink(s) and g.readlink(s) == target)
+
+        def is_ours(s, target):
+            return g.is_symlink(s) and g.readlink(s) == target
+
+        if req.get("only"):
+            points = {point} | ({p} if (p := fstab_point(g, root)) else set())
+
+            def link_of(s):
+                t = g.readlink(s) if g.is_symlink(s) else ""
+                return t if any(t.startswith(x + "/") for x in points) else None
+
+            def dest_of(t):
+                return t[len(next(x for x in points if t.startswith(x + "/"))) + 1:]
+
+            return unlink_only(g, req, root, mp["dd"], link_of, dest_of, lambda dst: point + "/" + dst, is_ours, drop_env_linux)
+        steps, changed = copy_back(g, req, root, mp["dd"], lambda dst: point + "/" + dst, is_ours)
         if fstab_block(g, root + "/etc/fstab", [], rw):
             steps.append("remove the data disk from /etc/fstab")
             changed = True
@@ -1605,11 +1720,30 @@ def unlink(g, req, dev, fs, mp):
         return {"steps": steps, "changed": changed}
     letter = req["letter"]
     guid = g.part_get_gpt_guid(dev["dd"], g.part_to_partnum(dparts[0]))
-    steps, changed = copy_back(g, req, root, mp["dd"], lambda dst: "%s:\\%s" % (letter, dst.replace("/", "\\")),
-                               lambda s, target: get_xattr(g, s, "system.ntfs_reparse_data") == junction(target))
+    ours = b"DMIO:ID:" + uuid.UUID(guid).bytes_le
     hive = g.case_sensitive_path(root + "/Windows/System32/config/SYSTEM")
+
+    def is_ours(s, target):
+        return (junction_target(get_xattr(g, s, "system.ntfs_reparse_data")) or "").lower() == target.lower()
+
+    if req.get("only"):
+        g.hivex_open(hive, write=False)
+        try:
+            md = g.hivex_node_get_child(g.hivex_root(), "MountedDevices")
+            mapped = {k[-2].upper() for k, v in (hive_values(g, md) if md else {}).items() if v == ours and len(k) == 14}
+        finally:
+            g.hivex_close()
+        mapped |= {letter.upper()} if letter else set()
+
+        def link_of(s):
+            t = junction_target(get_xattr(g, s, "system.ntfs_reparse_data"))
+            return t if t and re.fullmatch(r"[A-Za-z]:\\.+", t) and t[0].upper() in mapped else None
+
+        return unlink_only(g, req, root, mp["dd"], link_of, lambda t: t[3:].replace("\\", "/"),
+                           lambda dst: "%s:\\%s" % (letter, dst.replace("/", "\\")), is_ours, drop_env_windows)
+    steps, changed = copy_back(g, req, root, mp["dd"], lambda dst: "%s:\\%s" % (letter, dst.replace("/", "\\")), is_ours)
     key = "\\DosDevices\\%s:" % letter
-    if drop_values(g, hive, "MountedDevices", {key: b"DMIO:ID:" + uuid.UUID(guid).bytes_le}, rw):
+    if drop_values(g, hive, "MountedDevices", {key: ours}, rw):
         steps.append("free drive %s: from the data disk" % letter)
         changed = True
     for user, values in sorted(req["user_env"].items()):
@@ -2630,7 +2764,7 @@ def do_link(cfg, disk, dry_run=False, force=False):
         print("  " + safe(step))
 
 
-def do_unlink(cfg, disk, dry_run=False, copy=True, force=False):
+def do_unlink(cfg, disk, dry_run=False, copy=True, force=False, only=None):
     guest = guest_config(disk.spec)
     if not guest["carry"]:
         die("%s has no windows.carry or linux.carry entries" % disk.dom)
@@ -2654,6 +2788,7 @@ def do_unlink(cfg, disk, dry_run=False, copy=True, force=False):
             "carry": sorted(guest["carry"].items()),
             "user_env": guest["userEnv"],
             "copy": copy,
+            "only": only or [],
             "dry_run": dry_run,
         })
     finally:
@@ -2662,8 +2797,8 @@ def do_unlink(cfg, disk, dry_run=False, copy=True, force=False):
     for step in res["steps"] or ["nothing links to the data disk"]:
         print("  " + safe(step))
     if not dry_run and res["changed"]:
-        print("next: start %s to check it, then nixvirt-snapshot rotate %s keeps this; "
-              "after that the data disk can leave the config" % (disk.dom, disk.dom))
+        print("next: start %s to check it, then nixvirt-snapshot rotate %s keeps this; after that %s can leave the config" % (
+            disk.dom, disk.dom, "those entries" if only else "the data disk"))
 
 
 def cmd_carry(cfg, args):
@@ -2674,7 +2809,7 @@ def cmd_carry(cfg, args):
 
 def cmd_unlink(cfg, args):
     with locked(args.domain):
-        do_unlink(cfg, opened(cfg, args), args.dry_run, not args.no_copy, args.force)
+        do_unlink(cfg, opened(cfg, args), args.dry_run, not args.no_copy, args.force, args.only)
     return 0
 
 
@@ -3012,6 +3147,10 @@ def main():
                 "remove the environment", "domain")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-copy", action="store_true", help="only remove the links, copying nothing back")
+    p.add_argument("--only", action="append", metavar="PATH",
+                   help="move back just this system disk path, like Users/me/.vscode, and any environment value pointing into "
+                   "its folder, leaving the drive letter and the other links alone. Repeatable, and it works after the entry "
+                   "left the config")
     p.add_argument("--force", action="store_true", help="allow editing a system disk that is not a snapshot overlay")
     p = command("reclaim", "return the free space of a disk's base image to the host, for example after link and rotate", "domain")
     p.add_argument("--disk", help="target name such as sda (default: the system disk)")
