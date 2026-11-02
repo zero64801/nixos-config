@@ -1217,6 +1217,8 @@ let
       pkgs.ntfs3g
       pkgs.coreutils
       pkgs.gnugrep
+      pkgs.gnused
+      pkgs.libguestfs
     ];
     text = ''
       base_root=/run/nixvirt-mounts
@@ -1269,6 +1271,15 @@ let
           echo "$dom: some mounts still busy; left $base in place" >&2
           exit 1
         fi
+        # A guestmount daemon writes back after its unmount, so the image is only free once it exits.
+        for pidf in "$base"/.*.pid; do
+          [ -f "$pidf" ] || continue
+          pid=$(cat "$pidf")
+          for _ in $(seq 1 600); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+        done
         if [ -f "$base/.nbd" ]; then
           while read -r dev; do
             [ -n "$dev" ] || continue
@@ -1315,8 +1326,15 @@ let
         echo
       fi
 
-      modprobe nbd max_part=16 2>/dev/null || true
-      [ -e /dev/nbd0 ] || { echo "nbd kernel module unavailable" >&2; exit 1; }
+      untrusted=0
+      untrusted_domains=(${lib.escapeShellArgs cfg.untrusted})
+      for u in "''${untrusted_domains[@]}"; do
+        if [ "$u" = "$dom" ]; then untrusted=1; fi
+      done
+      if [ "$untrusted" -eq 0 ]; then
+        modprobe nbd max_part=16 2>/dev/null || true
+        [ -e /dev/nbd0 ] || { echo "nbd kernel module unavailable" >&2; exit 1; }
+      fi
 
       mkdir -p "$base"
       : > "$base/.nbd"
@@ -1337,6 +1355,38 @@ let
         [ "$device" = "disk" ] || continue
         [ "$ttype" = "file" ] || continue
         [ -n "$source" ] && [ "$source" != "-" ] && [ -f "$source" ] || continue
+
+        if [ "$untrusted" -eq 1 ]; then
+          # The libguestfs appliance parses the guest's filesystems in its own kernel, so a crafted one has to escape a VM
+          # rather than exploit a host driver. The appliance gets no network.
+          mp="$base/$target"
+          mkdir -p "$mp"
+          fmt=$(qemu-img info -U "$source" 2>/dev/null | sed -n 's/^file format: //p')
+          gm_opts=(--ro)
+          if [ "$rw" -eq 1 ]; then gm_opts=(); fi
+          ok=0
+          for how in -i /dev/sda1 /dev/sda; do
+            sel=(-i)
+            if [ "$how" != "-i" ]; then sel=(-m "$how"); fi
+            if unshare --net -- env -i PATH="$PATH" HOME=/root TMPDIR=/tmp LIBGUESTFS_BACKEND=direct \
+                LIBGUESTFS_PATH=${pkgs.libguestfs-appliance} \
+                guestmount "''${gm_opts[@]}" --format="''${fmt:-raw}" -a "$source" "''${sel[@]}" -o allow_other \
+                --pid-file "$base/.$target.pid" "$mp" 9>&- 2>/dev/null; then
+              ok=1
+              break
+            fi
+          done
+          if [ "$ok" -eq 1 ]; then
+            what="$how"
+            if [ "$how" = "-i" ]; then what="the guest's own filesystem layout"; fi
+            echo "$target ($source) -> $mp  (through the libguestfs appliance: $what)"
+            mounted_any=1
+          else
+            rmdir "$mp" 2>/dev/null || true
+            echo "$target ($source): no mountable filesystem; skipped" >&2
+          fi
+          continue
+        fi
 
         dev=$(find_free_nbd) || { echo "no free nbd device" >&2; continue; }
         nbd_opts=(--read-only)
@@ -1588,6 +1638,16 @@ in
       '';
     };
 
+    untrusted = mkOption {
+      type = listOf str;
+      default = [ ];
+      example = [ "malware-lab" ];
+      description = ''
+        Domains whose guests may be hostile. `nixvirt-mount` opens their disks with guestmount through the libguestfs
+        appliance instead of the host kernel's filesystem drivers, so a crafted filesystem has to escape a VM.
+      '';
+    };
+
     carryOnRevert = mkOption {
       type = attrsOf (submodule {
         options = {
@@ -1690,6 +1750,10 @@ in
           message = "my.virtualisation.nixvirt.carryOnRevert.${n}.paths must not contain one another";
         }
       ]) cfg.carryOnRevert
+      ++ map (n: {
+        assertion = builtins.elem n (map (d: domainName d.definition) cfg.domains);
+        message = "my.virtualisation.nixvirt.untrusted: no domain in my.virtualisation.nixvirt.domains is named ${n}";
+      }) cfg.untrusted
     );
 
     virtualisation.libvirt = {
