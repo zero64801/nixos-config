@@ -28,6 +28,8 @@ stdenv.mkDerivation (finalAttrs: {
     hash = "sha256-TY+04kSwz14hcC6U0YM4Filpm5uv5ng8EVrVA9Khc+w=";
   };
 
+  patches = [ ./marinara-engine/advanced-memory-drain.patch ];
+
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     inherit pnpm;
