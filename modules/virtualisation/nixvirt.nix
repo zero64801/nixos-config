@@ -8,9 +8,203 @@
 
 let
   inherit (lib) getExe mkEnableOption mkIf mkOption;
-  inherit (lib.types) bool listOf nullOr path submodule;
+  inherit (lib.types)
+    attrsOf
+    bool
+    enum
+    ints
+    listOf
+    nullOr
+    path
+    str
+    submodule
+    ;
 
   cfg = config.my.virtualisation.nixvirt;
+
+  hasData = cfg.dataDisks != { };
+  hasCarry = cfg.carryOnRevert != { };
+  dataUser = "nixvirt-guestfs";
+
+  domainName =
+    def:
+    let
+      after = lib.splitString "<name>" (builtins.readFile def);
+    in
+    if builtins.length after < 2 then
+      null
+    else
+      lib.trim (builtins.head (lib.splitString "</name>" (builtins.elemAt after 1)));
+
+  withDataDisk =
+    d:
+    let
+      name = domainName d.definition;
+      dd = cfg.dataDisks.${name} or null;
+      prefix = if dd.bus == "virtio" then "vd" else "sd";
+      sub = path: kind: n: v: [
+        "-s"
+        path
+        "-t"
+        kind
+        "-n"
+        n
+        "-v"
+        v
+      ];
+      args =
+        sub "/domain/devices" "elem" "nvdata" ""
+        ++ sub "//nvdata" "attr" "type" "file"
+        ++ sub "//nvdata" "attr" "device" "disk"
+        ++ sub "//nvdata" "attr" "snapshot" "no"
+        ++ sub "//nvdata" "elem" "driver" ""
+        ++ sub "//nvdata/driver" "attr" "name" "qemu"
+        ++ sub "//nvdata/driver" "attr" "type" "raw"
+        ++ sub "//nvdata/driver" "attr" "cache" "none"
+        ++ sub "//nvdata/driver" "attr" "io" "native"
+        ++ sub "//nvdata/driver" "attr" "discard" "unmap"
+        ++ sub "//nvdata" "elem" "source" ""
+        ++ sub "//nvdata/source" "attr" "file" dd.image
+        ++ sub "//nvdata" "elem" "target" ""
+        ++ sub "//nvdata/target" "attr" "bus" dd.bus
+        # An SSD rotation rate keeps Windows from defragmenting the disk, which would rewrite every revision's blocks.
+        ++ lib.optionals (dd.bus != "virtio") (sub "//nvdata/target" "attr" "rotation_rate" "1")
+        ++ lib.optionals (dd.serial != null) (sub "//nvdata" "elem" "serial" dd.serial)
+        ++ lib.optionals (dd.vendor != null) (sub "//nvdata" "elem" "vendor" dd.vendor)
+        ++ lib.optionals (dd.product != null) (sub "//nvdata" "elem" "product" dd.product);
+    in
+    if dd == null then
+      d
+    else
+      d
+      // {
+        definition =
+          pkgs.runCommand "${name}.xml"
+            {
+              nativeBuildInputs = [
+                pkgs.xmlstarlet
+                pkgs.libxml2
+                config.virtualisation.libvirtd.package
+              ];
+            }
+            ''
+              src=${d.definition}
+              if xmlstarlet sel -t -m "/domain/devices/disk/source" -v @file -n "$src" | grep -qxF ${lib.escapeShellArg dd.image}; then
+                echo "${name}: the domain XML already attaches ${dd.image}; remove that disk, the data disk config adds it" >&2
+                exit 1
+              fi
+              used=$(xmlstarlet sel -t -m "/domain/devices/disk/target" -v @dev -n "$src")
+              dev=""
+              for c in b c d e f g h i j k l m n o p q r s t u v w x y z; do
+                if ! printf '%s\n' "$used" | grep -qx "${prefix}$c"; then dev="${prefix}$c"; break; fi
+              done
+              [ -n "$dev" ] || { echo "${name}: no free ${prefix}? target for the data disk" >&2; exit 1; }
+              xmlstarlet ed ${lib.escapeShellArgs args} \
+                -s //nvdata/target -t attr -n dev -v "$dev" \
+                -r //nvdata -v disk "$src" > $out
+              virt-xml-validate $out domain
+            '';
+      };
+
+  domains = map withDataDisk cfg.domains;
+
+  definitionOf =
+    n: (lib.findFirst (d: domainName d.definition == n) { definition = null; } cfg.domains).definition;
+
+  relativePath =
+    p:
+    lib.all (
+      c:
+      !builtins.elem c [
+        ""
+        "."
+        ".."
+      ]
+    ) (lib.splitString "/" p);
+
+  dataConfig = pkgs.writeText "nixvirt-data.json" (
+    builtins.toJSON {
+      user = dataUser;
+      appliance = "${pkgs.libguestfs-appliance}";
+      domains = lib.mapAttrs (n: dd: dd // { definition = definitionOf n; }) cfg.dataDisks;
+      carry = lib.mapAttrs (n: c: c // { definition = definitionOf n; }) cfg.carryOnRevert;
+    }
+  );
+
+  dataPython = pkgs.python3.withPackages (ps: [ ps.guestfs ]);
+
+  nixvirtData = pkgs.writeShellApplication {
+    name = "nixvirt-data";
+    runtimeInputs = [
+      config.virtualisation.libvirtd.package
+      pkgs.qemu
+      pkgs.coreutils
+      pkgs.util-linux
+      pkgs.less
+    ];
+    text = ''
+      export LIBVIRT_DEFAULT_URI=qemu:///system
+      exec ${dataPython}/bin/python3 ${./_nixvirt-data.py} ${dataConfig} "$@"
+    '';
+  };
+
+  nixvirtResize = pkgs.writeShellApplication {
+    name = "nixvirt-resize";
+    text = ''
+      if [ "$#" -lt 2 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+        exec ${getExe nixvirtData} resize --help
+      fi
+      exec ${getExe nixvirtData} resize "$@"
+    '';
+  };
+
+  # Runs inside nixvirt-snapshot revert, after the target snapshot is resolved and before the confirmation.
+  revertDataReview = lib.optionalString hasData ''
+    if [ "$no_data" -eq 0 ] && nixvirt-data has "$dom"; then
+      tsnap=$(virsh snapshot-dumpxml "$dom" "$target")
+      pairs=()
+      while IFS="|" read -r tdev _; do
+        [ -n "$tdev" ] || continue
+        pbase=$(printf '%s\n' "$tsnap" | xmlstarlet sel -t \
+          -m "/domainsnapshot/domain/devices/disk[target/@dev='$tdev' and @device='disk']" -v "source/@file" -n)
+        plive=$(virsh domblklist "$dom" --inactive | awk -v t="$tdev" '$1 == t { print $2 }')
+        if [ -n "$pbase" ] && [ -n "$plive" ] && [ "$pbase" != "$plive" ]; then
+          pairs+=(--c-pair "$plive" "$pbase")
+        fi
+      done < <(printf '%s\n' "$tsnap" \
+        | xmlstarlet sel -t -m "/domainsnapshot/disks/disk[@snapshot='external']" -v @name -o "|" -v "source/@file" -n)
+      rc=0
+      nixvirt-data review "$dom" "''${pairs[@]}" || rc=$?
+      case "$rc" in
+        0) echo ;;
+        10) echo "aborted; nothing was reverted."; exit 0 ;;
+        *) echo "data disk review failed; nothing was reverted (--no-data skips the review)" >&2; exit 1 ;;
+      esac
+    fi
+  '';
+
+  # Runs inside nixvirt-snapshot revert after the confirmation and before anything is discarded, so an abort or a failure reverts nothing.
+  revertCarry = lib.optionalString hasCarry ''
+    if [ "$no_carry" -eq 0 ] && nixvirt-data has-carry "$dom"; then
+      csnap=$(virsh snapshot-dumpxml "$dom" "$target")
+      while IFS="|" read -r tdev overlay; do
+        [ -n "$tdev" ] && [ -n "$overlay" ] || continue
+        cbase=$(printf '%s\n' "$csnap" | xmlstarlet sel -t \
+          -m "/domainsnapshot/domain/devices/disk[target/@dev='$tdev' and @device='disk']" -v "source/@file" -n)
+        clive=$(virsh domblklist "$dom" --inactive | awk -v t="$tdev" '$1 == t { print $2 }')
+        [ -n "$cbase" ] && [ -n "$clive" ] && [ "$cbase" != "$clive" ] || continue
+        rm -f "$overlay.carry"
+        rc=0
+        nixvirt-data revert-carry "$dom" --disk "$tdev" --pair "$clive" "$cbase" --into "$overlay.carry" || rc=$?
+        case "$rc" in
+          0) ;;
+          10) rm -f "$overlay.carry"; echo "aborted; nothing was reverted."; exit 0 ;;
+          *) rm -f "$overlay.carry"; echo "carrying changes failed; nothing was reverted (--no-carry skips carrying)" >&2; exit 1 ;;
+        esac
+      done < <(printf '%s\n' "$csnap" \
+        | xmlstarlet sel -t -m "/domainsnapshot/disks/disk[@snapshot='external']" -v @name -o "|" -v "source/@file" -n)
+    fi
+  '';
 
   # Safe only because snapshotFixup runs at ExecStartPost after every declarative domain is defined, so an unreferenced *.fd belongs to a removed domain.
   nvramReaper = lib.optionalString cfg.reapNvram ''
@@ -96,7 +290,8 @@ let
       pkgs.gnused
       pkgs.gawk
       pkgs.util-linux
-    ];
+    ]
+    ++ lib.optional (hasData || hasCarry) nixvirtData;
     text = ''
       export LIBVIRT_DEFAULT_URI=qemu:///system
 
@@ -108,7 +303,10 @@ let
                                                          create a snapshot (defaults: external, disk-only; --mem adds RAM state, --internal stores inside the qcow2)
         commit  [-y] [-a|--all] [--to <snap>] <domain>   merge snapshot overlay(s) down into their base (alias: flatten)
         rotate  [-y] [--as <new>] <domain> [name]        commit through snapshot [name] (default: current), then recreate it (renamed to <new> if given)
-        revert  [-y] <domain> [name]                     restore the disk state saved by snapshot [name] (default: current), discarding newer changes (VM must be off)
+        revert  [-y] [--no-data] [--no-carry] <domain> [name]
+                                                         restore the disk state saved by snapshot [name] (default: current), discarding newer changes (VM must be off);
+                                                         a domain with a data disk reviews it first (--no-data skips that), and one with
+                                                         carryOnRevert paths reviews their changes for the fresh layer (--no-carry skips that)
         delete  [-y] <domain> [name]                     delete snapshot [name] (default: current), KEEPING current data: external merges down (like virt-manager), internal via virsh
         list    <domain>                                 show the snapshot chain and live disk state
       EOF
@@ -127,6 +325,10 @@ let
           y|Y|yes|YES) return 0 ;;
           *) echo "aborted; nothing was changed."; exit 0 ;;
         esac
+      }
+
+      vsize() {
+        qemu-img info -U "$1" 2>/dev/null | sed -n 's/^virtual size: .*(\([0-9]*\) bytes)$/\1/p'
       }
 
       # Not virt-xml, which edits only <source> and leaves a stale <backingStore> that ends up pointing at itself and stops the VM from booting.
@@ -149,11 +351,15 @@ let
       mem=0
       mempath=""
       internal=0
+      no_data=0
+      no_carry=0
       pos=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
           -h|--help) usage; exit 0 ;;
           -y|--yes) assume_yes=1 ;;
+          --no-data) no_data=1 ;;
+          --no-carry) no_carry=1 ;;
           -a|--all) all=1 ;;
           --to)
             if [ "$#" -lt 2 ]; then echo "--to requires a snapshot name" >&2; exit 1; fi
@@ -188,6 +394,10 @@ let
       fi
       if [ -n "$as_name" ] && [ "$sub" != "rotate" ]; then
         echo "--as only applies to rotate" >&2
+        exit 1
+      fi
+      if { [ "$no_data" -eq 1 ] || [ "$no_carry" -eq 1 ]; } && [ "$sub" != "revert" ]; then
+        echo "--no-data and --no-carry only apply to revert" >&2
         exit 1
       fi
       if { [ "$mem" -eq 1 ] || [ "$internal" -eq 1 ]; } && [ "$sub" != "create" ]; then
@@ -293,10 +503,12 @@ let
             mempath="$(dirname "$firstdisk")/$dom-mem.$name"
           fi
           cargs=(--memspec "file=$mempath,snapshot=external" --atomic)
+          # Disks marked snapshot="no", like a data disk, keep their domain default.
           while read -r tdev; do
             [ -n "$tdev" ] || continue
             cargs+=(--diskspec "$tdev,snapshot=external")
-          done < <(virsh domblklist "$dom" --details 2>/dev/null | awk '$2 == "disk" { print $3 }')
+          done < <(virsh dumpxml "$dom" 2>/dev/null \
+            | xmlstarlet sel -t -m "/domain/devices/disk[@device='disk' and not(@snapshot='no')]" -v "target/@dev" -n)
           echo "Creating external disk+memory snapshot '$name' of '$dom'."
           echo "RAM state -> $mempath"
           echo "note: fails while a VFIO device (GPU) is attached (RAM saving uses the blocked migration machinery)."
@@ -429,6 +641,8 @@ let
           fi
         done
 
+        ${revertDataReview}
+
         echo "Reverting '$dom' to snapshot '$target' (the disk state at its creation)."
         echo "This DISCARDS all changes made after '$target' was taken."
         if [ "$tidx" -gt 0 ]; then
@@ -442,6 +656,8 @@ let
         fi
         echo
         confirm "Proceed and revert to '$target'?"
+
+        ${revertCarry}
 
         discard() {
           [ -f "$1" ] || return 0
@@ -487,8 +703,13 @@ let
           fi
           if [ "$devtype" = "disk" ] && [ "$overlay" != "$base" ]; then
             discard "$overlay"
-            qemu-img create -f qcow2 -b "$base" -F qcow2 "$overlay" >/dev/null
-            echo "$dom: $tdev fresh overlay $overlay (backed by $base)"
+            if [ -f "$overlay.carry" ]; then
+              mv "$overlay.carry" "$overlay"
+              echo "$dom: $tdev fresh overlay $overlay with the carried changes (backed by $base)"
+            else
+              qemu-img create -f qcow2 -b "$base" -F qcow2 "$overlay" >/dev/null
+              echo "$dom: $tdev fresh overlay $overlay (backed by $base)"
+            fi
             repoint_disk "$tdev" "$overlay"
           else
             [ "$overlay" != "$base" ] && discard "$overlay"
@@ -670,6 +891,12 @@ let
 
           for row in "''${commit_rows[@]}"; do
             IFS="|" read -r target overlay base devtype <<<"$row"
+            ovsize=$(vsize "$overlay")
+            basesize=$(vsize "$base")
+            if [ -n "$ovsize" ] && [ -n "$basesize" ] && [ "$ovsize" -lt "$basesize" ]; then
+              echo "$dom: $target was shrunk in its overlay, but a live commit keeps the base's larger size;" >&2
+              echo "  run nixvirt-resize $dom with the shrunk size again while the VM is off" >&2
+            fi
             if ! virsh blockjob "$dom" "$target" --pivot; then
               echo "$dom: pivot failed for $target — the job is still synchronized; retry 'virsh blockjob $dom $target --pivot' or cancel with --abort" >&2
               exit 1
@@ -697,7 +924,14 @@ let
             if [ -f "$overlay" ] && [ "$overlay" != "$base" ]; then
               if [ "$devtype" = "disk" ] && qemu-img info -U "$overlay" | grep -q "^backing file:"; then
                 echo "$dom: committing $target  $overlay -> $base"
+                ovsize=$(vsize "$overlay")
                 qemu-img commit "$overlay"
+                basesize=$(vsize "$base")
+                # qemu-img commit grows a smaller base but never shrinks a larger one, so a shrink made in the overlay is finished here.
+                if [ -n "$ovsize" ] && [ -n "$basesize" ] && [ "$ovsize" -lt "$basesize" ]; then
+                  qemu-img resize -q --shrink "$base" "$ovsize"
+                  echo "$dom: shrank $base to the committed size"
+                fi
                 rm -f "$overlay"
               else
                 echo "$dom: discarding $target overlay (cdrom/no backing): $overlay"
@@ -1215,19 +1449,266 @@ in
         service start. Turn off if you keep nvram for domains managed outside NixVirt.
       '';
     };
+
+    dataDisks = mkOption {
+      type = attrsOf (submodule {
+        options = {
+          image = mkOption {
+            type = str;
+            description = ''
+              Raw image attached to the domain with snapshot="no", so snapshots and reverts never touch it.
+              The disk element is added to the domain definition at build time and the image is created sparse when missing.
+              Revisions are reflink copies next to it, so it must sit on btrfs or XFS.
+            '';
+          };
+          bus = mkOption {
+            type = enum [
+              "scsi"
+              "sata"
+              "virtio"
+            ];
+            default = "scsi";
+            description = "Bus the data disk is attached to. The first free sdX or vdX target name is used.";
+          };
+          serial = mkOption {
+            type = nullOr str;
+            default = null;
+            description = "Serial number the guest sees.";
+          };
+          vendor = mkOption {
+            type = nullOr str;
+            default = null;
+            description = "Vendor the guest sees (scsi only, up to 8 characters).";
+          };
+          product = mkOption {
+            type = nullOr str;
+            default = null;
+            description = "Product name the guest sees (scsi only, up to 16 characters).";
+          };
+          size = mkOption {
+            type = nullOr str;
+            default = null;
+            description = ''
+              Virtual size (K, M, G or T suffix). Null follows the domain's system disk, so anything that fit there fits here:
+              `nixvirt-resize` resizes both together, and a system disk grown some other way grows this one, partition and filesystem
+              included, at the next nixvirt service start while the VM is off. Only `nixvirt-resize` ever shrinks it.
+            '';
+          };
+          keep = mkOption {
+            type = ints.positive;
+            default = 3;
+            description = "How many kept revisions to retain. Pinned revisions are not counted.";
+          };
+          hashPaths = mkOption {
+            type = listOf str;
+            default = [ ];
+            description = "Folders on the data disk compared by content, which catches files rewritten with their size and date kept.";
+          };
+          sourcePaths = mkOption {
+            type = listOf str;
+            default = [ ];
+            description = "Folders where edited scripts are normal work, so they are not listed under RUNS CODE.";
+          };
+          highlight = mkOption {
+            type = attrsOf (listOf str);
+            default = { };
+            example = {
+              "RUNS CODE" = [ "work/*.cfg" ];
+              "CONFIG" = [ "*/settings.json" ];
+            };
+            description = ''
+              Extra review sections, from a title to case-insensitive glob patterns relative to the data disk root (* also matches /).
+              Patterns under "RUNS CODE" add to the built-in executable, script, git hook and editor task rules.
+            '';
+          };
+          rescueRoot = mkOption {
+            type = nullOr str;
+            default = null;
+            description = "Folder on the system disk that a revert scans for files it would lose, which can be copied to the data disk first.";
+          };
+          rescueExclude = mkOption {
+            type = listOf str;
+            default = [ ];
+            description = "Glob patterns relative to rescueRoot that the revert scan skips.";
+          };
+          windows = {
+            letter = mkOption {
+              type = nullOr str;
+              default = null;
+              description = "Drive letter `nixvirt-data link` pins the data disk to. A CD drive holding it moves to a free letter.";
+            };
+            carry = mkOption {
+              type = attrsOf str;
+              default = { };
+              example = {
+                "Users/me/Documents/Work" = "Work";
+              };
+              description = ''
+                System disk path to data disk path. `nixvirt-data carry` copies them over with their Windows permissions,
+                and after a revert `nixvirt-data link` deletes the system disk copies and puts junctions where folders were.
+              '';
+            };
+            userEnv = mkOption {
+              type = attrsOf (attrsOf str);
+              default = { };
+              description = "Per profile folder under Users, environment variables `nixvirt-data link` writes into that user's registry hive.";
+            };
+          };
+          linux = {
+            mountPoint = mkOption {
+              type = str;
+              default = "/mnt/data";
+              description = "Where `nixvirt-data link` mounts the data disk in a Linux guest, through a marked block in its /etc/fstab.";
+            };
+            carry = mkOption {
+              type = attrsOf str;
+              default = { };
+              example = {
+                "home/me/work" = "work";
+              };
+              description = ''
+                Path relative to the guest's root to data disk path, for a Linux guest, which formats the data disk as ext4.
+                `nixvirt-data carry` copies them with their owners, modes and ACLs, and after a revert `nixvirt-data link`
+                replaces carried folders with symlinks into the mount point. A carried file is only removed from the system disk,
+                because programs that save by renaming would replace a link. Point them at the data disk with userEnv.
+              '';
+            };
+            userEnv = mkOption {
+              type = attrsOf (attrsOf str);
+              default = { };
+              description = "Per guest user, environment variables `nixvirt-data link` writes to ~/.config/environment.d, which systemd user sessions read.";
+            };
+          };
+        };
+      });
+      default = { };
+      description = ''
+        Persistent data disks with reviewed revisions, keyed by domain name. A revert of such a domain first reviews
+        what changed on the data disk since the last kept revision, then keeps or discards it.
+      '';
+    };
+
+    carryOnRevert = mkOption {
+      type = attrsOf (submodule {
+        options = {
+          paths = mkOption {
+            type = listOf str;
+            example = [ "Users/me/AppData/Roaming/Tool/config" ];
+            description = ''
+              Folders and files on the system disk, relative to the root of the filesystem holding them. After the revert is
+              confirmed, their changes since the snapshot are reviewed, and the chosen ones, deletions included, are copied
+              into the fresh snapshot layer with their permissions. This suits small folders, and large ones belong on a data disk.
+            '';
+          };
+          hashPaths = mkOption {
+            type = listOf str;
+            default = [ ];
+            description = "Paths among them compared by content, which catches files rewritten with their size and date kept.";
+          };
+          sourcePaths = mkOption {
+            type = listOf str;
+            default = [ ];
+            description = "Paths among them where edited scripts are normal work, so they are not listed under RUNS CODE.";
+          };
+          highlight = mkOption {
+            type = attrsOf (listOf str);
+            default = { };
+            description = "Extra review sections, from a title to case-insensitive glob patterns relative to the filesystem root.";
+          };
+        };
+      });
+      default = { };
+      description = ''
+        Per domain, paths whose changes a revert can carry into the fresh layer after a review, instead of losing them.
+        Unlike a data disk, the copy happens on every revert until a rotate keeps it in the base.
+      '';
+    };
   };
 
   config = mkIf cfg.enable {
-    environment.systemPackages = [ nixvirtSnapshot nixvirtMount ];
+    environment.systemPackages = [
+      nixvirtSnapshot
+      nixvirtMount
+      nixvirtData
+      nixvirtResize
+    ];
+
+    assertions = lib.flatten (
+      lib.mapAttrsToList (n: dd: [
+        {
+          assertion = builtins.elem n (map (d: domainName d.definition) cfg.domains);
+          message = "my.virtualisation.nixvirt.dataDisks.${n}: no domain in my.virtualisation.nixvirt.domains is named ${n}";
+        }
+        {
+          assertion = dd.bus == "scsi" || (dd.vendor == null && dd.product == null);
+          message = "my.virtualisation.nixvirt.dataDisks.${n}: vendor and product only apply to the scsi bus";
+        }
+        {
+          # xmlstarlet reads & in values as the start of an entity.
+          assertion = lib.all (v: v == null || builtins.match ''.*[&<>"].*'' v == null) [
+            dd.image
+            dd.serial
+            dd.vendor
+            dd.product
+          ];
+          message = "my.virtualisation.nixvirt.dataDisks.${n}: image, serial, vendor and product cannot contain & < > or \"";
+        }
+        {
+          assertion = dd.windows.letter == null || builtins.match "[D-Z]" dd.windows.letter != null;
+          message = "my.virtualisation.nixvirt.dataDisks.${n}.windows.letter must be one upper case letter from D to Z";
+        }
+        {
+          assertion = dd.windows.carry == { } || dd.linux.carry == { };
+          message = "my.virtualisation.nixvirt.dataDisks.${n}: a data disk serves one system, so set windows.carry or linux.carry";
+        }
+        {
+          assertion = builtins.match "/[^[:space:]]*[^/[:space:]]" dd.linux.mountPoint != null;
+          message = "my.virtualisation.nixvirt.dataDisks.${n}.linux.mountPoint must be an absolute path without spaces";
+        }
+        {
+          assertion = lib.all relativePath (lib.attrNames dd.linux.carry ++ lib.attrValues dd.linux.carry);
+          message = "my.virtualisation.nixvirt.dataDisks.${n}.linux.carry paths must be relative, without . or .. components";
+        }
+        {
+          assertion = lib.all relativePath (
+            lib.attrNames dd.windows.carry ++ lib.attrValues dd.windows.carry
+          );
+          message = "my.virtualisation.nixvirt.dataDisks.${n}.windows.carry paths must be relative, without . or .. components";
+        }
+      ]) cfg.dataDisks
+      ++ lib.mapAttrsToList (n: c: [
+        {
+          assertion = builtins.elem n (map (d: domainName d.definition) cfg.domains);
+          message = "my.virtualisation.nixvirt.carryOnRevert.${n}: no domain in my.virtualisation.nixvirt.domains is named ${n}";
+        }
+        {
+          assertion = c.paths != [ ] && lib.all relativePath c.paths;
+          message = "my.virtualisation.nixvirt.carryOnRevert.${n}.paths must be relative, without . or .. components";
+        }
+        {
+          assertion = lib.all (p: lib.all (q: p == q || !lib.hasPrefix "${q}/" p) c.paths) c.paths;
+          message = "my.virtualisation.nixvirt.carryOnRevert.${n}.paths must not contain one another";
+        }
+      ]) cfg.carryOnRevert
+    );
 
     virtualisation.libvirt = {
       enable = true;
       swtpm.enable = true;
-      connections."qemu:///system".domains = cfg.domains;
+      connections."qemu:///system".domains = domains;
     };
 
+    users.users.${dataUser} = {
+      isSystemUser = true;
+      group = dataUser;
+      extraGroups = [ "kvm" ];
+      description = "Runs the libguestfs appliance that reads and resizes guest disks";
+    };
+    users.groups.${dataUser} = { };
+
     systemd.services.nixvirt = {
-      restartTriggers = map (d: d.definition) cfg.domains;
+      restartTriggers = map (d: d.definition) domains;
+      serviceConfig.ExecStartPre = mkIf hasData "${getExe nixvirtData} init --all";
       serviceConfig.ExecStartPost = getExe snapshotFixup;
     };
   };
