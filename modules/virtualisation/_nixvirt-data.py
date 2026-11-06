@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -68,6 +69,67 @@ def human(n):
         if abs(n) < 1024 or unit == "TB":
             return "%d %s" % (n, unit) if unit == "B" else "%.1f %s" % (n, unit)
         n /= 1024
+
+
+def seconds(s):
+    return "%.1f s" % s if s < 60 else "%dm %02ds" % divmod(round(s), 60)
+
+
+class Progress:
+    # A status line redrawn in place on a terminal while the worker scans. The time left comes from how long the last scan of
+    # the same disk took, or else from the current step when the worker reports its size.
+    def __init__(self, expected):
+        self.tty = sys.stdout.isatty()
+        self.expected = expected
+        self.start = time.monotonic()
+        self.state = ("starting", None, None, self.start)
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        if self.tty:
+            threading.Thread(target=self.tick, daemon=True).start()
+
+    def __call__(self, step, done=None, total=None):
+        with self.lock:
+            self.state = (step, done, total, self.state[3] if step == self.state[0] else time.monotonic())
+        self.draw()
+
+    def tick(self):
+        while not self.stop.wait(0.5):
+            self.draw()
+
+    def draw(self):
+        if not self.tty:
+            return
+        with self.lock:
+            if self.stop.is_set():
+                return
+            step, done, total, since = self.state
+            now = time.monotonic()
+            elapsed = now - self.start
+            frac = left = None
+            if self.expected and elapsed < self.expected:
+                frac, left = elapsed / self.expected, self.expected - elapsed
+            elif total:
+                frac = done / total
+                if done and now - since > 2:
+                    left = (now - since) / done * (total - done)
+            parts = []
+            if frac is not None:
+                fill = int(frac * 20)
+                parts.append("[%s%s] %3d%%" % ("#" * fill, "-" * (20 - fill), frac * 100))
+            whole = lambda s: "%d s" % s if s < 60 else "%dm %02ds" % divmod(round(s), 60)
+            parts.append("about %s left" % whole(max(left, 1)) if left else whole(elapsed))
+            parts.append(step + (" %s/%s" % (format(done, ","), format(total, ",")) if total else ""))
+            line = "  " + "  ".join(parts)
+            sys.stdout.write("\r\x1b[K" + line[:shutil.get_terminal_size().columns - 1])
+            sys.stdout.flush()
+
+    def close(self):
+        self.stop.set()
+        if self.tty:
+            with self.lock:
+                sys.stdout.write("\r\x1b[K")
+                sys.stdout.flush()
 
 
 def parse_size(text):
@@ -463,7 +525,9 @@ class Exports:
             self.stop(name)
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def call(self, req):
+    def call(self, req, late=None, show=None):
+        # late: a function whose fields reach the worker after it started, so slow host work overlaps with it.
+        # show: gets each progress step the worker reports.
         env = [
             "env", "-i",
             "PATH=" + os.environ.get("PATH", ""),
@@ -482,11 +546,34 @@ class Exports:
                 "setpriv", "--reuid=%d" % self.uid, "--regid=%d" % self.gid, "--init-groups",
                 "--no-new-privs", "--inh-caps=-all", "--bounding-set=-all", "--",
             ] + env
-        p = subprocess.run(cmd, input=json.dumps(req).encode(), capture_output=True)
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        errors = []
+
+        def read_errors():
+            for line in p.stderr:
+                if line.startswith(b"\0progress "):
+                    if show:
+                        show(*json.loads(line[len(b"\0progress "):]))
+                else:
+                    errors.append(line)
+
+        reader = threading.Thread(target=read_errors, daemon=True)
+        reader.start()
+        try:
+            p.stdin.write(json.dumps(dict(req, late=late is not None)).encode() + b"\n")
+            p.stdin.flush()
+            if late is not None:
+                p.stdin.write(json.dumps(late()).encode() + b"\n")
+            p.stdin.close()
+        except BrokenPipeError:
+            pass
+        out = p.stdout.read()
+        p.wait()
+        reader.join()
         if p.returncode != 0:
-            err = safe(p.stderr.decode("utf-8", "replace").strip())
+            err = safe(b"".join(errors).decode("utf-8", "replace").strip())
             die("guest disk access failed:\n" + err[-4000:])
-        return json.loads(p.stdout)
+        return json.loads(out)
 
 
 class Rules:
@@ -527,10 +614,22 @@ class Rules:
         return None
 
 
+def progress(step, done=None, total=None):
+    # Exports.call shows these on the terminal while the worker runs.
+    sys.stderr.write("\0progress %s\n" % json.dumps([step, done, total]))
+    sys.stderr.flush()
+
+
+def late_fields(req):
+    # Fields the host sends once the worker is running, like the written ranges it works out meanwhile.
+    if req.pop("late", False):
+        req.update(json.loads(sys.stdin.readline()))
+
+
 def worker():
     import guestfs
 
-    req = json.load(sys.stdin)
+    req = json.loads(sys.stdin.readline())
     g = guestfs.GuestFS(python_return_dict=True)
     names = []
     for d in req["drives"]:
@@ -539,8 +638,11 @@ def worker():
         names.append(d["name"])
     ops = {"scan": scan, "apply": apply, "carry": carry, "link": link, "unlink": unlink, "trim": trim,
            "carry_scan": carry_scan, "carry_into": carry_into, "resize_plan": resize_plan, "resize_apply": resize_apply}
+    g.set_smp(max(1, min(4, os.cpu_count() or 1)))
     try:
+        progress("starting the appliance")
         g.launch()
+        progress("opening the disks")
         dev = dict(zip(names, g.list_devices()))
         fs = g.list_filesystems()
         mp = {n: "/" + n for n in names}
@@ -562,6 +664,8 @@ def worker():
         sys.exit(str(e))
     finally:
         g.close()
+    # Read what the host still sends, or it could block writing into a full pipe while this blocks writing the reply.
+    late_fields(req)
     json.dump(out, sys.stdout)
 
 
@@ -666,36 +770,74 @@ def checked(path):
     return path
 
 
-def walk(g, top, skip=None, limit=5_000_000):
-    # ntfs-3g resolves junction targets to absolute paths under the mountpoint, which differs between the trees being compared.
-    mount_root = "/sysroot/" + top.strip("/").split("/")[0]
-    tree = {}
-    stack = [""]
-    while stack:
-        rel = stack.pop()
-        d = top + "/" + rel if rel else top
-        ents = [e for e in g.readdir(d) if e["name"] not in (".", "..")]
-        if skip:
-            ents = [e for e in ents if not skip(join(rel, e["name"]))]
-        names = [e["name"] for e in ents]
-        stats = []
-        for i in range(0, len(names), 1000):
-            stats += g.lstatnslist(d, names[i:i + 1000])
-        lnames = [e["name"] for e in ents if e["ftyp"] == "l"]
-        links = {}
-        for i in range(0, len(lnames), 1000):
-            for name, target in zip(lnames[i:i + 1000], g.readlinklist(d, lnames[i:i + 1000])):
-                links[name] = target[len(mount_root):] if target.startswith(mount_root + "/") else target
-        for e, st in zip(ents, stats):
-            p = join(rel, e["name"])
-            t = e["ftyp"]
-            tree[p] = (t, st["st_size"] if t == "r" else 0, st["st_mtime_sec"], st["st_mtime_nsec"], links.get(e["name"]),
-                       st["st_ino"], st["st_mode"], st["st_ctime_sec"], st["st_ctime_nsec"])
-            if t == "d":
-                stack.append(p)
+FIND_FORMAT = r"%y\0%s\0%T@\0%C@\0%i\0%m\0%l\0%p\0"
+FIND_TYPES = {"f": "r", "p": "f"}
+
+
+def stamp(text):
+    # find prints a time as seconds with a fraction, and this splits it the way stat gives sec and nsec.
+    whole, _, frac = text.partition(".")
+    sec, nsec = int(whole), int((frac + "000000000")[:9])
+    if whole.startswith("-") and nsec:
+        sec, nsec = sec - 1, 1_000_000_000 - nsec
+    return sec, nsec
+
+
+def start_walks(g, specs, first=0):
+    # One find per tree inside the appliance, all running at once: a call per folder costs a round trip each, nine times slower.
+    # They run detached, so the worker can read other disks meanwhile, and each leaves its exit status last.
+    # specs: (top, prune patterns relative to top, only this child of top or None).
+    jobs = []
+    for k, (top, prune, only) in enumerate(specs, first):
+        cond = " -o ".join("-ipath %s" % shlex.quote("./" + pat) for pat in prune)
+        out = "/sysroot/.nv-walk%d" % k
+        jobs.append("rm -f %s %s.err %s.tmp %s.rc; { (cd %s && find %s %s-printf %s) > %s 2> %s.err; echo $? > %s.tmp && mv %s.tmp %s.rc; } "
+                    "</dev/null >/dev/null 2>&1 &" % (
+                        out, out, out, out, shlex.quote("/sysroot" + top), shlex.quote("./" + only if only else "."),
+                        "\\( %s \\) -prune -o " % cond if cond else "", shlex.quote(FIND_FORMAT), out, out, out, out, out))
+    appliance_sh(g, " ".join(jobs) + " true")
+
+
+def finish_walks(g, specs, limit=5_000_000, first=0):
+    appliance_sh(g, "for k in %s; do while [ ! -e /sysroot/.nv-walk$k.rc ]; do sleep 0.05; done; done"
+                 % " ".join(str(k) for k in range(first, first + len(specs))))
+    tmp = os.path.join(os.environ.get("TMPDIR", "/tmp"), "walk")
+    trees = []
+    for k, (top, _, _) in enumerate(specs, first):
+        if g.read_file("/.nv-walk%d.rc" % k).strip() != b"0":
+            raise SystemExit("listing %s failed: %s" % (top, g.read_file("/.nv-walk%d.err" % k).decode("utf-8", "replace")[-2000:]))
+        g.download("/.nv-walk%d" % k, tmp)
+        with open(tmp, "rb") as f:
+            fields = f.read().split(b"\0")
+        os.unlink(tmp)
+        # ntfs-3g resolves junction targets to absolute paths under the mountpoint, which differs between the trees being compared.
+        mount_root = "/sysroot/" + top.strip("/").split("/")[0]
+        tree = {}
+        for i in range(0, len(fields) - 1, 8):
+            kind, size, mtime, ctime, ino, mode, link, path = (x.decode("utf-8", "surrogateescape") for x in fields[i:i + 8])
+            rel = path[2:]
+            if not rel:
+                continue
+            t = FIND_TYPES.get(kind, kind)
+            target = (link[len(mount_root):] if link.startswith(mount_root + "/") else link) if t == "l" else None
+            tree[rel] = (t, int(size) if t == "r" else 0, *stamp(mtime), target, int(ino), int(mode, 8), *stamp(ctime))
         if len(tree) > limit:
             raise SystemExit("more than %d entries under %s" % (limit, top))
-    return tree
+        trees.append(tree)
+    return trees
+
+
+def walks(g, specs, limit=5_000_000, first=0):
+    start_walks(g, specs, first)
+    return finish_walks(g, specs, limit, first)
+
+
+def walk(g, top, prune=(), only=None):
+    return walks(g, [(top, prune, only)])[0]
+
+
+def glob_escape(path):
+    return re.sub(r"([*?[])", r"[\1]", path)
 
 
 def unescape_sum_name(name):
@@ -750,6 +892,12 @@ MFT_REF = (1 << 48) - 1
 U16 = struct.Struct("<H").unpack_from
 U32 = struct.Struct("<I").unpack_from
 U64 = struct.Struct("<Q").unpack_from
+ATTR_HEAD = struct.Struct("<II").unpack_from
+NTFS_EPOCH = 116444736000000000
+
+
+class Unreadable(Exception):
+    pass
 
 
 class Ranges:
@@ -762,6 +910,13 @@ class Ranges:
         if i >= 0 and self.ends[i] > a:
             return True
         return i + 1 < len(self.starts) and self.starts[i + 1] < b
+
+    def overlaps(self, a, b):
+        i = max(bisect.bisect_right(self.starts, a) - 1, 0)
+        while i < len(self.starts) and self.starts[i] < b:
+            if self.ends[i] > a:
+                yield max(a, self.starts[i]), min(b, self.ends[i])
+            i += 1
 
 
 class Ntfs:
@@ -785,6 +940,8 @@ class Ntfs:
         for _, raw in self.records(ext):
             runs += self.data_runs(self.parse(raw) or {"attrs": []})
         self.set_mft(sorted(runs))
+        size = next((a["size"] for a in rec["attrs"] if a["type"] == 0x80 and not a["name"] and a["runs"] and a["runs"][0][0] == 0), 0)
+        self.count = size // self.rs
 
     def set_mft(self, runs):
         self.mft = runs
@@ -868,10 +1025,12 @@ class Ntfs:
             name = bytes(b[off + noff:off + noff + 2 * nlen])
             if b[off + 8]:
                 runs = self.runlist(b, off + U16(b, off + 0x20)[0], off + size, U64(b, off + 0x10)[0])
-                attrs.append({"type": kind, "name": name, "runs": runs, "value": None, "size": U64(b, off + 0x30)[0]})
+                attrs.append({"type": kind, "name": name, "runs": runs, "value": None, "size": U64(b, off + 0x30)[0],
+                              "init": U64(b, off + 0x38)[0]})
             else:
                 vlen, voff = U32(b, off + 0x10)[0], U16(b, off + 0x14)[0]
-                attrs.append({"type": kind, "name": name, "runs": None, "value": bytes(b[off + voff:off + voff + vlen]), "size": vlen})
+                attrs.append({"type": kind, "name": name, "runs": None, "value": bytes(b[off + voff:off + voff + vlen]), "size": vlen,
+                              "init": -1})
             off += size
         return {"flags": U16(b, 0x16)[0], "attrs": attrs}
 
@@ -889,16 +1048,102 @@ class Ntfs:
                 data = self.g.pread_device(self.part, min(a["size"], runs[0][2] * self.cs), runs[0][1] * self.cs)
                 if len(data) < a["size"]:
                     return None
-            i = 0
-            while i + 0x18 <= len(data):
-                ref = U64(data, i + 0x10)[0] & MFT_REF
-                if ref != n:
-                    found.add(ref)
-                size = U16(data, i + 4)[0]
-                if size < 0x18:
-                    break
-                i += size
+            found |= list_refs(data, n)
         return found
+
+    def every_record(self, chunk=2 << 20):
+        # Every record slot in table order through large reads, one pass instead of a lookup per file.
+        # A record split across two runs cannot be read this way, which only happens with clusters smaller than a record.
+        done = 0
+        for vcn, lcn, length in self.mft:
+            lo, hi = vcn * self.cs, min((vcn + length) * self.cs, self.count * self.rs)
+            n = -(-lo // self.rs)
+            while (n + 1) * self.rs <= hi:
+                k = min((hi - n * self.rs) // self.rs, max(1, chunk // self.rs))
+                at = lcn * self.cs + n * self.rs - lo
+                data = self.g.pread_device(self.part, k * self.rs, at)
+                if len(data) < k * self.rs:
+                    raise Unreadable("the MFT is shorter than its runlist")
+                for j in range(k):
+                    yield n + j, at + j * self.rs, data[j * self.rs:(j + 1) * self.rs]
+                n += k
+                done += k
+        if done != self.count:
+            raise Unreadable("the MFT has records split across its runs")
+
+    def stream(self, runs, size, n):
+        # A small non-resident attribute read whole: an attribute list or reparse data.
+        data = b""
+        for _, lcn, ln in runs:
+            if len(data) >= size:
+                break
+            if lcn is None or size > 1 << 20:
+                raise Unreadable("record %d has an attribute list or reparse data that cannot be read" % n)
+            data += self.g.pread_device(self.part, min(ln * self.cs, size - len(data)), lcn * self.cs)
+        if len(data) < size:
+            raise Unreadable("record %d has an attribute list or reparse data that cannot be read" % n)
+        return data
+
+    def summary(self, n, raw, off):
+        # What a listing needs from one record, or None for a free slot: (base record, sequence, flags, mtime, ctime,
+        # attributes, names, size, reparse data, attribute list, offset, clusters, outside). clusters are those of every
+        # stream, for the block check's second tier, and only kept for files since it only checks files. outside are those
+        # of an attribute list or reparse data, which the listing read from beyond the record.
+        if raw[:4] != b"FILE":
+            return None
+        flags = U16(raw, 0x16)[0]
+        if not flags & 1:
+            return None
+        b = bytearray(raw)
+        if not self.fixup(b):
+            raise Unreadable("MFT record %d is torn" % n)
+        keep = not flags & 2
+        clusters, outside = [], []
+        mtime = ctime = attrib = 0
+        names, size, reparse, ext = [], None, None, None
+        i, end = U16(b, 0x14)[0], len(b)
+        while i + 24 <= end:
+            kind, length = ATTR_HEAD(b, i)
+            if kind == 0xFFFFFFFF:
+                break
+            if length < 24 or i + length > end:
+                raise Unreadable("MFT record %d has a malformed attribute" % n)
+            unnamed = not b[i + 9]
+            if b[i + 8]:
+                vcn = U64(b, i + 0x10)[0]
+                other = kind in (0x20, 0xC0)
+                if keep or other:
+                    runs = self.runlist(b, i + U16(b, i + 0x20)[0], i + length, vcn)
+                    if keep:
+                        clusters += [(lcn, ln) for _, lcn, ln in runs if lcn is not None]
+                if kind == 0x80 and unnamed and vcn == 0:
+                    size = U64(b, i + 0x30)[0]
+                elif other:
+                    outside += [(lcn, ln) for _, lcn, ln in runs if lcn is not None]
+                    data = self.stream(runs, U64(b, i + 0x30)[0], n)
+                    if kind == 0x20:
+                        ext = list_refs(data, n)
+                    else:
+                        reparse = data
+            else:
+                vlen, voff = U32(b, i + 0x10)[0], U16(b, i + 0x14)[0]
+                v = i + voff
+                if v + vlen > i + length:
+                    raise Unreadable("MFT record %d has a malformed attribute" % n)
+                if kind == 0x10 and vlen >= 0x24:
+                    mtime, ctime, attrib = U64(b, v + 0x08)[0], U64(b, v + 0x10)[0], U32(b, v + 0x20)[0]
+                elif kind == 0x30 and vlen >= 0x42 and b[v + 0x41] != 2:
+                    # DOS 8.3 aliases are left out, as ntfs-3g leaves them out of a directory listing.
+                    names.append((U64(b, v)[0], b[v + 0x42:v + 0x42 + 2 * b[v + 0x40]].decode("utf-16-le", "replace")))
+                elif kind == 0x80 and unnamed:
+                    size = vlen
+                elif kind == 0xC0:
+                    reparse = bytes(b[v:v + vlen])
+                elif kind == 0x20:
+                    ext = list_refs(b[v:v + vlen], n)
+            i += length
+        return (U64(b, 0x20)[0] & MFT_REF, U16(b, 0x10)[0], flags, mtime, ctime, attrib, names, size, reparse, ext, off,
+                tuple(clusters), tuple(outside))
 
     def touched(self, ranges, n, rec):
         off = self.locate(n)
@@ -929,6 +1174,21 @@ class Ntfs:
                 hits.add(n)
         return hits
 
+    def signatures(self, nums):
+        # What each file's content is made of: every stream's sizes, clusters and inline bytes, and any reparse data.
+        base = {n: self.parse(raw) for n, raw in self.records(nums)}
+        ext = {n: self.extensions(rec, n) for n, rec in base.items() if rec and rec["flags"] & 1}
+        more = {e: self.parse(raw) for e, raw in self.records({e for es in ext.values() if es for e in es})}
+        out = {}
+        for n, es in ext.items():
+            recs = [base[n]] + [more.get(e) for e in es or ()]
+            if es is None or None in recs:
+                continue
+            out[n] = sorted((a["type"], a["name"], a["size"], a["init"], a["value"] or b"",
+                             tuple((v, -1 if lcn is None else lcn, ln) for v, lcn, ln in a["runs"] or ()))
+                            for r in recs for a in r["attrs"] if a["type"] in (0x80, 0xC0))
+        return out
+
     def journal_clean(self):
         # This driver never replays the NTFS journal, but Windows does at its next mount, which can change files a scan missed.
         rec = self.parse(self.record(2))
@@ -951,6 +1211,149 @@ class Ntfs:
         return newest is None or newest[1] == 0xFFFF or bool(newest[2] & 0x0002)
 
 
+def list_refs(data, n):
+    refs, i = set(), 0
+    while i + 0x18 <= len(data):
+        ref = U64(data, i + 0x10)[0] & MFT_REF
+        if ref != n:
+            refs.add(ref)
+        size = U16(data, i + 4)[0]
+        if size < 0x18:
+            break
+        i += size
+    return refs
+
+
+def ntfs_time(t):
+    # Split the way ntfs-3g fills st_mtim, so the values match what the mounted volume reports.
+    t -= NTFS_EPOCH
+    return t // 10_000_000, t % 10_000_000 * 100
+
+
+def reparse_target(data):
+    # The name Windows follows for a junction or symlink. Any other reparse point reads the way ntfs-3g shows one it cannot follow.
+    tag = U32(data, 0)[0] if len(data) >= 8 else 0
+    head = {0xA0000003: 8, 0xA000000C: 12}.get(tag)
+    if head and len(data) >= 8 + head:
+        sub, length = U16(data, 8)[0], U16(data, 10)[0]
+        return data[8 + head + sub:8 + head + sub + length].decode("utf-16-le", "replace")
+    return "unsupported reparse tag 0x%08x" % tag
+
+
+def mft_tree(recs, limit=5_000_000):
+    # The entries find lists on the mounted volume: metadata files and DOS aliases left out, every hard link listed.
+    info, kids = {}, {}
+    for n, (base, seq, flags, mtime, ctime, attrib, names, size, reparse, ext, *_) in recs.items():
+        if base:
+            continue
+        for e in ext or ():
+            x = recs.get(e)
+            if x is None or x[0] != n:
+                raise Unreadable("record %d lists an extension record that is not its own" % n)
+            names = names + x[6]
+            size = size if x[7] is None else x[7]
+            reparse = reparse if x[8] is None else x[8]
+        info[n] = (seq, flags, mtime, ctime, attrib, size, reparse)
+        if n >= 16:
+            for ref, name in names:
+                kids.setdefault(ref & MFT_REF, []).append((ref >> 48, name, n))
+    if 5 not in info:
+        raise Unreadable("the root folder record is missing")
+    tree, stack, seen = {}, [(5, "")], {5}
+    while stack:
+        d, prefix = stack.pop()
+        for seq, name, n in kids.get(d, ()):
+            # A child naming another sequence number of its folder's record belongs to an earlier, deleted folder.
+            if seq != info[d][0] or name in (".", ".."):
+                continue
+            _, flags, mtime, ctime, attrib, size, reparse = info[n]
+            path = prefix + "/" + name if prefix else name
+            if reparse is not None or attrib & 0x400:
+                entry = ("l", 0, *ntfs_time(mtime), reparse_target(reparse or b""), n, 0o777, *ntfs_time(ctime))
+            elif flags & 2:
+                entry = ("d", 0, *ntfs_time(mtime), None, n, 0o777, *ntfs_time(ctime))
+                if n not in seen:
+                    seen.add(n)
+                    stack.append((n, path))
+            else:
+                entry = ("r", size or 0, *ntfs_time(mtime), None, n, 0o777, *ntfs_time(ctime))
+            tree[path] = entry
+        if len(tree) > limit:
+            raise SystemExit("more than %d entries on the data disk" % limit)
+    return tree
+
+
+def hits_any(ranges, cs, clusters):
+    return any(ranges.hit(lcn * cs, (lcn + ln) * cs) for lcn, ln in clusters)
+
+
+def mft_touched(nt, recs, ranges):
+    # Files whose own records, extension records or stream clusters lie in written blocks: the two tiers of changed_files.
+    own = {n for n, r in recs.items() if ranges.hit(r[10], r[10] + nt.rs) or hits_any(ranges, nt.cs, r[11])}
+    return {n for n, r in recs.items() if not r[0] and (n in own or any(e in own for e in r[9] or ()))}
+
+
+def mft_records(nt, step):
+    recs = {}
+    for n, off, raw in nt.every_record():
+        r = nt.summary(n, raw, off)
+        if r is not None:
+            recs[n] = r
+        if not n % 8192:
+            progress(step, n, nt.count)
+    return recs
+
+
+def mft_before(nt, bnt, recs, ranges):
+    # The earlier table, taking over every record that sits at the same place in both and outside the written blocks, since
+    # those bytes are shared. Only the records written since are read again, and the guest cannot hide a write from ranges.
+    if bnt.mft == nt.mft:
+        changed = set()
+        for vcn, lcn, length in nt.mft:
+            for lo, hi in ranges.overlaps(lcn * nt.cs, (lcn + length) * nt.cs):
+                changed.update(range((lo - lcn * nt.cs + vcn * nt.cs) // nt.rs, (hi - 1 - lcn * nt.cs + vcn * nt.cs) // nt.rs + 1))
+    else:
+        changed = {n for n in range(max(nt.count, bnt.count))
+                   if (off := nt.locate(n)) is None or off != bnt.locate(n) or ranges.hit(off, off + nt.rs)}
+    changed |= {n for n, r in recs.items() if hits_any(ranges, nt.cs, r[12])}
+    changed |= set(range(nt.count, bnt.count))
+    wanted = [n for n in changed if n < bnt.count]
+    if any(bnt.locate(n) is None for n in wanted):
+        raise Unreadable("the earlier MFT has records split across its runs")
+    progress("reading what changed since rev0", 0, len(wanted))
+    out = {n: r for n, r in recs.items() if n not in changed and n < bnt.count}
+    for n, raw in bnt.records(wanted):
+        r = bnt.summary(n, raw, None)
+        if r is not None:
+            out[n] = r
+    return out
+
+
+def partition_ranges(g, dev, part, ranges):
+    start = part_offset(g, dev, part)
+    end = start + g.blockdev_getsize64(part)
+    return Ranges([(max(a, start) - start, min(b, end) - start) for a, b in ranges if b > start and a < end])
+
+
+def mft_now(g, part):
+    # One pass over the data disk's table instead of a filesystem lookup per file through ntfs-3g. It needs no written
+    # ranges yet, so it runs while the host still works them out.
+    nt = Ntfs(g, part)
+    return nt, mft_records(nt, "reading the data disk table")
+
+
+def mft_trees(g, nt, recs, ranges, dev, part, bdev=None, bpart=None):
+    local = partition_ranges(g, dev, part, ranges) if ranges is not None else None
+    base = None
+    if bpart is not None:
+        bnt = Ntfs(g, bpart)
+        # Byte offsets only line up when the partition starts at the same place in both images.
+        same = local is not None and part_offset(g, bdev, bpart) == part_offset(g, dev, part)
+        base = mft_tree(mft_before(nt, bnt, recs, local) if same else mft_records(bnt, "reading the rev0 table"))
+    progress("building the file lists")
+    return mft_tree(recs), base or {}, mft_touched(nt, recs, local) if local is not None else set()
+
+
 def part_offset(g, dev, part):
     if part == dev:
         return 0
@@ -958,21 +1361,68 @@ def part_offset(g, dev, part):
     return next(p["part_start"] for p in g.part_list(dev) if p["part_num"] == num)
 
 
-def block_check(g, dev, part, ranges, files):
-    # files: (inode, path now, path before, key) for every file whose size and date did not change.
+def same_bytes(g, part, bpart, sig, ranges, cs, budget=64 << 20):
+    # With identical streams and clusters, the content differs only where written bytes differ, so only those are read.
+    for *_, runs in sig:
+        for _, lcn, ln in runs:
+            if lcn < 0:
+                continue
+            for lo, hi in ranges.overlaps(lcn * cs, (lcn + ln) * cs):
+                budget -= hi - lo
+                if budget < 0:
+                    return False
+                for off in range(lo, hi, 1 << 20):
+                    n = min(1 << 20, hi - off)
+                    if g.pread_device(part, n, off) != g.pread_device(bpart, n, off):
+                        return False
+    return True
+
+
+def compare_files(g, pairs):
+    # Every pair goes in one call, four at a time, and cmp stops at the first differing byte.
+    if not pairs:
+        return set()
+    tmp = os.path.join(os.environ.get("TMPDIR", "/tmp"), "pairs")
+    with open(tmp, "wb") as f:
+        for now, before, _ in pairs:
+            f.write(b"/sysroot%s\0/sysroot%s\0" % (now.encode("utf-8", "surrogateescape"), before.encode("utf-8", "surrogateescape")))
+    g.upload(tmp, "/.nv-pairs")
+    appliance_sh(g, "xargs -0 -n2 -P4 sh -c 'cmp -s -- \"$1\" \"$2\" || printf \"%s\\0\" \"$1\"' _ < /sysroot/.nv-pairs > /sysroot/.nv-differ")
+    g.download("/.nv-differ", tmp)
+    with open(tmp, "rb") as f:
+        differ = {x.decode("utf-8", "surrogateescape")[len("/sysroot"):] for x in f.read().split(b"\0") if x}
+    os.unlink(tmp)
+    return {key for now, _, key in pairs if now in differ}
+
+
+def block_check(g, dev, part, ranges, files, bdev, bpart, listed=None):
+    # files: (inode now, inode before, path now, path before, key) for every file whose size and date did not change.
+    # listed: (Ntfs of part, files the MFT listing found in written blocks), which spares reading every record again.
     if g.vfs_type(part) != "ntfs":
         return None
+    progress("checking written blocks")
     start = part_offset(g, dev, part)
-    end = start + g.blockdev_getsize64(part)
-    local = [(max(a, start) - start, min(b, end) - start) for a, b in ranges if b > start and a < end]
-    ntfs = Ntfs(g, part)
+    local = partition_ranges(g, dev, part, ranges)
+    now = listed[0] if listed else Ntfs(g, part)
     wanted = {}
-    for ino, now, before, key in files:
-        wanted.setdefault(ino & MFT_REF, []).append((now, before, key))
-    hits = ntfs.changed_files(Ranges(local), list(wanted)) if local and wanted else set()
-    suspects = [f for n in sorted(hits) for f in wanted[n]]
-    differ = sorted({key for now, before, key in suspects if g.checksum("sha256", now) != g.checksum("sha256", before)})
-    return {"checked": len(suspects), "differ": differ, "clean": ntfs.journal_clean(), "complete": True}
+    for ino, ino_before, now_path, before_path, key in files:
+        wanted.setdefault(ino & MFT_REF, []).append((ino_before & MFT_REF, now_path, before_path, key))
+    if not (local.starts and wanted):
+        hits = []
+    elif listed:
+        hits = sorted(n for n in wanted if n in listed[1])
+    else:
+        hits = sorted(now.changed_files(local, list(wanted)))
+    suspects = [(n,) + f for n in hits for f in wanted[n]]
+    full = [(now_path, before_path, key) for _, _, now_path, before_path, key in suspects]
+    # Byte offsets only line up when the partition starts at the same place in both images.
+    if suspects and part_offset(g, bdev, bpart) == start:
+        before = Ntfs(g, bpart)
+        mine, theirs = now.signatures(hits), before.signatures({nb for _, nb, *_ in suspects})
+        full = [(now_path, before_path, key) for n, nb, now_path, before_path, key in suspects
+                if n not in mine or mine[n] != theirs.get(nb) or not same_bytes(g, part, bpart, mine[n], local, now.cs)]
+    return {"suspects": len(suspects), "checked": len(full), "differ": sorted(compare_files(g, full)),
+            "clean": now.journal_clean(), "complete": True}
 
 
 def compare(base, cur, hb, hc, rules, with_deleted=True, prefix="", posix=False):
@@ -1073,14 +1523,14 @@ def attach_diffs(g, items, cur_top, base_top, labels=("rev0", "now"), budget=4 <
 
 def unchanged_files(cur, base, hb, hc, now_top, before_top, prefix="", posix=False):
     # On a POSIX filesystem only those with a new change time, which the kernel sets and a guest program cannot put back.
-    return [(c[5], now_top + "/" + p, before_top + "/" + p, prefix + p) for p, c in cur.items()
+    return [(c[5], base[p][5], now_top + "/" + p, before_top + "/" + p, prefix + p) for p, c in cur.items()
             if c[0] == "r" and (b := base.get(p)) and b[0] == "r" and b[1:4] == c[1:4] and not (p in hb and p in hc)
             and (not posix or (b[7:9] != c[7:9] and not (b[6] ^ c[6]) & 0o7777))]
 
 
 def ctime_check(g, files):
-    differ = sorted({key for _, now, before, key in files if g.checksum("sha256", now) != g.checksum("sha256", before)})
-    return {"checked": len(files), "differ": differ, "clean": True, "complete": False}
+    differ = sorted(compare_files(g, [(now, before, key) for _, _, now, before, key in files]))
+    return {"suspects": len(files), "checked": len(files), "differ": differ, "clean": True, "complete": False}
 
 
 def tampered_item(path, now, before, rules):
@@ -1092,51 +1542,77 @@ def scan(g, req, dev, fs, mp):
     rules = Rules(req["rules"])
     tmpdir = os.environ.get("TMPDIR", "/tmp")
     dpart = mount_data(g, fs, dev["dcur"], mp["dcur"], False)
-    have_cur = dpart is not None
-    have_base = "dbase" in dev and mount_data(g, fs, dev["dbase"], mp["dbase"], False) is not None
-    hash_dirs = [""] if req["hash_all"] else req["hash_paths"]
-    cur = walk(g, mp["dcur"]) if have_cur else {}
-    base = walk(g, mp["dbase"]) if have_base else {}
-    hc = hashes(g, mp["dcur"], hash_dirs, tmpdir) if have_cur else {}
-    hb = hashes(g, mp["dbase"], hash_dirs, tmpdir) if have_base else {}
-    posix = have_cur and fs[dpart] in POSIX_FS
-    items = compare(base, cur, hb, hc, rules, posix=posix)
-    blocks = None
-    if have_cur and have_base and req.get("ranges") is not None:
-        files = unchanged_files(cur, base, hb, hc, mp["dcur"], mp["dbase"], posix=posix)
-        blocks = ctime_check(g, files) if posix else block_check(g, dev["dcur"], dpart, req["ranges"], files)
-        if blocks:
-            items += [tampered_item(p, cur[p], base[p], rules) for p in blocks["differ"]]
-            items.sort(key=lambda it: it["path"])
-    attach_diffs(g, items, mp["dcur"], mp.get("dbase", ""))
-    out = {"fs": have_cur, "base_fs": have_base, "items": items, "c_items": [], "c_found": None, "blocks": blocks}
-
+    bpart = mount_data(g, fs, dev["dbase"], mp["dbase"], False) if "dbase" in dev else None
+    have_cur, have_base = dpart is not None, bpart is not None
     root = req.get("c_root")
-    patterns = [p.lower() for p in req.get("c_exclude", [])]
-
-    def excluded(rel):
-        return any(fnmatch.fnmatchcase(rel.lower(), p) for p in patterns)
-
+    pair = None
     for i in req.get("c_pairs", []):
-        sdev, tdev = dev["cs%d" % i], dev["ct%d" % i]
         system = req["systems"]["cs%d" % i]
         if system is None:
             continue
         mount_tree(g, system, mp["cs%d" % i])
         if not g.is_dir(mp["cs%d" % i] + "/" + root, followsymlinks=False):
             continue
-        target = {}
-        if mount_tree(g, system, mp["ct%d" % i], swap=(sdev, tdev), fs=fs) and g.is_dir(mp["ct%d" % i] + "/" + root, followsymlinks=False):
-            target = walk(g, mp["ct%d" % i] + "/" + root, excluded)
-        session = walk(g, mp["cs%d" % i] + "/" + root, excluded)
-        c_items = compare(target, session, {}, {}, rules, with_deleted=False, posix=system["os"] == "linux")
+        rooted = mount_tree(g, system, mp["ct%d" % i], swap=(dev["cs%d" % i], dev["ct%d" % i]), fs=fs)
+        pair = (i, system, rooted and g.is_dir(mp["ct%d" % i] + "/" + root, followsymlinks=False))
+        break
+    patterns = [p.lower() for p in req.get("c_exclude", [])]
+    timing, listed, lister = {}, None, "find"
+    clock = time.monotonic()
+    # The system disk folders are listed inside the appliance while the worker reads the data disk's table.
+    cspecs = []
+    if pair:
+        cspecs.append((mp["cs%d" % pair[0]] + "/" + root, patterns, None))
+        if pair[2]:
+            cspecs.append((mp["ct%d" % pair[0]] + "/" + root, patterns, None))
+        start_walks(g, cspecs)
+    cur, base = {}, {}
+    if have_cur and fs[dpart] == "ntfs" and (not have_base or fs[bpart] == "ntfs"):
+        try:
+            nt, recs = mft_now(g, dpart)
+            late_fields(req)
+            cur, base, touched = mft_trees(g, nt, recs, req.get("ranges"), dev["dcur"], dpart, dev.get("dbase"), bpart)
+            listed, lister = (nt, touched), "mft"
+        except (Unreadable, ValueError) as e:
+            lister = "find (%s)" % e
+    late_fields(req)
+    if listed is None and (have_cur or have_base):
+        progress("listing the data disk via ntfs-3g")
+        dspecs = ([(mp["dcur"], (), None)] if have_cur else []) + ([(mp["dbase"], (), None)] if have_base else [])
+        trees = iter(walks(g, dspecs, first=len(cspecs)))
+        cur = next(trees) if have_cur else {}
+        base = next(trees) if have_base else {}
+    session = target = {}
+    if pair:
+        progress("listing the system disk")
+        trees = iter(finish_walks(g, cspecs))
+        session, target = next(trees), next(trees) if pair[2] else {}
+    timing["list"], clock = time.monotonic() - clock, time.monotonic()
+    hash_dirs = [""] if req["hash_all"] else req["hash_paths"]
+    hc = hashes(g, mp["dcur"], hash_dirs, tmpdir) if have_cur else {}
+    hb = hashes(g, mp["dbase"], hash_dirs, tmpdir) if have_base else {}
+    timing["hash"], clock = time.monotonic() - clock, time.monotonic()
+    posix = have_cur and fs[dpart] in POSIX_FS
+    items = compare(base, cur, hb, hc, rules, posix=posix)
+    blocks = None
+    if have_cur and have_base and req.get("ranges") is not None:
+        files = unchanged_files(cur, base, hb, hc, mp["dcur"], mp["dbase"], posix=posix)
+        blocks = ctime_check(g, files) if posix else block_check(g, dev["dcur"], dpart, req["ranges"], files, dev["dbase"], bpart, listed)
+        if blocks:
+            items += [tampered_item(p, cur[p], base[p], rules) for p in blocks["differ"]]
+            items.sort(key=lambda it: it["path"])
+    timing["check"] = time.monotonic() - clock
+    attach_diffs(g, items, mp["dcur"], mp.get("dbase", ""))
+    out = {"fs": have_cur, "base_fs": have_base, "items": items, "c_items": [], "c_found": None, "blocks": blocks,
+           "lister": lister, "entries": len(cur) + len(base), "timing": timing}
+    if pair:
+        c_items = compare(target, session, {}, {}, rules, with_deleted=False, posix=pair[1]["os"] == "linux")
         for it in c_items:
             it["src"] = join(root, it["path"])
             it["path"] = it["src"]
-            it["pair"] = i
+            it["pair"] = pair[0]
         out["c_items"] = c_items
-        out["c_found"] = i
-        break
+        out["c_found"] = pair[0]
     return out
 
 
@@ -1292,15 +1768,15 @@ def carry(g, req, dev, fs, mp):
     return out
 
 
-def subtree(g, top, path):
-    # Walks the parent with only this entry let through, so a path missing on one side compares as one new or deleted item.
+def subtree_spec(g, top, path):
+    # Lists the parent with only this entry let through, so a path missing on one side compares as one new or deleted item.
     parent, _, name = path.rpartition("/")
     d = top
     for part in parent.split("/") if parent else []:
         d += "/" + part
         if not g.is_dir(d, followsymlinks=False):
-            return {}
-    return walk(g, d, lambda rel: rel != name and not rel.startswith(name + "/"))
+            return None
+    return (d, (), name) if lexists(g, d + "/" + name) else None
 
 
 def under_any(path, tops):
@@ -1319,6 +1795,14 @@ def carry_scan(g, req, dev, fs, mp):
     have_target = mount_tree(g, system, mp["ct"], swap=(dev["cs"], dev["ct"]), fs=fs)
     hashed = [""] if req["hash_all"] else req["hash_paths"]
     items, files, entries = [], [], {}
+    specs, index = [], []
+    for path in paths:
+        for side, top in (("cur", mp["cs"]), ("base", mp["ct"] if have_target else None)):
+            spec = subtree_spec(g, top, path) if top else None
+            if spec:
+                index.append((path, side))
+                specs.append(spec)
+    listed = dict(zip(index, walks(g, specs)))
     for path in paths:
         parent = path.rpartition("/")[0]
         pre = parent + "/" if parent else ""
@@ -1326,8 +1810,8 @@ def carry_scan(g, req, dev, fs, mp):
             dirs = [path]
         else:
             dirs = [h for h in hashed if under_any(h, [path])]
-        cur = subtree(g, mp["cs"], path)
-        base = subtree(g, mp["ct"], path) if have_target else {}
+        cur = listed.get((path, "cur"), {})
+        base = listed.get((path, "base"), {})
         hc = {k[len(pre):]: v for k, v in hashes(g, mp["cs"], dirs, tmpdir).items() if k.startswith(pre)}
         hb = {k[len(pre):]: v for k, v in hashes(g, mp["ct"], dirs, tmpdir).items() if k.startswith(pre)} if have_target else {}
         for it in compare(base, cur, hb, hc, rules, prefix=pre, posix=posix):
@@ -1336,10 +1820,12 @@ def carry_scan(g, req, dev, fs, mp):
         sub = "/" + parent if parent else ""
         found = unchanged_files(cur, base, hb, hc, mp["cs"] + sub, mp["ct"] + sub, pre, posix)
         files += found
-        entries.update((key, (cur[key[len(pre):]], base[key[len(pre):]])) for _, _, _, key in found)
+        entries.update((key, (cur[key[len(pre):]], base[key[len(pre):]])) for *_, key in found)
     blocks = None
     if have_target and req.get("ranges") is not None:
-        blocks = ctime_check(g, files) if posix else block_check(g, dev["cs"], system["mounts"][0][1], req["ranges"], files)
+        spart = system["mounts"][0][1]
+        blocks = ctime_check(g, files) if posix else block_check(g, dev["cs"], spart, req["ranges"], files,
+                                                                 dev["ct"], spart.replace(dev["cs"], dev["ct"], 1))
         if blocks:
             items += [tampered_item(p, *entries[p], rules) for p in blocks["differ"]]
     items.sort(key=lambda it: it["path"])
@@ -1519,10 +2005,10 @@ def drop_values(g, hive, key, drop, rw):
         g.hivex_close()
 
 
-def tree_bytes(g, path, skip=None):
+def tree_bytes(g, path, nested=()):
     if not g.is_dir(path, followsymlinks=False):
         return g.lstatns(path)["st_size"]
-    return sum(e[1] for e in walk(g, path, skip).values() if e[0] == "r")
+    return sum(e[1] for e in walk(g, path, [glob_escape(rel) for rel in nested]).values() if e[0] == "r")
 
 
 def copy_back(g, req, root, data, target_of, is_ours, nest=None):
@@ -1544,7 +2030,7 @@ def copy_back(g, req, root, data, target_of, is_ours, nest=None):
         # A carried file inside a carried folder goes back to its own place, not into the folder's copy.
         nested = {o[len(dst) + 1:] for o in dsts if o.startswith(dst + "/")}
         if copy:
-            size = tree_bytes(g, d, lambda rel: rel in nested)
+            size = tree_bytes(g, d, nested)
             parent = s.rsplit("/", 1)[0]
             fsid = g.statvfs(parent)["fsid"]
             need[fsid] = need.get(fsid, 0) + size
@@ -2226,10 +2712,10 @@ def block_line(blocks):
             return "change time check: no file with its old size and date has a new change time"
         return "change time check: %d file(s) with their old size and date have a new change time; each was compared by content" % (
             blocks["checked"])
-    if not blocks["checked"]:
+    if not blocks["suspects"]:
         return "block check: no file with its old size and date had a written block or MFT record"
-    return "block check: %d file(s) with their old size and date had written blocks or MFT records; each was compared by content" % (
-        blocks["checked"])
+    return "block check: %d file(s) with their old size and date sat in written blocks, %d needed a full comparison" % (
+        blocks["suspects"], blocks["checked"])
 
 
 def unexplained_limit(items):
@@ -2266,7 +2752,8 @@ def render(dom, state, titles):
     blocks = [section(TAMPERED, tampered)]
     blocks += [section(t, [it for it in live if it["flag"] == t]) for t in titles]
     blocks += [
-        grouped("CHANGED", [it for it in live if not it["flag"]]),
+        grouped("ADDED", [it for it in live if not it["flag"] and it["st"] == "N"]),
+        grouped("CHANGED", [it for it in live if not it["flag"] and it["st"] == "M"]),
         grouped("DELETED", [it for it in items if it["st"] == "D"]),
         section("LEFT ON THE SYSTEM DISK (lost on revert)", state["c_items"]),
     ]
@@ -2332,29 +2819,57 @@ class Review:
         return self.spec.get("rescueExclude", []) + [re.sub(r"([*?[])", r"[\1]", p) for p in carried]
 
     def scan(self, with_c=False):
-        print("scanning %s ..." % ("and hashing every file on the data disk" if self.hash_all else "the data disk"), flush=True)
+        # Remembered per kind of scan, so the next one can say roughly how long it will take.
+        history = os.path.join(self.disk.revs, ".last-scan")
+        kind = "hash" if self.hash_all else "with system disk" if with_c else "data disk"
+        try:
+            with open(history) as f:
+                past = json.load(f)
+        except (OSError, ValueError):
+            past = {}
+        expected = past.get(kind)
+        print("scanning %s ...%s" % ("and hashing every file on the data disk" if self.hash_all else "the data disk",
+                                     " (took %s last time)" % seconds(expected) if expected else ""), flush=True)
         cur = self.disk.work if os.path.exists(self.disk.work) else self.disk.image
         rev0 = self.disk.rev(0)
         have_rev0 = os.path.exists(rev0)
-        ranges, written, trimmed = changed_ranges(cur, rev0) if have_rev0 else (None, None, 0)
-        res = self.ex.call({
-            "op": "scan",
-            "drives": self.drives(with_c),
-            "hash_paths": self.spec.get("hashPaths", []),
-            "hash_all": self.hash_all,
-            "ranges": ranges,
-            "rules": self.rules,
-            "c_pairs": list(range(len(self.pairs))) if with_c else [],
-            "c_root": self.spec.get("rescueRoot"),
-            "c_exclude": self.c_exclude(),
-        })
+        diff = {"written": None, "trimmed": 0}
+
+        def late():
+            # Runs while the worker starts and reads the data disk's table, which takes longer.
+            ranges, diff["written"], diff["trimmed"] = changed_ranges(cur, rev0) if have_rev0 else (None, None, 0)
+            return {"ranges": ranges}
+
+        started = time.monotonic()
+        show = Progress(expected)
+        try:
+            res = self.ex.call({
+                "op": "scan",
+                "drives": self.drives(with_c),
+                "hash_paths": self.spec.get("hashPaths", []),
+                "hash_all": self.hash_all,
+                "rules": self.rules,
+                "c_pairs": list(range(len(self.pairs))) if with_c else [],
+                "c_root": self.spec.get("rescueRoot"),
+                "c_exclude": self.c_exclude(),
+            }, late=late, show=show)
+        finally:
+            show.close()
+        took = time.monotonic() - started
+        if os.path.isdir(self.disk.revs):
+            past[kind] = took
+            with open(history, "w") as f:
+                json.dump(past, f)
+        how = "the data disk listed from its MFT" if res["lister"] == "mft" else "the data disk listed through " + res["lister"]
+        print("scanned %s entries in %s (%s, listing %.1f s, block check %.1f s)"
+              % (format(res["entries"], ","), seconds(took), how, res["timing"]["list"], res["timing"]["check"]), flush=True)
         state = {
             "items": res["items"],
             "fs": res["fs"],
             "base_fs": res["base_fs"],
             "blocks": res["blocks"],
-            "written": written,
-            "trimmed": trimmed,
+            "written": diff["written"],
+            "trimmed": diff["trimmed"],
             "rev0_time": datetime.fromtimestamp(os.stat(rev0).st_mtime).strftime("%Y-%m-%d %H:%M") if have_rev0 else None,
             "c_items": res["c_items"] if with_c else (self.state["c_items"] if self.state else []),
             "c_pair": res["c_found"] if with_c else (self.state["c_pair"] if self.state else None),
@@ -2531,7 +3046,8 @@ class CarryReview:
         blocks = [section(TAMPERED, tampered)]
         blocks += [section(t, [it for it in live if it["flag"] == t]) for t in self.titles]
         blocks += [
-            grouped("CHANGED", [it for it in live if not it["flag"]], self.group),
+            grouped("ADDED", [it for it in live if not it["flag"] and it["st"] == "N"], self.group),
+            grouped("CHANGED", [it for it in live if not it["flag"] and it["st"] == "M"], self.group),
             grouped("DELETED (also deleted in the fresh layer)", [it for it in chosen if it["st"] == "D"], self.group),
             section("LEFT OUT (reverts with everything else)", [it for it in self.items if it["path"] in self.left_out]),
         ]

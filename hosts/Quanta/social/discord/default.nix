@@ -3,6 +3,7 @@
     commandLineArgs = [ "--enable-blink-features=MiddleClickAutoscroll" ];
 
     localPlugins = {
+      BulkDelete = ./local-plugins/bulkDelete;
       CopyWithReplies = ./local-plugins/copyWithReplies;
       MyServerRoles = ./local-plugins/myServerRoles;
       SaveAs = ./local-plugins/saveAs;
@@ -46,6 +47,12 @@
 
     extraConfig.plugins = {
       AccountPanelServerProfile.enabled = false;
+      BulkDelete = {
+        enabled = true;
+        delay = 1500;
+        variation = 40;
+        breaks = true;
+      };
       CopyWithReplies = {
         enabled = true;
         anonymize = false;

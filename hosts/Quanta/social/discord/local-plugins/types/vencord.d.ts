@@ -1,5 +1,10 @@
 declare module "*.css";
 
+declare module "*.css?managed" {
+  const name: string;
+  export default name;
+}
+
 declare const DiscordNative: any;
 declare const VencordNative: any;
 
@@ -26,6 +31,28 @@ declare namespace JSX {
   interface IntrinsicElements {
     [element: string]: any;
   }
+}
+
+declare module "@api/ChatButtons" {
+  export type ChatBarButtonFactory = (props: {
+    channel: any;
+    isMainChat: boolean;
+    isAnyChat: boolean;
+  }) => any;
+
+  export const ChatBarButton: any;
+}
+
+declare module "@api/MessageUpdater" {
+  export function updateMessage(channelId: string, messageId: string, fields?: Record<string, any>): void;
+}
+
+declare module "@components/BaseText" {
+  export const BaseText: any;
+}
+
+declare module "@components/Icons" {
+  export const DeleteIcon: any;
 }
 
 declare module "@api/ContextMenu" {
@@ -69,6 +96,11 @@ declare module "@utils/modal" {
   export function openModal(render: (props: ModalProps) => any): void;
 }
 
+declare module "@utils/react" {
+  export function useForceUpdater(): () => void;
+  export function useTimer(opts: { interval?: number; deps?: unknown[]; }): number;
+}
+
 declare module "@utils/types" {
   export type PluginNative<T extends Record<string, (event: any, ...args: any[]) => any>> = {
     [K in keyof T]: T[K] extends (event: any, ...args: infer A) => infer R
@@ -85,6 +117,13 @@ declare module "@utils/types" {
 }
 
 declare module "@vencord/discord-types" {
+  export interface Channel {
+    id: string;
+    guild_id: string | null;
+    name: string;
+    recipients: string[];
+  }
+
   export interface Guild {
     id: string;
     name: string;
@@ -94,8 +133,13 @@ declare module "@vencord/discord-types" {
     id: string;
     channel_id: string;
     type: number;
+    state: "SENT" | "SENDING" | "SEND_FAILED";
+    deleted?: boolean;
     content: string;
     timestamp: Date;
+    embeds: unknown[];
+    stickerItems?: unknown[];
+    hasFlag(flag: number): boolean;
     author: {
       id: string;
       username: string;
@@ -120,6 +164,11 @@ declare module "@vencord/discord-types" {
     }[];
   }
 
+  export interface RenderModalProps {
+    transitionState: number;
+    onClose(): void;
+  }
+
   export interface Role {
     id: string;
     name: string;
@@ -129,6 +178,10 @@ declare module "@vencord/discord-types" {
 }
 
 declare module "@vencord/discord-types/enums" {
+  export const enum MessageFlags {
+    EPHEMERAL = 64
+  }
+
   export const enum MessageType {
     DEFAULT = 0,
     REPLY = 19,
@@ -139,18 +192,29 @@ declare module "@vencord/discord-types/enums" {
 
 declare module "@webpack/common" {
   export const ChannelStore: any;
+  export const Checkbox: any;
+  export const Constants: any;
   export const ContextMenuApi: any;
   export const GuildMemberStore: any;
   export const GuildRoleStore: any;
   export const GuildStore: any;
   export const Menu: any;
   export const MessageStore: any;
+  export const MessageTypeSets: Record<string, Set<number>>;
+  export const Modal: any;
+  export const PermissionsBits: Record<string, bigint>;
+  export const PermissionStore: any;
   export const RestAPI: any;
   export const showToast: (message: string, type?: number) => void;
   export const SelectedChannelStore: any;
   export const SelectedGuildStore: any;
   export const Text: any;
+  export const TextInput: any;
   export const Toasts: any;
   export const UserProfileActions: any;
   export const UserStore: any;
+
+  export function openModal(render: (props: import("@vencord/discord-types").RenderModalProps) => any): string;
+  export function useEffect(effect: () => void | (() => void), deps?: unknown[]): void;
+  export function useState<T>(initial: T | (() => T)): [T, (value: T | ((previous: T) => T)) => void];
 }

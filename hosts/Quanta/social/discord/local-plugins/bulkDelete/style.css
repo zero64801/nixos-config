@@ -1,0 +1,275 @@
+.vc-bulk-delete-selected {
+    --vc-bulk-delete-accent: var(--status-danger, #f23f43);
+    --text-default: var(--vc-bulk-delete-accent);
+    --text-muted: var(--vc-bulk-delete-accent);
+    --text-strong: var(--vc-bulk-delete-accent);
+    --text-link: var(--vc-bulk-delete-accent);
+    --interactive-icon-default: var(--vc-bulk-delete-accent);
+
+    background-color: color-mix(in srgb, var(--vc-bulk-delete-accent) 10%, transparent);
+    background-image: repeating-linear-gradient(
+        -45deg,
+        color-mix(in srgb, var(--vc-bulk-delete-accent) 10%, transparent) 0 10px,
+        transparent 10px 20px
+    );
+    box-shadow: inset 3px 0 0 var(--vc-bulk-delete-accent);
+}
+
+.vc-bulk-delete-failed {
+    --vc-bulk-delete-accent: var(--status-warning, #f0b232);
+}
+
+.vc-bulk-delete-current {
+    animation:
+        vc-bulk-delete-march 700ms linear infinite,
+        vc-bulk-delete-pulse 700ms ease-in-out infinite alternate;
+}
+
+/* 28.28px is one 20px stripe period measured along the x axis at 45 degrees, so the loop is seamless. */
+@keyframes vc-bulk-delete-march {
+    to {
+        background-position: 28.28px 0;
+    }
+}
+
+@keyframes vc-bulk-delete-pulse {
+    to {
+        background-color: color-mix(in srgb, var(--vc-bulk-delete-accent) 26%, transparent);
+    }
+}
+
+@keyframes vc-bulk-delete-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes vc-bulk-delete-shake {
+    0%, 60%, 100% {
+        transform: rotate(0);
+    }
+
+    70% {
+        transform: rotate(-14deg);
+    }
+
+    80% {
+        transform: rotate(12deg);
+    }
+
+    90% {
+        transform: rotate(-6deg);
+    }
+}
+
+.vc-bulk-delete-chat-icon {
+    position: relative;
+    display: flex;
+    color: var(--status-danger, #f23f43);
+}
+
+.vc-bulk-delete-running svg {
+    animation: vc-bulk-delete-shake 1.2s ease-in-out infinite;
+}
+
+.vc-bulk-delete-badge {
+    position: absolute;
+    top: -6px;
+    right: -8px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-radius: 8px;
+    background: var(--status-danger, #f23f43);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    pointer-events: none;
+}
+
+.vc-bulk-delete-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    padding-right: 4px;
+}
+
+.vc-bulk-delete-row {
+    --vc-bulk-delete-accent: var(--status-danger, #f23f43);
+
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--vc-bulk-delete-accent) 40%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vc-bulk-delete-accent) 9%, transparent);
+    transition: opacity 200ms ease, background-color 200ms ease, border-color 200ms ease;
+}
+
+.vc-bulk-delete-row-current {
+    background-image: repeating-linear-gradient(
+        -45deg,
+        color-mix(in srgb, var(--vc-bulk-delete-accent) 14%, transparent) 0 10px,
+        transparent 10px 20px
+    );
+    animation: vc-bulk-delete-march 700ms linear infinite;
+}
+
+.vc-bulk-delete-row-deleted,
+.vc-bulk-delete-row-gone {
+    --vc-bulk-delete-accent: var(--status-positive, #23a55a);
+
+    opacity: 0.65;
+}
+
+.vc-bulk-delete-row-failed {
+    --vc-bulk-delete-accent: var(--status-warning, #f0b232);
+}
+
+.vc-bulk-delete-row-skipped {
+    --vc-bulk-delete-accent: var(--text-muted, #949ba4);
+
+    opacity: 0.5;
+}
+
+.vc-bulk-delete-mark {
+    flex: 0 0 16px;
+    height: 16px;
+    margin-top: 2px;
+    box-sizing: border-box;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--vc-bulk-delete-accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.vc-bulk-delete-row-deleted .vc-bulk-delete-mark::before,
+.vc-bulk-delete-row-gone .vc-bulk-delete-mark::before {
+    content: "✓";
+}
+
+.vc-bulk-delete-row-failed .vc-bulk-delete-mark::before {
+    content: "!";
+}
+
+.vc-bulk-delete-row-current .vc-bulk-delete-mark {
+    background: none;
+    border: 2px solid var(--vc-bulk-delete-accent);
+    border-top-color: transparent;
+    animation: vc-bulk-delete-spin 700ms linear infinite;
+}
+
+.vc-bulk-delete-row-skipped .vc-bulk-delete-mark {
+    background: none;
+    border: 2px solid var(--vc-bulk-delete-accent);
+}
+
+.vc-bulk-delete-row-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-bulk-delete-row-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.vc-bulk-delete-row-time {
+    color: var(--text-muted);
+}
+
+.vc-bulk-delete-row-text {
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--vc-bulk-delete-accent);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-bulk-delete-row-deleted .vc-bulk-delete-row-text,
+.vc-bulk-delete-row-gone .vc-bulk-delete-row-text {
+    text-decoration: line-through;
+}
+
+.vc-bulk-delete-row-reason {
+    margin-top: 2px;
+    color: var(--vc-bulk-delete-accent);
+}
+
+.vc-bulk-delete-row-remove {
+    flex: 0 0 auto;
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.vc-bulk-delete-row-remove:hover {
+    color: var(--status-danger, #f23f43);
+}
+
+.vc-bulk-delete-pace {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.vc-bulk-delete-pace-field {
+    display: flex;
+    flex: 1 1 160px;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.vc-bulk-delete-hint {
+    margin: 10px 0;
+    color: var(--text-muted);
+}
+
+.vc-bulk-delete-progress {
+    height: 10px;
+    overflow: hidden;
+    border-radius: 5px;
+    background: var(--background-mod-subtle, rgb(128 128 128 / 15%));
+}
+
+.vc-bulk-delete-progress-fill {
+    height: 100%;
+    background-color: var(--status-danger, #f23f43);
+    background-image: repeating-linear-gradient(
+        -45deg,
+        rgb(255 255 255 / 20%) 0 10px,
+        transparent 10px 20px
+    );
+    transition: width 300ms ease;
+}
+
+.vc-bulk-delete-progress-running .vc-bulk-delete-progress-fill {
+    animation: vc-bulk-delete-march 700ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .vc-bulk-delete-current,
+    .vc-bulk-delete-running svg,
+    .vc-bulk-delete-row-current,
+    .vc-bulk-delete-row-current .vc-bulk-delete-mark,
+    .vc-bulk-delete-progress-running .vc-bulk-delete-progress-fill {
+        animation: none;
+    }
+}

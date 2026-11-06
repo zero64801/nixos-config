@@ -10,7 +10,8 @@ import uuid
 import guestfs
 
 TOOL, HIVE = sys.argv[1], sys.argv[2]
-W = os.path.abspath("work")
+PART = sys.argv[3]
+W = os.path.abspath("work-" + PART)
 os.makedirs(W + "/bin")
 IMG = W + "/t.data.img"
 REVS = W + "/t.data.revs"
@@ -247,111 +248,9 @@ def registry(img):
     return mounted(img, "/dev/sda2", read)
 
 
-subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", BASE, "256M"], check=True)
-guest(BASE, system_base)
-subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/s.qcow2"], check=True)
-guest(W + "/s.qcow2", system_session)
-live(W + "/s.qcow2")
-
-rc, out = nv("init", "t")
-check(rc == 0 and os.stat(IMG).st_size == 256 << 20 and os.path.exists(REVS + "/rev0.img"), "init sizes the data disk after the system disk", out)
-rc, out = nv("link", "t")
-check(rc == 1 and "run carry first" in out, "link refuses before carry", out)
-
-rc, out = nv("carry", "t")
-check(rc == 0 and "formatted the data disk" in out, "carry formats the empty data disk", out)
-got = files(IMG)
-check({"/Kit/Viewer/viewer.exe", "/Work/parser/main.py", "/agent/settings.json", "/agent/.agent.json"} <= got, "carry copies every entry", str(sorted(got)))
-rc, out = nv("carry", "t")
-check(rc == 0 and out.count("already on the data disk, skipped") == 4 and files(IMG) == got, "a second carry skips what the data disk already holds", out)
-
-
-def meta(g):
-    disk = (g.vfs_label("/dev/sda1"), g.part_get_gpt_type("/dev/sda", 1), g.part_get_gpt_guid("/dev/sda", 1))
-    g.mount_ro("/dev/sda1", "/")
-    return (g.lgetxattr("/Kit/win", "system.ntfs_reparse_data"), g.lgetxattr("/Kit/hidden.txt", "system.ntfs_attrib"),
-            g.lgetxattr("/Kit/Viewer/a.dll", "system.ntfs_acl"), g.read_file("/agent/.agent.json")) + disk
-
-
-rp, attrib, acl, cjson, label, ptype, guid = guest(IMG, meta, ro=True)
-src_acl = mounted(W + "/s.qcow2", "/dev/sda2", lambda g: g.lgetxattr("/Users/alice/Desktop/Kit/Viewer/a.dll", "system.ntfs_acl"))
-check(rp == junction("C:\\Windows"), "junctions inside carried folders keep their target", repr(rp))
-check(attrib[:1] == b"\x22" and acl == src_acl, "attributes and security descriptors are copied", repr((attrib, acl, src_acl)))
-check(cjson == b'{"new": true}\n' and label == "Data" and ptype == "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
-      "the session's files land on a basic data partition labelled Data", repr((cjson, label, ptype)))
-
-pair = ["--c-pair", W + "/s.qcow2", BASE]
-rc, out = nv("show", "t", *pair)
-check(rc == 0 and "RUNS CODE" in out and "LEFT ON THE SYSTEM DISK" in out, "show prints the review", out)
-check("notes.txt" in out and "junk.tmp" not in out and "NTUSER" not in out and "Desktop/Kit" not in out.split("LEFT ON THE SYSTEM DISK")[1], "show lists only what the revert would really lose", out)
-check("Documents/notes" not in out.split("LEFT ON THE SYSTEM DISK")[1] and ".gitconfig" not in out.split("LEFT ON THE SYSTEM DISK")[1],
-      "carryOnRevert paths are not offered for rescue", out)
-rc, out = nv("keep", "t", "-y")
-check(rc == 0 and os.path.exists(REVS + "/rev1.img"), "keep -y rotates without a review", out)
-
-subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/r.qcow2"], check=True)
-live(W + "/r.qcow2")
-rc, out = nv("link", "t", "--dry-run")
-check(rc == 0 and "link Users/alice/Desktop/Kit -> D:\\Kit" in out and "move D: (" in out, "link --dry-run prints the plan", out)
-check("\\DosDevices\\D:" in registry(W + "/r.qcow2") and registry(W + "/r.qcow2")["\\DosDevices\\D:"] == CDROM, "the dry run writes nothing", out)
-rc, out = nv("link", "t")
-check(rc == 0, "link applies", out)
-
-
-def system_after(g):
-    g.mount_ro("/dev/sda2", "/")
-    return {p: g.lgetxattr("/Users/alice/" + p, "system.ntfs_reparse_data") for p in ("Desktop/Kit", "Desktop/Work", ".agent")}, \
-        g.exists("/Users/alice/.agent.json")
-
-
-links, json_left = guest(W + "/r.qcow2", system_after, ro=True)
-check(links == {"Desktop/Kit": junction("D:\\Kit"), "Desktop/Work": junction("D:\\Work"), ".agent": junction("D:\\agent")},
-      "carried folders become junctions to the data disk", repr(links))
-check(not json_left, "carried files are removed from the system disk", out)
-reg = registry(W + "/r.qcow2")
-check(reg["\\DosDevices\\D:"] == b"DMIO:ID:" + uuid.UUID(guid).bytes_le and reg["\\DosDevices\\Z:"] == CDROM,
-      "drive D: points at the data partition and the CD drive moves to Z:", repr(reg))
-check(reg["AGENT_HOME"] == "D:\\agent\0".encode("utf-16-le"), "the user environment variable is set", repr(reg))
-rc, out = nv("link", "t")
-check(rc == 0 and "already links" in out and "already points" in out and "already D:" in out, "link is idempotent", out)
-
-rc, out = nv("unlink", "t", "--dry-run")
-check(rc == 0 and "copy D:\\Kit back to Users/alice/Desktop/Kit" in out and "remove the link Users/alice/Desktop/Kit -> D:\\Kit" in out
-      and "copy D:\\agent\\.agent.json back to Users/alice/.agent.json" in out and "free drive D:" in out
-      and "alice: remove AGENT_HOME" in out, "unlink --dry-run prints the plan", out)
-check(guest(W + "/r.qcow2", system_after, ro=True)[0] == links, "the unlink dry run writes nothing", out)
-rc, out = nv("unlink", "t")
-check(rc == 0 and "rotate t keeps this" in out, "unlink applies", out)
-
-
-def system_unlinked(g):
-    g.mount_ro("/dev/sda2", "/")
-    u = "/Users/alice/"
-    return {
-        "links": [p for p in ("Desktop/Kit", "Desktop/Work", ".agent") if g.is_symlink(u + p)],
-        "ida": g.read_file(u + "Desktop/Kit/Viewer/viewer.exe"),
-        "inner": g.lgetxattr(u + "Desktop/Kit/win", "system.ntfs_reparse_data"),
-        "acl": g.lgetxattr(u + "Desktop/Kit/Viewer/a.dll", "system.ntfs_acl"),
-        "json": g.read_file(u + ".agent.json"),
-        "nested": g.exists(u + ".agent/.agent.json"),
-        "skill": g.exists(u + ".agent/rules/x/RULE.md"),
-        "temp": [p for p in g.find(u) if "nixvirt-unlink" in p],
-    }
-
-
-got = guest(W + "/r.qcow2", system_unlinked, ro=True)
-check(got["links"] == [] and got["ida"] == b"MZ" + b"A" * 5000 and got["skill"] and not got["temp"],
-      "unlink puts the data disk's folders back in place of the junctions", repr(got))
-check(got["inner"] == junction("C:\\Windows") and got["acl"] == src_acl, "junctions and security descriptors inside them come back", repr(got))
-check(got["json"] == b'{"new": true}\n' and not got["nested"], "a carried file returns to its own place, not into the carried folder", repr(got))
-reg = registry(W + "/r.qcow2")
-check("\\DosDevices\\D:" not in reg and reg["\\DosDevices\\Z:"] == CDROM and "\\DosDevices\\C:" in reg,
-      "unlink frees the data disk's drive letter and keeps the other mappings", repr(reg))
-check("AGENT_HOME" not in reg and reg["TEMP"] == TEMP, "unlink removes the environment variable and keeps the others", repr(reg))
-rc, out = nv("unlink", "t")
-check(rc == 0 and out.count("is already on the system disk") == 4 and "free drive" not in out and "next:" not in out, "unlink is idempotent", out)
-rc, out = nv("link", "t")
-check(rc == 0 and guest(W + "/r.qcow2", system_after, ro=True)[0] == links, "link works again after unlink", out)
+spec = importlib.util.spec_from_file_location("nixvirt_data", TOOL)
+nvd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(nvd)
 
 
 def dropped(dom, keys, env):
@@ -368,533 +267,894 @@ def dropped(dom, keys, env):
     return path
 
 
-def junctions(g):
-    g.mount_ro("/dev/sda2", "/")
-    u = "/Users/alice/"
-    state = {p: bool(g.is_symlink(u + p)) for p in ("Desktop/Kit", "Desktop/Work", ".agent")}
-    return state, None if state["Desktop/Work"] else bool(g.is_file(u + "Desktop/Work/parser/main.py", followsymlinks=False))
-
-
-rc, out = nv("unlink", "t", "--only", "Users/alice/Desktop/Work", "--dry-run")
-check(rc == 0 and "copy D:\\Work back to Users/alice/Desktop/Work" in out and "free drive" not in out and "AGENT_HOME" not in out,
-      "unlink --only plans just the named folder", out)
-rc, out = nv("unlink", "t", "--only", "Users/alice/Desktop/Work")
-state, work = guest(W + "/r.qcow2", junctions, ro=True)
-reg = registry(W + "/r.qcow2")
-check(rc == 0 and state == {"Desktop/Kit": True, "Desktop/Work": False, ".agent": True} and work
-      and reg["\\DosDevices\\D:"] == b"DMIO:ID:" + uuid.UUID(guid).bytes_le and "AGENT_HOME" in reg,
-      "unlink --only moves one folder back and keeps the drive letter, the other links and the environment", out + repr((state, work)))
-rc, out = nv("unlink", "t", "--only", "Users/alice/.agent", cfg=dropped("t", ["Users/alice/.agent", "Users/alice/.agent.json"], {}))
-state, _ = guest(W + "/r.qcow2", junctions, ro=True)
-reg = registry(W + "/r.qcow2")
-check(rc == 0 and not state[".agent"] and state["Desktop/Kit"] and "AGENT_HOME" not in reg and reg["TEMP"] == TEMP,
-      "after the entry left the config, unlink --only follows the junction and drops the variable pointing into it", out)
-rc, out = nv("link", "t")
-check(rc == 0 and guest(W + "/r.qcow2", system_after, ro=True)[0] == links and "AGENT_HOME" in registry(W + "/r.qcow2"),
-      "link puts everything back after unlink --only", out)
-
-live(BASE)
-rc, out = nv("link", "t")
-check(rc == 1 and "not a snapshot overlay" in out, "link refuses a system disk without an overlay", out)
-live(W + "/r.qcow2")
-
-guest(IMG, data_session)
-# A write straight to the disk, around NTFS, leaves the file's MFT record as it was.
-with open(IMG, "r+b") as f:
-    image = f.read()
-    hits = [m.start() for m in re.finditer(re.escape(b"MZ" + b"A" * 5000), image)]
-    f.seek(hits[0] + 2000)
-    f.write(b"EVIL")
-del image
-check(len(hits) == 1, "the raw write found viewer.exe's only copy on the data disk", repr(hits))
-
-
-def tampered(out):
-    return sorted(m.group(1) for m in re.finditer(r"^\s+M\s+(\S+)\s+.*same size and date, different content", out, re.M))
-
-
-rc, out = nv("show", "t")
-rc2, out2 = nv("show", "t", "--hash-all")
-check(rc == rc2 == 0 and "block check: " in out and tampered(out) == tampered(out2) == ["Kit/Viewer/a.dll", "Kit/Viewer/viewer.exe"],
-      "the block check finds exactly the files that hashing every file finds", out + out2)
-rc, out = nv("review", "t", *pair, answers="v\na\n")
-check(rc == 10 and "aborted" in out, "abort returns 10 and keeps the data disk", out)
-check("a.dll" in out.split("SAME SIZE AND DATE, DIFFERENT CONTENT")[1].split("\n\n")[0], "a timestomped DLL is caught through its MFT record", out)
-check("viewer.exe" in out.split("SAME SIZE AND DATE, DIFFERENT CONTENT")[1].split("\n\n")[0], "a raw disk write is caught through the file's clusters", out)
-check("settings.json" in out.split("RUNS CODE")[1].split("\n\n")[0] and "Extra/" in out and "Kit/win" not in out, "code rules flag, and unchanged junctions do not", out)
-check("RULE.md" in out.split("STEERS THE AGENT")[1].split("\n\n")[0], "configured highlight sections list their files", out)
-check("util.py" in out.split("CHANGED")[1] if "CHANGED" in out else False, "script edits under sourcePaths are ordinary changes", out)
-check("\x1b" not in out and "\\x1b[31m" in out and "\\u202e" in out, "control and bidi characters are escaped", out)
-
-spec = importlib.util.spec_from_file_location("nixvirt_data", TOOL)
-nvd = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(nvd)
-
-
-def logfile(g):
-    ntfs = nvd.Ntfs(g, "/dev/sda1")
-    return g.part_list("/dev/sda")[0]["part_start"] + ntfs.data_runs(ntfs.parse(ntfs.record(2)))[0][1] * ntfs.cs
-
-
-# A restart page with a client still in the log and no clean flag, as a crash leaves it.
-page = bytearray(4096)
-page[0:4] = b"RSTR"
-struct.pack_into("<HHqIIHhh", page, 4, 0x1E, 9, 0, 4096, 4096, 0x40, 1, 1)
-struct.pack_into("<qHHHH", page, 0x40, 7, 1, 0xFFFF, 0, 0)
-for k in range(1, 9):
-    page[0x1E + 2 * k:0x20 + 2 * k] = page[k * 512 - 2:k * 512]
-    page[k * 512 - 2:k * 512] = b"\x01\x00"
-page[0x1E:0x20] = b"\x01\x00"
-off = guest(IMG, logfile, ro=True)
-with open(IMG, "r+b") as f:
-    f.seek(off)
-    saved = f.read(8192)
-    f.seek(off)
-    f.write(page + page)
-rc, out = nv("show", "t")
-with open(IMG, "r+b") as f:
-    f.seek(off)
-    f.write(saved)
-check(rc == 0 and "journal was not closed cleanly" in out, "an unreplayed NTFS journal on the data disk is called out", out)
-
-rc, out = nv("review", "t", *pair, answers="p\n1 5\ny\nr\nall\nk\n")
-check(rc == 0 and "kept the data disk as rev0" in out, "prune, rescue and keep complete", out)
-got = files(IMG)
-check("/Extra/New" not in got and not any("evil" in p for p in got), "pruned items are gone", str(sorted(got)))
-check(any(p.endswith("/Users/alice/Downloads/notes.txt") and p.startswith("/Rescued/") for p in got), "the rescued file is on the data disk", str(sorted(got)))
-check(os.path.exists(REVS + "/rev2.img"), "revisions rotate up to keep", out)
-
-rc, out = nv("review", "t")
-check(rc == 0 and "unchanged" in out, "an untouched data disk needs no review", out)
-guest(IMG, lambda g: (g.mount("/dev/sda1", "/"), g.write("/Kit/junk.exe", b"MZ")))
-rc, out = nv("review", "t", answers="d\ny\n")
-check(rc == 0 and "/Kit/junk.exe" not in files(IMG) and os.path.exists(REVS + "/discarded.img"), "discard returns to rev0", out)
-rc, out = nv("restore", "t", "discarded", answers="y\n")
-check(rc == 0 and "/Kit/junk.exe" in files(IMG), "the discarded state can be restored", out)
-rc, out = nv("pin", "t", "rev1", "clean")
-check(rc == 0 and os.path.exists(REVS + "/pin-clean.img"), "pin keeps a revision", out)
-
-put("t.state", "running\n")
-rc, out = nv("review", "t", answers="k\n")
-check(rc == 1 and "must be shut off" in out, "a running domain is refused", out)
-os.unlink(W + "/t.state")
-
-os.replace(REVS + "/rev0.img", REVS + "/.rev-new.img")
-rc, out = nv("restore", "t", "rev0", answers="y\n")
-check(rc == 0 and os.path.exists(REVS + "/rev0.img"), "an interrupted rotation is finished on the next run", out)
-
-rc, out = nv("carry", "t")
-check(rc == 0 and "already links to the data disk, skipped" in out and "/Kit/Viewer/viewer.exe" in files(IMG),
-      "carry after link skips junctions instead of copying them over the data disk", out)
-
-live(W + "/s.qcow2")
-rc, out = nv("migrate", "t", "-y")
-backups = os.listdir(W + "/.backup")
-check(rc == 0 and len(backups) == 1 and {"c.qcow2", "s.qcow2", "domain.xml", "snapshot-safe0.xml"} <= set(os.listdir(W + "/.backup/" + backups[0])),
-      "migrate backs up the system disk chain and the definitions", out)
-links, _ = guest(W + "/m.qcow2", system_after, ro=True)
-check(links["Desktop/Kit"] == junction("D:\\Kit") and "kept the data disk as rev0" in out and "LEFT ON THE SYSTEM DISK" in out,
-      "migrate carries, reviews, keeps, reverts and links", out)
-
-
-S = W + "/s.qcow2"
-NEW = W + "/n.qcow2"
-rc, out = nv("revert-carry", "t", "--pair", S, BASE)
-check(rc == 0 and "a plain revert loses" in out and "run.ps1" in out.split("RUNS CODE")[1].split("\n\n")[0], "revert-carry previews the changes and flags scripts", out)
-check("keep.bin" in out.split("SAME SIZE AND DATE")[1].split("\n\n")[0] and ".gitconfig" in out.split("STEERS GIT")[1].split("\n\n")[0]
-      and "1 deleted" in out.split("DELETED")[1], "the block check, highlight sections and deletions apply to carried paths", out)
-rc, out = nv("revert-carry", "t", "--pair", S, BASE, "--into", NEW, answers="a\n")
-check(rc == 10 and not os.path.exists(NEW), "aborting the carry review creates nothing", out)
-rc, out = nv("revert-carry", "t", "--pair", S, BASE, "--into", NEW, answers="n\n")
-check(rc == 0 and not os.path.exists(NEW), "carrying nothing leaves a plain revert", out)
-rc, out = nv("revert-carry", "t", "--pair", S, BASE, "--into", NEW, answers="l\n7\nc\n")
-check(rc == 0 and re.search(r"^\s*7\s+N\s+Users/alice/Documents/notes/run\.ps1", out, re.M) and "LEFT OUT" in out and "carried 6 change(s)" in out,
-      "a left out change is listed apart and the rest is carried", out)
-
-
-def carried(g):
-    g.mount_ro("/dev/sda2", "/")
-    n = "/Users/alice/Documents/notes/"
-    return {
-        "a": g.read_file(n + "a.txt"), "gone": g.exists(n + "gone.txt"), "deep": g.read_file(n + "new/deep.txt"),
-        "run": g.exists(n + "run.ps1"), "lnk": g.lgetxattr(n + "lnk", "system.ntfs_reparse_data"),
-        "git": g.read_file("/Users/alice/.gitconfig"), "keep": g.read_file("/Users/alice/AppData/Roaming/App/keep.bin"),
-        "acl": g.lgetxattr(n + "a.txt", "system.ntfs_acl"), "other": g.exists("/Users/alice/Downloads/notes.txt"),
-    }
-
-
-got = guest(NEW, carried, ro=True)
-check(got["a"] == b"new a, longer\n" and not got["gone"] and got["deep"] == b"deep\n" and got["git"] == b"[user]\n  name = alice\n"
-      and got["keep"] == b"Q" * 4096, "the chosen changes land in the fresh layer, deletions included", repr(got))
-check(not got["run"] and not got["other"], "left out changes and everything outside the carried paths revert", repr(got))
-check(got["lnk"] == junction("C:\\Windows") and got["acl"] == mounted(S, "/dev/sda2", lambda g: g.lgetxattr("/Users/alice/Documents/notes/a.txt", "system.ntfs_acl")),
-      "junctions and permissions are carried", repr(got))
-check(json.loads(subprocess.run(["qemu-img", "info", "--output=json", NEW], capture_output=True, text=True).stdout)["backing-filename"] == BASE,
-      "the fresh layer sits on the revert target", NEW)
-
-
 def vsize(path):
     return json.loads(subprocess.run(["qemu-img", "info", "--output=json", "-U", path], capture_output=True, text=True).stdout)["virtual-size"]
 
 
-def layout(img, data=False):
-    def read(g):
-        parts = {p["part_num"]: (p["part_start"] >> 9, p["part_end"] >> 9) for p in g.part_list("/dev/sda")}
-        info = {n: (g.part_get_gpt_type("/dev/sda", n), g.part_get_gpt_guid("/dev/sda", n), g.part_get_gpt_attributes("/dev/sda", n),
-                    g.part_get_name("/dev/sda", n)) for n in parts}
-        root = "/dev/sda1" if data else "/dev/sda2"
-        g.mount_ro(root, "/")
-        seen = g.find("/")
-        size = g.statvfs("/")
+if PART == "windows":
+    ODD = ["a b.txt", "new\nline.txt", "\u00fcn\u00efc\u00f8d\u00e9.txt", "evil\u202egnp.exe", "-dash", "[glob]*?.txt", ".hidden"]
+
+
+    def odd_tree(g):
+        g.part_disk("/dev/sda", "gpt")
+        g.mkfs("ntfs", "/dev/sda1")
+        g.mount("/dev/sda1", "/")
+        g.mkdir_p("/d1/d2")
+        for i, name in enumerate(ODD):
+            g.write("/d1/" + name, b"x" * i)
+        g.write("/d1/d2/deep.bin", os.urandom(9000))
+        g.mkdir("/d1/jn")
+        setattr_hex(g, "/d1/jn", "system.ntfs_reparse_data", junction("C:\\Windows"))
+        g.mkdir_p("/skip/me")
+        g.write("/skip/me/x", b"x")
+
+
+    def reference_walk(g, top, skip=lambda rel: False):
+        # The per-folder walk the tool used before its find listing, kept here as the yardstick.
+        mount_root = "/sysroot/" + top.strip("/").split("/")[0]
+        tree, stack = {}, [""]
+        while stack:
+            rel = stack.pop()
+            d = top + "/" + rel if rel else top
+            ents = [e for e in g.readdir(d) if e["name"] not in (".", "..") and not skip((rel + "/" if rel else "") + e["name"])]
+            for e, st in zip(ents, g.lstatnslist(d, [e["name"] for e in ents]) if ents else []):
+                path = (rel + "/" if rel else "") + e["name"]
+                link = g.readlink(d + "/" + e["name"]) if e["ftyp"] == "l" else None
+                if link and link.startswith(mount_root + "/"):
+                    link = link[len(mount_root):]
+                tree[path] = (e["ftyp"], st["st_size"] if e["ftyp"] == "r" else 0, st["st_mtime_sec"], st["st_mtime_nsec"], link,
+                              st["st_ino"], st["st_mode"] & 0o7777, st["st_ctime_sec"], st["st_ctime_nsec"])
+                if e["ftyp"] == "d":
+                    stack.append(path)
+        return tree
+
+
+    def walk_parity(g):
+        g.mkmountpoint("/x")
+        g.mount_ro("/dev/sda1", "/x")
+        full = nvd.walk(g, "/x") == reference_walk(g, "/x")
+        pruned = nvd.walk(g, "/x", ["skip", "d1/d2"]) == reference_walk(g, "/x", lambda rel: rel in ("skip", "d1/d2"))
+        only = nvd.walk(g, "/x/d1", only="d2") == {k: v for k, v in reference_walk(g, "/x/d1").items() if k == "d2" or k.startswith("d2/")}
+        return full, pruned, only, sorted(nvd.walk(g, "/x"))
+
+
+    PARITY = W + "/parity.qcow2"
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", PARITY, "64M"], check=True)
+    guest(PARITY, odd_tree)
+    full, pruned, only, names = guest(PARITY, walk_parity, ro=True)
+    check(full and pruned and only and "d1/new\nline.txt" in names and "d1/[glob]*?.txt" in names,
+          "the find listing matches the per-folder walk, odd names, junctions and pruning included", repr(names))
+
+
+    def symlink(target, relative):
+        sub = target.encode("utf-16-le")
+        body = struct.pack("<HHHHI", 0, len(sub), len(sub), len(sub), 1 if relative else 0) + sub + sub
+        return struct.pack("<IHH", 0xA000000C, len(body), 0) + body
+
+
+    def mft_volume(g):
+        g.part_disk("/dev/sda", "gpt")
+        g.mkfs("ntfs", "/dev/sda1")
+        g.mount("/dev/sda1", "/")
+        g.mkdir_p("/d1/d2")
+        for i, name in enumerate(ODD + ["smile\U0001F600.txt"]):
+            g.write("/d1/" + name, b"x" * i)
+        g.mkdir_p("/deep/a/b/c/d")
+        g.write("/deep/a/b/c/d/leaf.txt", b"leaf")
+        g.mkdir("/wide")
+        g.debug("sh", ["cd /sysroot/wide && for i in $(seq 3000); do echo $i > f$i.txt; done"])
+        g.mkdir("/links")
+        g.write("/links/base.bin", os.urandom(5000))
+        # Long names fill the record, so the links spill into extension records behind an attribute list.
+        for i in range(40):
+            g.ln("/links/base.bin", "/links/%s-%02d" % ("l" * 120, i))
+        g.mkdir("/d1/jn")
+        setattr_hex(g, "/d1/jn", "system.ntfs_reparse_data", junction("C:\\Windows"))
+        g.write("/d1/sym", b"")
+        setattr_hex(g, "/d1/sym", "system.ntfs_reparse_data", symlink("..\\deep", True))
+        g.write("/d1/cloud.txt", b"c")
+        setattr_hex(g, "/d1/cloud.txt", "system.ntfs_reparse_data", struct.pack("<IHH", 0x9000001A, 4, 0) + b"\1\2\3\4")
+        g.write("/d1/streams.txt", b"main")
+        setattr_hex(g, "/d1/streams.txt", "user.extra", b"stream data")
+        g.write("/d1/Long Name Document.txt", b"doc")
+        setattr_hex(g, "/d1/Long Name Document.txt", "system.ntfs_dos_name", b"LONGNA~1.TXT")
+        g.write("/d1/desktop.ini", b"[x]")
+        setattr_hex(g, "/d1/desktop.ini", "system.ntfs_attrib", bytes.fromhex("06000000"))
+        g.write("/gone.txt", b"bye")
+        g.rm("/gone.txt")
+        g.mkdir_p("/gone/dir")
+        g.write("/gone/dir/f", b"f")
+        g.rm_rf("/gone")
+        g.mkdir("/old")
+        g.write("/old/f.txt", b"f")
+        g.mv("/old", "/renamed")
+        g.touch("/sparse.bin")
+        g.truncate_size("/sparse.bin", 40 << 20)
+        g.mkdir("/case")
+        g.write("/case/Case.txt", b"A")
+        g.write("/case/case.txt", b"a")
+        g.touch("/empty")
+
+
+    def same_but_links(a, b):
+        # Link targets are spelled differently: ntfs-3g gives a path under its mountpoint, the MFT listing the Windows target.
+        strip = lambda t: {k: v[:4] + v[5:] for k, v in t.items()}
+        return strip(a) == strip(b) and all((a[k][4] is None) == (b[k][4] is None) for k in a)
+
+
+    def mft_parity(g):
+        g.mkmountpoint("/x")
+        g.mount_ro("/dev/sda1", "/x")
+        found = nvd.walk(g, "/x")
+        nt = nvd.Ntfs(g, "/dev/sda1")
+        listed = nvd.mft_tree(nvd.mft_records(nt, "listing"))
+        odd = {k: (found.get(k), listed.get(k)) for k in set(found) | set(listed) if (found.get(k) or ())[:4] != (listed.get(k) or ())[:4]}
+        return same_but_links(found, listed), odd, listed, nt.count
+
+
+    MFTVOL = W + "/mft.img"
+    subprocess.run(["truncate", "-s", "96M", MFTVOL], check=True)
+    guest(MFTVOL, mft_volume)
+    same, odd, listed, count = guest(MFTVOL, mft_parity, ro=True)
+    check(same and "links/" + "l" * 120 + "-39" in listed and listed["d1/jn"][4] == "\\??\\C:\\Windows"
+          and listed["d1/cloud.txt"][:1] == ("l",) and listed["sparse.bin"][1] == 40 << 20 and "d1/LONGNA~1.TXT" not in listed
+          and {"case/Case.txt", "case/case.txt", "renamed/f.txt", "d1/smile\U0001F600.txt"} <= set(listed)
+          and not any(k.startswith(("gone", "old")) for k in listed),
+          "the MFT listing matches ntfs-3g: hard links in extension records, reparse points, streams, DOS names, deletions",
+          repr(odd))
+
+
+    def mft_changes(g):
+        g.mount("/dev/sda1", "/")
+        g.mkdir_p("/new/sub")
+        for i in range(30):
+            g.write("/new/sub/n%d.bin" % i, os.urandom(3000))
+        st = g.lstatns("/deep/a/b/c/d/leaf.txt")
+        g.write("/deep/a/b/c/d/leaf.txt", b"LEAF")
+        g.utimens("/deep/a/b/c/d/leaf.txt", st["st_atime_sec"], st["st_atime_nsec"], st["st_mtime_sec"], st["st_mtime_nsec"])
+        g.rm("/wide/f7.txt")
+        g.mv("/renamed", "/moved")
+        g.ln("/links/base.bin", "/links/extra")
+        setattr_hex(g, "/d1/jn", "system.ntfs_reparse_data", junction("C:\\Users"))
+
+
+    def two(a, b, fn):
+        g = guestfs.GuestFS(python_return_dict=True)
+        g.add_drive_opts(a, format="raw", readonly=True)
+        g.add_drive_opts(b, format="raw", readonly=True)
+        g.launch()
+        try:
+            return fn(g)
+        finally:
+            g.umount_all()
+            g.shutdown()
+            g.close()
+
+
+    MFTNOW = W + "/mft-now.img"
+    subprocess.run(["cp", "--reflink=always", MFTVOL, MFTNOW], check=True)
+    guest(MFTNOW, mft_changes)
+    ranges = nvd.changed_ranges(MFTNOW, MFTVOL)[0]
+
+
+    def mft_reuse(g):
+        nt, bnt = nvd.Ntfs(g, "/dev/sda1"), nvd.Ntfs(g, "/dev/sdb1")
+        recs = nvd.mft_records(nt, "listing")
+        read, plain = [], bnt.records
+
+        def counted(nums, chunk=2 << 20):
+            for n, raw in plain(nums, chunk):
+                read.append(n)
+                yield n, raw
+        bnt.records = counted
+        reused = nvd.mft_tree(nvd.mft_before(nt, bnt, recs, nvd.partition_ranges(g, "/dev/sda", "/dev/sda1", ranges)))
+        g.mkmountpoint("/b")
+        g.mount_ro("/dev/sdb1", "/b")
+        return reused == nvd.mft_tree(nvd.mft_records(nvd.Ntfs(g, "/dev/sdb1"), "listing")) and same_but_links(reused, nvd.walk(g, "/b")), len(read)
+
+
+    same, read = two(MFTNOW, MFTVOL, mft_reuse)
+    check(same and 0 < read < count // 4, "the earlier tree reuses every record outside the written blocks and rereads only %d of %d" % (read, count))
+
+
+    def mft_scans(g):
+        fs = g.list_filesystems()
+        dev, mp = {"dcur": "/dev/sda", "dbase": "/dev/sdb"}, {"dcur": "/dcur", "dbase": "/dbase"}
+        for m in mp.values():
+            g.mkmountpoint(m)
+        req = {"rules": {"source_paths": [], "highlight": {}}, "hash_paths": [], "hash_all": False, "ranges": ranges}
+        fast = nvd.scan(g, req, dev, fs, mp)
         g.umount_all()
-        rec = None if data else g.checksum_device("sha256", "/dev/sda3")
-        verify = g.debug("sh", ["sgdisk -v /dev/sda 2>&1"])
-        return parts, info, len(seen), size["blocks"] * size["frsize"], rec, verify
-    return guest(img, read, ro=True)
+        listing = nvd.mft_now
+
+        def broken(*args):
+            raise nvd.Unreadable("forced")
+        nvd.mft_now = broken
+        try:
+            slow = nvd.scan(g, req, dev, fs, mp)
+        finally:
+            nvd.mft_now = listing
+        key = lambda out: [(it["path"], it["st"], it["type"], it["size"], it["files"], it["reason"]) for it in out["items"]]
+        return fast, slow, key(fast) == key(slow) and fast["blocks"] == slow["blocks"]
 
 
-live(W + "/r.qcow2")
-before_c = layout(W + "/r.qcow2")
-before_d = layout(IMG, data=True)
-rc, out = nv("resize", "t", "+96M", "--dry-run")
-check(rc == 0 and "Windows recovery" in out and "moves to the new end" in out and "data disk, which follows it" in out
-      and vsize(W + "/r.qcow2") == 256 << 20, "resize --dry-run prints the plan and changes nothing", out)
+    fast, slow, same = two(MFTNOW, MFTVOL, mft_scans)
+    paths = {it["path"]: it for it in fast["items"]}
+    check(same and fast["lister"] == "mft" and slow["lister"] == "find (forced)"
+          and fast["blocks"]["differ"] == ["deep/a/b/c/d/leaf.txt"] and paths["new"]["files"] == 30
+          and paths["moved"]["st"] == "N" and paths["renamed"]["st"] == "D" and paths["wide/f7.txt"]["st"] == "D"
+          and paths["d1/jn"]["reason"] == "link" and paths["links/extra"]["st"] == "N",
+          "a scan through the MFT reports what the ntfs-3g walk reports, the timestomped write included",
+          repr(fast["items"]) + "\n" + repr(slow["items"]) + "\n" + repr(fast["blocks"]) + repr(slow["blocks"]))
 
 
-def windows_boot():
-    # Windows clears the check flag ntfsresize sets when it boots, and the test stands in for that boot.
-    for img, part in ((W + "/r.qcow2", "/dev/sda2"), (IMG, "/dev/sda1")):
-        guest(img, lambda g: g.debug("sh", ["ntfsfix -d %s" % part]))
+    def status_lines(expected, events):
+        import io
+        os.environ["COLUMNS"] = "200"
+        real, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            bar = nvd.Progress(expected)
+            bar.tty = True
+            for e in events:
+                bar(*e)
+            bar.close()
+            bar.draw()
+            return sys.stdout.getvalue()
+        finally:
+            sys.stdout = real
 
 
-for step, total, what in (("+32M", 288, "a grow smaller than the recovery partition moves it up in chunks"),
-                          ("+128M", 416, "--force resizes a volume Windows has not checked yet"),
-                          ("-224M", 192, "a shrink moves NTFS data down, then the recovery partition, then trims the image")):
-    force = []
-    if step != "+32M":
-        rc, out = nv("resize", "t", step, "-y")
-        check(rc == 1 and "has not checked partition" in out and "--force resizes anyway" in out and not os.path.exists(W + "/r.qcow2.preresize"),
-              "a second resize before Windows checked the volume is refused before anything changes", out)
-        if step == "+128M":
-            force = ["--force"]
-        else:
-            windows_boot()
-    rc, out = nv("resize", "t", step, "-y", *force)
-    after_c = layout(W + "/r.qcow2")
-    after_d = layout(IMG, data=True)
-    sectors = (total << 20) >> 9
-    check(rc == 0 and vsize(W + "/r.qcow2") == total << 20 and os.stat(IMG).st_size == total << 20, what, out)
-    check(after_c[0][3][1] <= sectors - 34 and after_c[0][3][0] - after_c[0][2][1] < 2048 * 2 and after_c[0][1] == before_c[0][1],
-          "C: fills up to the recovery partition, which sits at the end of the %s disk" % step, repr(after_c[0]))
-    check(after_c[1] == before_c[1] and after_c[4] == before_c[4], "partition types, GUIDs, attributes, names and recovery contents are unchanged", repr((after_c[1], before_c[1])))
-    check(after_c[2] == before_c[2] and after_d[2] == before_d[2], "every file on C: and on the data disk is still there", repr((after_c[2], after_d[2])))
-    check("No problems found" in after_c[5] and "No problems found" in after_d[5], "both GPTs verify cleanly", after_c[5] + after_d[5])
-    check(after_d[0][1][1] >= sectors - 34 - 2048, "the data disk follows C: and its partition fills it", repr(after_d[0]))
-    check(not os.path.exists(W + "/r.qcow2.preresize") and not os.path.exists(IMG + ".preresize"), "the safety copies are removed after success", out)
-    before_c, before_d = after_c, after_d
+    known = status_lines(30, [("reading the data disk table", 4096, 8192)])
+    fresh = status_lines(None, [("reading the data disk table", 4096, 8192)])
+    check("about 29 s left" in known and "  0%" in known and "table 4,096/8,192" in fresh and " 50%" in fresh and known.endswith("\r\x1b[K")
+          and fresh.endswith("\r\x1b[K"), "the status line shows the step, a bar and the time left, and stays cleared once closed",
+          repr((known, fresh)))
 
-windows_boot()
-# ESP 16 MiB, recovery 48 MiB and 1 MiB of alignment surround C:, so this leaves C: a few MiB short of its files.
-cmin = guest(W + "/r.qcow2", lambda g: g.vfs_minimum_size("/dev/sda2"))
-rc, out = nv("resize", "t", "%dM" % ((cmin >> 20) + 63), "-y", "--force")
-check(rc == 1 and "its files need at least" in out and vsize(W + "/r.qcow2") == 192 << 20, "a shrink below what the files need is refused even with --force", out)
-dmin = guest(IMG, lambda g: g.vfs_minimum_size("/dev/sda1"))
-tight = "%dM" % ((dmin >> 20) + 18)
-rc, out = nv("resize", "t", tight, "--disk", "sdd", "-y")
-check(rc == 1 and "too little for the guest" in out and "--force resizes anyway" in out and os.stat(IMG).st_size == 192 << 20,
-      "a shrink that leaves little free space needs --force", out)
-rc, out = nv("resize", "t", tight, "--disk", "sdd", "-y", "--force")
-check(rc == 0 and os.stat(IMG).st_size == ((dmin >> 20) + 18) << 20 and len(files(IMG)) == before_d[2],
-      "--force shrinks into the small margin and keeps every file", out)
-live(BASE)
-rc, out = nv("resize", "t", "+16M", "-y")
-check(rc == 1 and "not a snapshot overlay" in out, "resize refuses a disk without a snapshot layer", out)
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", BASE, "256M"], check=True)
+    guest(BASE, system_base)
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/s.qcow2"], check=True)
+    guest(W + "/s.qcow2", system_session)
+    live(W + "/s.qcow2")
+
+    rc, out = nv("init", "t")
+    check(rc == 0 and os.stat(IMG).st_size == 256 << 20 and os.path.exists(REVS + "/rev0.img"), "init sizes the data disk after the system disk", out)
+    rc, out = nv("link", "t")
+    check(rc == 1 and "run carry first" in out, "link refuses before carry", out)
+
+    rc, out = nv("carry", "t")
+    check(rc == 0 and "formatted the data disk" in out, "carry formats the empty data disk", out)
+    got = files(IMG)
+    check({"/Kit/Viewer/viewer.exe", "/Work/parser/main.py", "/agent/settings.json", "/agent/.agent.json"} <= got, "carry copies every entry", str(sorted(got)))
+    rc, out = nv("carry", "t")
+    check(rc == 0 and out.count("already on the data disk, skipped") == 4 and files(IMG) == got, "a second carry skips what the data disk already holds", out)
 
 
-def fill_and_free(g):
-    g.mount("/dev/sda2", "/")
-    g.fill_pattern("reclaim!", 100 << 20, "/big.bin")
-    g.sync()
-    g.rm("/big.bin")
+    def meta(g):
+        disk = (g.vfs_label("/dev/sda1"), g.part_get_gpt_type("/dev/sda", 1), g.part_get_gpt_guid("/dev/sda", 1))
+        g.mount_ro("/dev/sda1", "/")
+        return (g.lgetxattr("/Kit/win", "system.ntfs_reparse_data"), g.lgetxattr("/Kit/hidden.txt", "system.ntfs_attrib"),
+                g.lgetxattr("/Kit/Viewer/a.dll", "system.ntfs_acl"), g.read_file("/agent/.agent.json")) + disk
 
 
-def sums(g):
-    g.mount_ro("/dev/sda2", "/")
-    g.checksums_out("sha256", "/", W + "/sums")
-    with open(W + "/sums") as f:
-        return sorted(f.read().splitlines())
+    rp, attrib, acl, cjson, label, ptype, guid = guest(IMG, meta, ro=True)
+    src_acl = mounted(W + "/s.qcow2", "/dev/sda2", lambda g: g.lgetxattr("/Users/alice/Desktop/Kit/Viewer/a.dll", "system.ntfs_acl"))
+    check(rp == junction("C:\\Windows"), "junctions inside carried folders keep their target", repr(rp))
+    check(attrib[:1] == b"\x22" and acl == src_acl, "attributes and security descriptors are copied", repr((attrib, acl, src_acl)))
+    check(cjson == b'{"new": true}\n' and label == "Data" and ptype == "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+          "the session's files land on a basic data partition labelled Data", repr((cjson, label, ptype)))
+
+    pair = ["--c-pair", W + "/s.qcow2", BASE]
+    rc, out = nv("show", "t", *pair)
+    check(rc == 0 and "RUNS CODE" in out and "LEFT ON THE SYSTEM DISK" in out and "the data disk listed from its MFT" in out,
+          "show prints the review, listing the data disk from its MFT", out)
+    check("notes.txt" in out and "junk.tmp" not in out and "NTUSER" not in out and "Desktop/Kit" not in out.split("LEFT ON THE SYSTEM DISK")[1], "show lists only what the revert would really lose", out)
+    check("Documents/notes" not in out.split("LEFT ON THE SYSTEM DISK")[1] and ".gitconfig" not in out.split("LEFT ON THE SYSTEM DISK")[1],
+          "carryOnRevert paths are not offered for rescue", out)
+    rc, out = nv("keep", "t", "-y")
+    check(rc == 0 and os.path.exists(REVS + "/rev1.img"), "keep -y rotates without a review", out)
+
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/r.qcow2"], check=True)
+    live(W + "/r.qcow2")
+    rc, out = nv("link", "t", "--dry-run")
+    check(rc == 0 and "link Users/alice/Desktop/Kit -> D:\\Kit" in out and "move D: (" in out, "link --dry-run prints the plan", out)
+    check("\\DosDevices\\D:" in registry(W + "/r.qcow2") and registry(W + "/r.qcow2")["\\DosDevices\\D:"] == CDROM, "the dry run writes nothing", out)
+    rc, out = nv("link", "t")
+    check(rc == 0, "link applies", out)
 
 
-guest(BASE, fill_and_free)
-subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/o.qcow2"], check=True)
-guest(W + "/o.qcow2", lambda g: (g.mount("/dev/sda2", "/"), g.write("/Users/alice/after.txt", b"overlay")))
-live(W + "/o.qcow2")
-alloc_before, view_before = os.stat(BASE).st_blocks * 512, guest(W + "/o.qcow2", sums, ro=True)
-rc, out = nv("reclaim", "t", "-y")
-check(rc == 0 and "/dev/sda2 (ntfs): trimmed" in out and os.stat(BASE).st_blocks * 512 < alloc_before - (80 << 20),
-      "reclaim returns the base image's free space to the host", out)
-check(guest(W + "/o.qcow2", sums, ro=True) == view_before and not os.path.exists(BASE + ".prereclaim"),
-      "the snapshot layer above the base still reads every file the same", out)
-SWAP = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F"
-
-
-def linux_root(g, root, fstab):
-    g.mount(root, "/")
-    for d in ("/etc", "/usr/bin", "/usr/lib", "/home", "/boot", "/var", "/root", "/mnt"):
-        g.mkdir_p(d)
-    g.ln_s("usr/bin", "/bin")
-    g.write("/etc/os-release", b'NAME="Arch Linux"\nID=arch\n')
-    g.write("/etc/fstab", ("# static table\n" + "".join(ln + "\n" for ln in fstab)).encode())
-    g.write("/etc/passwd", b"root:x:0:0::/root:/bin/bash\nalice:x:1000:1000::/home/alice:/bin/bash\n")
-
-
-def lx_base(g):
-    d = "/dev/sda"
-    g.part_init(d, "gpt")
-    for start, end in ((2048, 34815), (34816, 239615), (239616, 342015), (342016, 374783)):
-        g.part_add(d, "p", start, end)
-    g.part_set_gpt_type(d, 4, SWAP)
-    g.mkfs("vfat", d + "1")
-    g.mkfs("ext4", d + "2")
-    g.mkfs("ext4", d + "3")
-    g.mkswap(d + "4")
-    u = {n: g.vfs_uuid(d + str(n)) for n in (1, 2, 3, 4)}
-    linux_root(g, d + "2", ["UUID=%s / ext4 rw 0 1" % u[2], "UUID=%s /home ext4 rw 0 2" % u[3],
-                            "UUID=%s /boot vfat rw 0 2" % u[1], "UUID=%s none swap defaults 0 0" % u[4]])
-    g.mount(d + "3", "/home")
-    h = "/home/alice/"
-    for x in ("kit/bin", ".agent", "notes"):
-        g.mkdir_p(h + x)
-    g.write(h + "kit/bin/run.sh", b"#!/bin/sh\necho hi\n")
-    g.chmod(0o755, h + "kit/bin/run.sh")
-    g.write(h + "kit/data.bin", b"D" * 8192)
-    g.write(h + "kit/readme.txt", b"read me\n")
-    g.write(h + ".agent/settings.json", b"{}\n")
-    g.write(h + ".agent.json", b'{"lx": 1}\n')
-    g.write(h + "notes/a.txt", b"a\n")
-    g.debug("sh", ["chown -R 1000:1000 /sysroot/home/alice"])
-
-
-def lx_session(g):
-    g.mount("/dev/sda2", "/")
-    g.mount("/dev/sda3", "/home")
-    h = "/home/alice/"
-    g.write(h + ".agent/settings.json", b'{"hooks": 1}\n')
-    g.write(h + "notes/a.txt", b"a, edited\n")
-    g.write(h + "notes/b.txt", b"b\n")
-    g.mkdir_p(h + "Downloads")
-    g.write(h + "Downloads/x.txt", b"keep me\n")
-    g.debug("sh", ["chown -R 1000:1000 /sysroot/home/alice"])
-
-
-LS, LR, LN = W + "/lx-s.qcow2", W + "/lx-r.qcow2", W + "/lx-n.qcow2"
-subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", LBASE, "192M"], check=True)
-guest(LBASE, lx_base)
-for path in (LS, LR):
-    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", LBASE, "-F", "qcow2", path], check=True)
-guest(LS, lx_session)
-put("lx.img", LIMG)
-put("lx.base", LBASE)
-put("lx.xml", '<domain type="kvm"><name>lx</name><devices>'
-              '<disk type="file" device="disk"><source file="%s"/><target dev="sda" bus="scsi"/></disk>'
-              '<disk type="file" device="disk" snapshot="no"><source file="%s"/><target dev="sdd" bus="scsi"/></disk>'
-              '</devices></domain>' % (LBASE, LIMG))
-fstab0 = guest(LBASE, lambda g: (g.mount_ro("/dev/sda2", "/"), g.read_file("/etc/fstab"))[1], ro=True).decode()
-live(LS, "lx")
-rc, out = nv("init", "lx")
-check(rc == 0 and os.stat(LIMG).st_size == 192 << 20, "a Linux guest's data disk follows its system disk too", out)
-rc, out = nv("carry", "lx")
-check(rc == 0 and "one ext4 partition labelled data" in out, "carry formats a Linux guest's data disk as ext4", out)
-
-
-def lx_data(g):
-    label, ptype = g.vfs_label("/dev/sda1"), g.part_get_gpt_type("/dev/sda", 1)
-    g.mount_ro("/dev/sda1", "/")
-    st = g.lstatns("/kit/bin/run.sh")
-    return {"label": label, "type": ptype, "run": (st["st_mode"] & 0o7777, st["st_uid"]),
-            "json": g.read_file("/agent/.agent.json"), "settings": g.read_file("/agent/settings.json")}
-
-
-got = guest(LIMG, lx_data, ro=True)
-check(got["label"] == "data" and got["type"] == "0FC63DAF-8483-4772-8E79-3D69D8477DE4" and got["run"] == (0o755, 1000)
-      and got["json"] == b'{"lx": 1}\n' and got["settings"] == b'{"hooks": 1}\n', "carry keeps owners and modes, through a separate /home", repr(got))
-rc, out = nv("keep", "lx", "-y")
-check(rc == 0, "the Linux data disk is kept as rev0", out)
-live(LR, "lx")
-rc, out = nv("link", "lx", "--dry-run")
-check(rc == 0 and "link home/alice/kit -> /mnt/data/kit" in out and "delete the old home/alice/.agent.json" in out
-      and "mount the data disk at /mnt/data through /etc/fstab" in out and "alice: set AGENT_HOME=/mnt/data/agent" in out,
-      "link --dry-run plans symlinks, the fstab line and environment.d", out)
-rc, out = nv("link", "lx")
-check(rc == 0, "link applies on Linux", out)
-
-
-def lx_system(g):
-    g.mount_ro("/dev/sda2", "/")
-    g.mount_ro("/dev/sda3", "/home")
-    h = "/home/alice/"
-    env = h + ".config/environment.d/60-nixvirt-data.conf"
-    run_sh = h + "kit/bin/run.sh"
-    real = g.is_file(run_sh, followsymlinks=False)
-    return {
-        "kit": g.readlink(h + "kit") if g.is_symlink(h + "kit") else None,
-        "agent": g.readlink(h + ".agent") if g.is_symlink(h + ".agent") else None,
-        "owner": g.lstatns(h + "kit")["st_uid"], "fstab": g.read_file("/etc/fstab").decode(), "mnt": g.is_dir("/mnt/data"),
-        "env": g.read_file(env) if g.exists(env) else None, "env_owner": g.lstatns(env)["st_uid"] if g.exists(env) else None,
-        "run": (g.read_file(run_sh), g.lstatns(run_sh)["st_mode"] & 0o7777) if real else None,
-        "json": g.read_file(h + ".agent.json") if g.exists(h + ".agent.json") else None,
-        "nested": g.exists(h + ".agent/.agent.json") if g.is_dir(h + ".agent", followsymlinks=False) else None,
-        "temp": [p for p in g.find(h) if "nixvirt-unlink" in p],
-    }
-
-
-data_uuid = guest(LIMG, lambda g: g.vfs_uuid("/dev/sda1"), ro=True)
-got = guest(LR, lx_system, ro=True)
-check(got["kit"] == "/mnt/data/kit" and got["agent"] == "/mnt/data/agent" and got["owner"] == 1000 and got["json"] is None,
-      "carried folders become symlinks owned by the user, and the carried file leaves", repr(got))
-check(got["fstab"] == fstab0 + "# nixvirt-data: begin, managed from the host\nUUID=%s /mnt/data ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2\n"
-      "# nixvirt-data: end\n" % data_uuid and got["mnt"], "a marked fstab block mounts the data disk and the rest stays", got["fstab"])
-check(got["env"] == b"AGENT_HOME=/mnt/data/agent\n" and got["env_owner"] == 1000, "environment.d holds the user's environment", repr(got))
-rc, out = nv("link", "lx")
-check(rc == 0 and out.count("already links") == 2 and "already mounts" in out and "already set" in out, "link is idempotent on Linux", out)
-
-
-def lx_tamper(g):
-    g.mount("/dev/sda1", "/")
-    st = g.lstatns("/kit/data.bin")
-    g.write("/kit/data.bin", b"E" * 8192)
-    g.utimens("/kit/data.bin", st["st_atime_sec"], st["st_atime_nsec"], st["st_mtime_sec"], st["st_mtime_nsec"])
-    g.write("/kit/bin/evil", b"\x7fELF")
-    g.chmod(0o755, "/kit/bin/evil")
-    g.chmod(0o755, "/kit/readme.txt")
-
-
-guest(LIMG, lx_tamper)
-rc, out = nv("show", "lx")
-check(rc == 0 and "kit/data.bin" in out.split("SAME SIZE AND DATE")[1].split("\n\n")[0] and "change time check: 1 file" in out,
-      "the change time check catches a file rewritten with its old size and date on ext4", out)
-runs = out.split("RUNS CODE")[1].split("\n\n")[0]
-check("kit/bin/evil" in runs and "kit/readme.txt" in runs and "permissions 644 -> 755" in runs,
-      "an execute bit marks code, and a new execute permission is listed", out)
-rc, out = nv("show", "lx", "--c-pair", LS, LBASE)
-left = out.split("LEFT ON THE SYSTEM DISK")[1]
-check("home/alice/Downloads" in left and "notes" not in left and "kit" not in left and ".agent" not in left,
-      "the revert scan reads a Linux session through its fstab and lists only what would be lost", out)
-
-rc, out = nv("unlink", "lx")
-check(rc == 0 and "remove the data disk from /etc/fstab" in out and "alice: remove" in out, "unlink applies on Linux", out)
-got = guest(LR, lx_system, ro=True)
-check(got["kit"] is None and got["run"] == (b"#!/bin/sh\necho hi\n", 0o755) and got["owner"] == 1000 and got["json"] == b'{"lx": 1}\n'
-      and got["nested"] is not None and not got["nested"] and not got["temp"], "unlink brings folders and the file back with owners and modes", repr(got))
-check(got["fstab"] == fstab0 and got["env"] is None, "unlink removes exactly its fstab block and environment file", repr(got))
-rc, out = nv("unlink", "lx")
-check(rc == 0 and out.count("is already on the system disk") == 3 and "next:" not in out, "unlink is idempotent on Linux", out)
-rc, out = nv("link", "lx")
-check(rc == 0 and guest(LR, lx_system, ro=True)["kit"] == "/mnt/data/kit", "link works again after unlink on Linux", out)
-rc, out = nv("unlink", "lx", "--only", "home/alice/kit",
-             cfg=dropped("lx", ["home/alice/kit"], {"alice": {"AGENT_HOME": "/mnt/data/agent"}}))
-got = guest(LR, lx_system, ro=True)
-check(rc == 0 and got["kit"] is None and got["run"] == (b"#!/bin/sh\necho hi\n", 0o755) and got["agent"] == "/mnt/data/agent"
-      and got["env"] == b"AGENT_HOME=/mnt/data/agent\n" and "nixvirt-data: begin" in got["fstab"],
-      "on Linux, unlink --only follows the symlink and keeps the mount, the other links and unrelated variables", out + repr(got))
-rc, out = nv("unlink", "lx", "--only", "home/alice/.agent")
-got = guest(LR, lx_system, ro=True)
-check(rc == 0 and got["agent"] is None and got["env"] is None and "alice: remove AGENT_HOME" in out,
-      "unlink --only removes an environment.d line pointing into the folder", out + repr(got))
-rc, out = nv("link", "lx")
-check(rc == 0 and guest(LR, lx_system, ro=True)["agent"] == "/mnt/data/agent", "link restores the Linux links after unlink --only", out)
-
-rc, out = nv("revert-carry", "lx", "--pair", LS, LBASE, "--into", LN, answers="c\n")
-check(rc == 0 and "carried 2 change(s)" in out, "revert-carry works on a Linux guest with a separate /home", out)
-
-
-def lx_notes(g):
-    g.mount_ro("/dev/sda2", "/")
-    g.mount_ro("/dev/sda3", "/home")
-    return g.read_file("/home/alice/notes/a.txt"), g.lstatns("/home/alice/notes/b.txt")["st_uid"], g.exists("/home/alice/Downloads")
-
-
-check(guest(LN, lx_notes, ro=True) == (b"a, edited\n", 1000, False), "carried Linux files keep their owner and nothing else carries", out)
-
-
-def lx_layout(img):
-    def read(g):
-        parts = {p["part_num"]: (p["part_start"] >> 9, p["part_end"] >> 9) for p in g.part_list("/dev/sda")}
-        swap = g.vfs_uuid("/dev/sda4")
+    def system_after(g):
         g.mount_ro("/dev/sda2", "/")
-        st = g.statvfs("/")
-        g.mount_ro("/dev/sda3", "/home")
-        return parts, swap, st["blocks"] * st["frsize"], sorted(g.find("/home")), g.debug("sh", ["sgdisk -v /dev/sda 2>&1"])
-    return guest(img, read, ro=True)
+        return {p: g.lgetxattr("/Users/alice/" + p, "system.ntfs_reparse_data") for p in ("Desktop/Kit", "Desktop/Work", ".agent")}, \
+            g.exists("/Users/alice/.agent.json")
 
 
-before = lx_layout(LR)
-rc, out = nv("resize", "lx", "+64M", "-y")
-after = lx_layout(LR)
-check(rc == 0 and "Linux swap" in out and vsize(LR) == 256 << 20 and os.stat(LIMG).st_size == 256 << 20
-      and "Windows checks" not in out, "a Linux root grows with its disk, and the data disk follows", out)
-check(after[0][4][1] <= (256 << 11) - 34 and after[0][3][0] > before[0][3][0] and after[1] == before[1] and after[3] == before[3]
-      and after[2] > before[2] + (50 << 20) and "No problems found" in after[4],
-      "/home and swap move to the new end with their contents, and ext4 fills the root partition", repr((before, after)))
-rc, out = nv("resize", "lx", "-80M", "-y")
-shrunk = lx_layout(LR)
-check(rc == 0 and vsize(LR) == 176 << 20 and shrunk[2] < after[2] - (60 << 20) and shrunk[1] == before[1] and shrunk[3] == before[3]
-      and "No problems found" in shrunk[4], "an ext4 root shrinks, and /home and swap move down intact", out + repr(shrunk))
-exact = (192 << 20) + 7 * 512
-rc, out = nv("resize", "lx", str(exact), "-y")
-check(rc == 0 and vsize(LR) == exact and os.stat(LIMG).st_size == exact and "No problems found" in lx_layout(LR)[4],
-      "a size in whole sectors, like a real drive's exact capacity, is kept to the byte", out)
+    links, json_left = guest(W + "/r.qcow2", system_after, ro=True)
+    check(links == {"Desktop/Kit": junction("D:\\Kit"), "Desktop/Work": junction("D:\\Work"), ".agent": junction("D:\\agent")},
+          "carried folders become junctions to the data disk", repr(links))
+    check(not json_left, "carried files are removed from the system disk", out)
+    reg = registry(W + "/r.qcow2")
+    check(reg["\\DosDevices\\D:"] == b"DMIO:ID:" + uuid.UUID(guid).bytes_le and reg["\\DosDevices\\Z:"] == CDROM,
+          "drive D: points at the data partition and the CD drive moves to Z:", repr(reg))
+    check(reg["AGENT_HOME"] == "D:\\agent\0".encode("utf-16-le"), "the user environment variable is set", repr(reg))
+    rc, out = nv("link", "t")
+    check(rc == 0 and "already links" in out and "already points" in out and "already D:" in out, "link is idempotent", out)
+
+    rc, out = nv("unlink", "t", "--dry-run")
+    check(rc == 0 and "copy D:\\Kit back to Users/alice/Desktop/Kit" in out and "remove the link Users/alice/Desktop/Kit -> D:\\Kit" in out
+          and "copy D:\\agent\\.agent.json back to Users/alice/.agent.json" in out and "free drive D:" in out
+          and "alice: remove AGENT_HOME" in out, "unlink --dry-run prints the plan", out)
+    check(guest(W + "/r.qcow2", system_after, ro=True)[0] == links, "the unlink dry run writes nothing", out)
+    rc, out = nv("unlink", "t")
+    check(rc == 0 and "rotate t keeps this" in out, "unlink applies", out)
 
 
-def fs_image(path, kind):
-    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", path, "512M"], check=True)
+    def system_unlinked(g):
+        g.mount_ro("/dev/sda2", "/")
+        u = "/Users/alice/"
+        return {
+            "links": [p for p in ("Desktop/Kit", "Desktop/Work", ".agent") if g.is_symlink(u + p)],
+            "ida": g.read_file(u + "Desktop/Kit/Viewer/viewer.exe"),
+            "inner": g.lgetxattr(u + "Desktop/Kit/win", "system.ntfs_reparse_data"),
+            "acl": g.lgetxattr(u + "Desktop/Kit/Viewer/a.dll", "system.ntfs_acl"),
+            "json": g.read_file(u + ".agent.json"),
+            "nested": g.exists(u + ".agent/.agent.json"),
+            "skill": g.exists(u + ".agent/rules/x/RULE.md"),
+            "temp": [p for p in g.find(u) if "nixvirt-unlink" in p],
+        }
 
-    def build(g):
+
+    got = guest(W + "/r.qcow2", system_unlinked, ro=True)
+    check(got["links"] == [] and got["ida"] == b"MZ" + b"A" * 5000 and got["skill"] and not got["temp"],
+          "unlink puts the data disk's folders back in place of the junctions", repr(got))
+    check(got["inner"] == junction("C:\\Windows") and got["acl"] == src_acl, "junctions and security descriptors inside them come back", repr(got))
+    check(got["json"] == b'{"new": true}\n' and not got["nested"], "a carried file returns to its own place, not into the carried folder", repr(got))
+    reg = registry(W + "/r.qcow2")
+    check("\\DosDevices\\D:" not in reg and reg["\\DosDevices\\Z:"] == CDROM and "\\DosDevices\\C:" in reg,
+          "unlink frees the data disk's drive letter and keeps the other mappings", repr(reg))
+    check("AGENT_HOME" not in reg and reg["TEMP"] == TEMP, "unlink removes the environment variable and keeps the others", repr(reg))
+    rc, out = nv("unlink", "t")
+    check(rc == 0 and out.count("is already on the system disk") == 4 and "free drive" not in out and "next:" not in out, "unlink is idempotent", out)
+    rc, out = nv("link", "t")
+    check(rc == 0 and guest(W + "/r.qcow2", system_after, ro=True)[0] == links, "link works again after unlink", out)
+
+
+    def junctions(g):
+        g.mount_ro("/dev/sda2", "/")
+        u = "/Users/alice/"
+        state = {p: bool(g.is_symlink(u + p)) for p in ("Desktop/Kit", "Desktop/Work", ".agent")}
+        return state, None if state["Desktop/Work"] else bool(g.is_file(u + "Desktop/Work/parser/main.py", followsymlinks=False))
+
+
+    rc, out = nv("unlink", "t", "--only", "Users/alice/Desktop/Work", "--dry-run")
+    check(rc == 0 and "copy D:\\Work back to Users/alice/Desktop/Work" in out and "free drive" not in out and "AGENT_HOME" not in out,
+          "unlink --only plans just the named folder", out)
+    rc, out = nv("unlink", "t", "--only", "Users/alice/Desktop/Work")
+    state, work = guest(W + "/r.qcow2", junctions, ro=True)
+    reg = registry(W + "/r.qcow2")
+    check(rc == 0 and state == {"Desktop/Kit": True, "Desktop/Work": False, ".agent": True} and work
+          and reg["\\DosDevices\\D:"] == b"DMIO:ID:" + uuid.UUID(guid).bytes_le and "AGENT_HOME" in reg,
+          "unlink --only moves one folder back and keeps the drive letter, the other links and the environment", out + repr((state, work)))
+    rc, out = nv("unlink", "t", "--only", "Users/alice/.agent", cfg=dropped("t", ["Users/alice/.agent", "Users/alice/.agent.json"], {}))
+    state, _ = guest(W + "/r.qcow2", junctions, ro=True)
+    reg = registry(W + "/r.qcow2")
+    check(rc == 0 and not state[".agent"] and state["Desktop/Kit"] and "AGENT_HOME" not in reg and reg["TEMP"] == TEMP,
+          "after the entry left the config, unlink --only follows the junction and drops the variable pointing into it", out)
+    rc, out = nv("link", "t")
+    check(rc == 0 and guest(W + "/r.qcow2", system_after, ro=True)[0] == links and "AGENT_HOME" in registry(W + "/r.qcow2"),
+          "link puts everything back after unlink --only", out)
+
+    live(BASE)
+    rc, out = nv("link", "t")
+    check(rc == 1 and "not a snapshot overlay" in out, "link refuses a system disk without an overlay", out)
+    live(W + "/r.qcow2")
+
+    guest(IMG, data_session)
+    # A write straight to the disk, around NTFS, leaves the file's MFT record as it was.
+    with open(IMG, "r+b") as f:
+        image = f.read()
+        hits = [m.start() for m in re.finditer(re.escape(b"MZ" + b"A" * 5000), image)]
+        f.seek(hits[0] + 2000)
+        f.write(b"EVIL")
+    del image
+    check(len(hits) == 1, "the raw write found viewer.exe's only copy on the data disk", repr(hits))
+
+
+    def tampered(out):
+        return sorted(m.group(1) for m in re.finditer(r"^\s+M\s+(\S+)\s+.*same size and date, different content", out, re.M))
+
+
+    rc, out = nv("show", "t")
+    rc2, out2 = nv("show", "t", "--hash-all")
+    blocks = re.search(r"block check: (\d+) file\(s\) with their old size and date sat in written blocks, (\d+) needed a full comparison", out)
+    check(blocks and int(blocks.group(2)) == 2, "records and written bytes clear every suspect except the two really changed files", out)
+    check(rc == rc2 == 0 and "block check: " in out and tampered(out) == tampered(out2) == ["Kit/Viewer/a.dll", "Kit/Viewer/viewer.exe"],
+          "the block check finds exactly the files that hashing every file finds", out + out2)
+    rc, out = nv("review", "t", *pair, answers="v\na\n")
+    check(rc == 10 and "aborted" in out, "abort returns 10 and keeps the data disk", out)
+    check("a.dll" in out.split("SAME SIZE AND DATE, DIFFERENT CONTENT")[1].split("\n\n")[0], "a timestomped DLL is caught through its MFT record", out)
+    check("viewer.exe" in out.split("SAME SIZE AND DATE, DIFFERENT CONTENT")[1].split("\n\n")[0], "a raw disk write is caught through the file's clusters", out)
+    check("settings.json" in out.split("RUNS CODE")[1].split("\n\n")[0] and "Extra/" in out and "Kit/win" not in out, "code rules flag, and unchanged junctions do not", out)
+    check("RULE.md" in out.split("STEERS THE AGENT")[1].split("\n\n")[0], "configured highlight sections list their files", out)
+    check("Work/parser" in out.split("ADDED")[1].split("\n\n")[0] and "util.py" not in out.split("RUNS CODE")[1].split("\n\n")[0],
+          "a new script under sourcePaths is listed with the other additions, not as code", out)
+    check("\x1b" not in out and "\\x1b[31m" in out and "\\u202e" in out, "control and bidi characters are escaped", out)
+
+
+
+    def logfile(g):
+        ntfs = nvd.Ntfs(g, "/dev/sda1")
+        return g.part_list("/dev/sda")[0]["part_start"] + ntfs.data_runs(ntfs.parse(ntfs.record(2)))[0][1] * ntfs.cs
+
+
+    # A restart page with a client still in the log and no clean flag, as a crash leaves it.
+    page = bytearray(4096)
+    page[0:4] = b"RSTR"
+    struct.pack_into("<HHqIIHhh", page, 4, 0x1E, 9, 0, 4096, 4096, 0x40, 1, 1)
+    struct.pack_into("<qHHHH", page, 0x40, 7, 1, 0xFFFF, 0, 0)
+    for k in range(1, 9):
+        page[0x1E + 2 * k:0x20 + 2 * k] = page[k * 512 - 2:k * 512]
+        page[k * 512 - 2:k * 512] = b"\x01\x00"
+    page[0x1E:0x20] = b"\x01\x00"
+    off = guest(IMG, logfile, ro=True)
+    with open(IMG, "r+b") as f:
+        f.seek(off)
+        saved = f.read(8192)
+        f.seek(off)
+        f.write(page + page)
+    rc, out = nv("show", "t")
+    with open(IMG, "r+b") as f:
+        f.seek(off)
+        f.write(saved)
+    check(rc == 0 and "journal was not closed cleanly" in out, "an unreplayed NTFS journal on the data disk is called out", out)
+
+    rc, out = nv("review", "t", *pair, answers="p\n1 5\ny\nr\nall\nk\n")
+    check(rc == 0 and "kept the data disk as rev0" in out, "prune, rescue and keep complete", out)
+    got = files(IMG)
+    check("/Extra/New" not in got and not any("evil" in p for p in got), "pruned items are gone", str(sorted(got)))
+    check(any(p.endswith("/Users/alice/Downloads/notes.txt") and p.startswith("/Rescued/") for p in got), "the rescued file is on the data disk", str(sorted(got)))
+    check(os.path.exists(REVS + "/rev2.img"), "revisions rotate up to keep", out)
+
+    rc, out = nv("review", "t")
+    check(rc == 0 and "unchanged" in out, "an untouched data disk needs no review", out)
+    guest(IMG, lambda g: (g.mount("/dev/sda1", "/"), g.write("/Kit/junk.exe", b"MZ")))
+    rc, out = nv("review", "t", answers="d\ny\n")
+    check(rc == 0 and "/Kit/junk.exe" not in files(IMG) and os.path.exists(REVS + "/discarded.img"), "discard returns to rev0", out)
+    rc, out = nv("restore", "t", "discarded", answers="y\n")
+    check(rc == 0 and "/Kit/junk.exe" in files(IMG), "the discarded state can be restored", out)
+    rc, out = nv("pin", "t", "rev1", "clean")
+    check(rc == 0 and os.path.exists(REVS + "/pin-clean.img"), "pin keeps a revision", out)
+
+    put("t.state", "running\n")
+    rc, out = nv("review", "t", answers="k\n")
+    check(rc == 1 and "must be shut off" in out, "a running domain is refused", out)
+    os.unlink(W + "/t.state")
+
+    os.replace(REVS + "/rev0.img", REVS + "/.rev-new.img")
+    rc, out = nv("restore", "t", "rev0", answers="y\n")
+    check(rc == 0 and os.path.exists(REVS + "/rev0.img"), "an interrupted rotation is finished on the next run", out)
+
+    rc, out = nv("carry", "t")
+    check(rc == 0 and "already links to the data disk, skipped" in out and "/Kit/Viewer/viewer.exe" in files(IMG),
+          "carry after link skips junctions instead of copying them over the data disk", out)
+
+    live(W + "/s.qcow2")
+    rc, out = nv("migrate", "t", "-y")
+    backups = os.listdir(W + "/.backup")
+    check(rc == 0 and len(backups) == 1 and {"c.qcow2", "s.qcow2", "domain.xml", "snapshot-safe0.xml"} <= set(os.listdir(W + "/.backup/" + backups[0])),
+          "migrate backs up the system disk chain and the definitions", out)
+    links, _ = guest(W + "/m.qcow2", system_after, ro=True)
+    check(links["Desktop/Kit"] == junction("D:\\Kit") and "kept the data disk as rev0" in out and "LEFT ON THE SYSTEM DISK" in out,
+          "migrate carries, reviews, keeps, reverts and links", out)
+
+
+    S = W + "/s.qcow2"
+    NEW = W + "/n.qcow2"
+    rc, out = nv("revert-carry", "t", "--pair", S, BASE)
+    check(rc == 0 and "a plain revert loses" in out and "run.ps1" in out.split("RUNS CODE")[1].split("\n\n")[0], "revert-carry previews the changes and flags scripts", out)
+    check("keep.bin" in out.split("SAME SIZE AND DATE")[1].split("\n\n")[0] and ".gitconfig" in out.split("STEERS GIT")[1].split("\n\n")[0]
+          and "1 deleted" in out.split("DELETED")[1], "the block check, highlight sections and deletions apply to carried paths", out)
+    rc, out = nv("revert-carry", "t", "--pair", S, BASE, "--into", NEW, answers="a\n")
+    check(rc == 10 and not os.path.exists(NEW), "aborting the carry review creates nothing", out)
+    rc, out = nv("revert-carry", "t", "--pair", S, BASE, "--into", NEW, answers="n\n")
+    check(rc == 0 and not os.path.exists(NEW), "carrying nothing leaves a plain revert", out)
+    rc, out = nv("revert-carry", "t", "--pair", S, BASE, "--into", NEW, answers="l\n7\nc\n")
+    check(rc == 0 and re.search(r"^\s*7\s+N\s+Users/alice/Documents/notes/run\.ps1", out, re.M) and "LEFT OUT" in out and "carried 6 change(s)" in out,
+          "a left out change is listed apart and the rest is carried", out)
+
+
+    def carried(g):
+        g.mount_ro("/dev/sda2", "/")
+        n = "/Users/alice/Documents/notes/"
+        return {
+            "a": g.read_file(n + "a.txt"), "gone": g.exists(n + "gone.txt"), "deep": g.read_file(n + "new/deep.txt"),
+            "run": g.exists(n + "run.ps1"), "lnk": g.lgetxattr(n + "lnk", "system.ntfs_reparse_data"),
+            "git": g.read_file("/Users/alice/.gitconfig"), "keep": g.read_file("/Users/alice/AppData/Roaming/App/keep.bin"),
+            "acl": g.lgetxattr(n + "a.txt", "system.ntfs_acl"), "other": g.exists("/Users/alice/Downloads/notes.txt"),
+        }
+
+
+    got = guest(NEW, carried, ro=True)
+    check(got["a"] == b"new a, longer\n" and not got["gone"] and got["deep"] == b"deep\n" and got["git"] == b"[user]\n  name = alice\n"
+          and got["keep"] == b"Q" * 4096, "the chosen changes land in the fresh layer, deletions included", repr(got))
+    check(not got["run"] and not got["other"], "left out changes and everything outside the carried paths revert", repr(got))
+    check(got["lnk"] == junction("C:\\Windows") and got["acl"] == mounted(S, "/dev/sda2", lambda g: g.lgetxattr("/Users/alice/Documents/notes/a.txt", "system.ntfs_acl")),
+          "junctions and permissions are carried", repr(got))
+    check(json.loads(subprocess.run(["qemu-img", "info", "--output=json", NEW], capture_output=True, text=True).stdout)["backing-filename"] == BASE,
+          "the fresh layer sits on the revert target", NEW)
+
+
+if PART == "resize":
+    # The resize part builds its own system disk with a layer and a carried data disk, so it runs alongside the others.
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", BASE, "256M"], check=True)
+    guest(BASE, system_base)
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/r.qcow2"], check=True)
+    live(W + "/r.qcow2")
+    rc, out = nv("init", "t")
+    rc2, out2 = nv("carry", "t")
+    check(rc == rc2 == 0, "the resize fixture has a system disk with a layer and a carried data disk", out + out2)
+
+    def layout(img, data=False):
+        def read(g):
+            parts = {p["part_num"]: (p["part_start"] >> 9, p["part_end"] >> 9) for p in g.part_list("/dev/sda")}
+            info = {n: (g.part_get_gpt_type("/dev/sda", n), g.part_get_gpt_guid("/dev/sda", n), g.part_get_gpt_attributes("/dev/sda", n),
+                        g.part_get_name("/dev/sda", n)) for n in parts}
+            root = "/dev/sda1" if data else "/dev/sda2"
+            g.mount_ro(root, "/")
+            seen = g.find("/")
+            size = g.statvfs("/")
+            g.umount_all()
+            rec = None if data else g.checksum_device("sha256", "/dev/sda3")
+            verify = g.debug("sh", ["sgdisk -v /dev/sda 2>&1"])
+            return parts, info, len(seen), size["blocks"] * size["frsize"], rec, verify
+        return guest(img, read, ro=True)
+
+
+    live(W + "/r.qcow2")
+    before_c = layout(W + "/r.qcow2")
+    before_d = layout(IMG, data=True)
+    rc, out = nv("resize", "t", "+96M", "--dry-run")
+    check(rc == 0 and "Windows recovery" in out and "moves to the new end" in out and "data disk, which follows it" in out
+          and vsize(W + "/r.qcow2") == 256 << 20, "resize --dry-run prints the plan and changes nothing", out)
+
+
+    def windows_boot():
+        # Windows clears the check flag ntfsresize sets when it boots, and the test stands in for that boot.
+        for img, part in ((W + "/r.qcow2", "/dev/sda2"), (IMG, "/dev/sda1")):
+            guest(img, lambda g: g.debug("sh", ["ntfsfix -d %s" % part]))
+
+
+    for step, total, what in (("+32M", 288, "a grow smaller than the recovery partition moves it up in chunks"),
+                              ("+128M", 416, "--force resizes a volume Windows has not checked yet"),
+                              ("-224M", 192, "a shrink moves NTFS data down, then the recovery partition, then trims the image")):
+        force = []
+        if step != "+32M":
+            rc, out = nv("resize", "t", step, "-y")
+            check(rc == 1 and "has not checked partition" in out and "--force resizes anyway" in out and not os.path.exists(W + "/r.qcow2.preresize"),
+                  "a second resize before Windows checked the volume is refused before anything changes", out)
+            if step == "+128M":
+                force = ["--force"]
+            else:
+                windows_boot()
+        rc, out = nv("resize", "t", step, "-y", *force)
+        after_c = layout(W + "/r.qcow2")
+        after_d = layout(IMG, data=True)
+        sectors = (total << 20) >> 9
+        check(rc == 0 and vsize(W + "/r.qcow2") == total << 20 and os.stat(IMG).st_size == total << 20, what, out)
+        check(after_c[0][3][1] <= sectors - 34 and after_c[0][3][0] - after_c[0][2][1] < 2048 * 2 and after_c[0][1] == before_c[0][1],
+              "C: fills up to the recovery partition, which sits at the end of the %s disk" % step, repr(after_c[0]))
+        check(after_c[1] == before_c[1] and after_c[4] == before_c[4], "partition types, GUIDs, attributes, names and recovery contents are unchanged", repr((after_c[1], before_c[1])))
+        check(after_c[2] == before_c[2] and after_d[2] == before_d[2], "every file on C: and on the data disk is still there", repr((after_c[2], after_d[2])))
+        check("No problems found" in after_c[5] and "No problems found" in after_d[5], "both GPTs verify cleanly", after_c[5] + after_d[5])
+        check(after_d[0][1][1] >= sectors - 34 - 2048, "the data disk follows C: and its partition fills it", repr(after_d[0]))
+        check(not os.path.exists(W + "/r.qcow2.preresize") and not os.path.exists(IMG + ".preresize"), "the safety copies are removed after success", out)
+        before_c, before_d = after_c, after_d
+
+    windows_boot()
+    # ESP 16 MiB, recovery 48 MiB and 1 MiB of alignment surround C:, so this leaves C: a few MiB short of its files.
+    cmin = guest(W + "/r.qcow2", lambda g: g.vfs_minimum_size("/dev/sda2"))
+    rc, out = nv("resize", "t", "%dM" % ((cmin >> 20) + 63), "-y", "--force")
+    check(rc == 1 and "its files need at least" in out and vsize(W + "/r.qcow2") == 192 << 20, "a shrink below what the files need is refused even with --force", out)
+    dmin = guest(IMG, lambda g: g.vfs_minimum_size("/dev/sda1"))
+    tight = "%dM" % ((dmin >> 20) + 18)
+    rc, out = nv("resize", "t", tight, "--disk", "sdd", "-y")
+    check(rc == 1 and "too little for the guest" in out and "--force resizes anyway" in out and os.stat(IMG).st_size == 192 << 20,
+          "a shrink that leaves little free space needs --force", out)
+    rc, out = nv("resize", "t", tight, "--disk", "sdd", "-y", "--force")
+    check(rc == 0 and os.stat(IMG).st_size == ((dmin >> 20) + 18) << 20 and len(files(IMG)) == before_d[2],
+          "--force shrinks into the small margin and keeps every file", out)
+    live(BASE)
+    rc, out = nv("resize", "t", "+16M", "-y")
+    check(rc == 1 and "not a snapshot overlay" in out, "resize refuses a disk without a snapshot layer", out)
+
+
+    def fill_and_free(g):
+        g.mount("/dev/sda2", "/")
+        g.fill_pattern("reclaim!", 100 << 20, "/big.bin")
+        g.sync()
+        g.rm("/big.bin")
+
+
+    def sums(g):
+        g.mount_ro("/dev/sda2", "/")
+        g.checksums_out("sha256", "/", W + "/sums")
+        with open(W + "/sums") as f:
+            return sorted(f.read().splitlines())
+
+
+    guest(BASE, fill_and_free)
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", BASE, "-F", "qcow2", W + "/o.qcow2"], check=True)
+    guest(W + "/o.qcow2", lambda g: (g.mount("/dev/sda2", "/"), g.write("/Users/alice/after.txt", b"overlay")))
+    live(W + "/o.qcow2")
+    alloc_before, view_before = os.stat(BASE).st_blocks * 512, guest(W + "/o.qcow2", sums, ro=True)
+    rc, out = nv("reclaim", "t", "-y")
+    check(rc == 0 and "/dev/sda2 (ntfs): trimmed" in out and os.stat(BASE).st_blocks * 512 < alloc_before - (80 << 20),
+          "reclaim returns the base image's free space to the host", out)
+    check(guest(W + "/o.qcow2", sums, ro=True) == view_before and not os.path.exists(BASE + ".prereclaim"),
+          "the snapshot layer above the base still reads every file the same", out)
+
+
+if PART == "linux":
+    SWAP = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F"
+
+
+    def linux_root(g, root, fstab):
+        g.mount(root, "/")
+        for d in ("/etc", "/usr/bin", "/usr/lib", "/home", "/boot", "/var", "/root", "/mnt"):
+            g.mkdir_p(d)
+        g.ln_s("usr/bin", "/bin")
+        g.write("/etc/os-release", b'NAME="Arch Linux"\nID=arch\n')
+        g.write("/etc/fstab", ("# static table\n" + "".join(ln + "\n" for ln in fstab)).encode())
+        g.write("/etc/passwd", b"root:x:0:0::/root:/bin/bash\nalice:x:1000:1000::/home/alice:/bin/bash\n")
+
+
+    def lx_base(g):
         d = "/dev/sda"
         g.part_init(d, "gpt")
-        g.part_add(d, "p", 2048, 34815)
-        g.part_add(d, "p", 34816, 34816 + (400 << 11) - 1)
-        g.part_add(d, "p", 34816 + (400 << 11), 34816 + (416 << 11) - 1)
-        g.part_set_gpt_type(d, 3, SWAP)
+        for start, end in ((2048, 34815), (34816, 239615), (239616, 342015), (342016, 374783)):
+            g.part_add(d, "p", start, end)
+        g.part_set_gpt_type(d, 4, SWAP)
         g.mkfs("vfat", d + "1")
-        g.mkswap(d + "3")
-        if kind == "lvm":
-            g.pvcreate(d + "2")
-            g.vgcreate("vg0", [d + "2"])
-            g.lvcreate("root", "vg0", 200)
-            g.mkfs("ext4", "/dev/vg0/root")
-            root, line = "/dev/vg0/root", "/dev/mapper/vg0-root / ext4 rw 0 1"
+        g.mkfs("ext4", d + "2")
+        g.mkfs("ext4", d + "3")
+        g.mkswap(d + "4")
+        u = {n: g.vfs_uuid(d + str(n)) for n in (1, 2, 3, 4)}
+        linux_root(g, d + "2", ["UUID=%s / ext4 rw 0 1" % u[2], "UUID=%s /home ext4 rw 0 2" % u[3],
+                                "UUID=%s /boot vfat rw 0 2" % u[1], "UUID=%s none swap defaults 0 0" % u[4]])
+        g.mount(d + "3", "/home")
+        h = "/home/alice/"
+        for x in ("kit/bin", ".agent", "notes"):
+            g.mkdir_p(h + x)
+        g.write(h + "kit/bin/run.sh", b"#!/bin/sh\necho hi\n")
+        g.chmod(0o755, h + "kit/bin/run.sh")
+        g.write(h + "kit/data.bin", b"D" * 8192)
+        g.write(h + "kit/readme.txt", b"read me\n")
+        g.write(h + ".agent/settings.json", b"{}\n")
+        g.write(h + ".agent.json", b'{"lx": 1}\n')
+        g.write(h + "notes/a.txt", b"a\n")
+        g.debug("sh", ["chown -R 1000:1000 /sysroot/home/alice"])
+
+
+    def lx_session(g):
+        g.mount("/dev/sda2", "/")
+        g.mount("/dev/sda3", "/home")
+        h = "/home/alice/"
+        g.write(h + ".agent/settings.json", b'{"hooks": 1}\n')
+        g.write(h + "notes/a.txt", b"a, edited\n")
+        g.write(h + "notes/b.txt", b"b\n")
+        g.mkdir_p(h + "Downloads")
+        g.write(h + "Downloads/x.txt", b"keep me\n")
+        g.debug("sh", ["chown -R 1000:1000 /sysroot/home/alice"])
+
+
+    LS, LR, LN = W + "/lx-s.qcow2", W + "/lx-r.qcow2", W + "/lx-n.qcow2"
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", LBASE, "192M"], check=True)
+    guest(LBASE, lx_base)
+    for path in (LS, LR):
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", LBASE, "-F", "qcow2", path], check=True)
+    guest(LS, lx_session)
+    put("lx.img", LIMG)
+    put("lx.base", LBASE)
+    put("lx.xml", '<domain type="kvm"><name>lx</name><devices>'
+                  '<disk type="file" device="disk"><source file="%s"/><target dev="sda" bus="scsi"/></disk>'
+                  '<disk type="file" device="disk" snapshot="no"><source file="%s"/><target dev="sdd" bus="scsi"/></disk>'
+                  '</devices></domain>' % (LBASE, LIMG))
+    fstab0 = guest(LBASE, lambda g: (g.mount_ro("/dev/sda2", "/"), g.read_file("/etc/fstab"))[1], ro=True).decode()
+    live(LS, "lx")
+    rc, out = nv("init", "lx")
+    check(rc == 0 and os.stat(LIMG).st_size == 192 << 20, "a Linux guest's data disk follows its system disk too", out)
+    rc, out = nv("carry", "lx")
+    check(rc == 0 and "one ext4 partition labelled data" in out, "carry formats a Linux guest's data disk as ext4", out)
+
+
+    def lx_data(g):
+        label, ptype = g.vfs_label("/dev/sda1"), g.part_get_gpt_type("/dev/sda", 1)
+        g.mount_ro("/dev/sda1", "/")
+        st = g.lstatns("/kit/bin/run.sh")
+        return {"label": label, "type": ptype, "run": (st["st_mode"] & 0o7777, st["st_uid"]),
+                "json": g.read_file("/agent/.agent.json"), "settings": g.read_file("/agent/settings.json")}
+
+
+    got = guest(LIMG, lx_data, ro=True)
+    check(got["label"] == "data" and got["type"] == "0FC63DAF-8483-4772-8E79-3D69D8477DE4" and got["run"] == (0o755, 1000)
+          and got["json"] == b'{"lx": 1}\n' and got["settings"] == b'{"hooks": 1}\n', "carry keeps owners and modes, through a separate /home", repr(got))
+    rc, out = nv("keep", "lx", "-y")
+    check(rc == 0, "the Linux data disk is kept as rev0", out)
+    live(LR, "lx")
+    rc, out = nv("link", "lx", "--dry-run")
+    check(rc == 0 and "link home/alice/kit -> /mnt/data/kit" in out and "delete the old home/alice/.agent.json" in out
+          and "mount the data disk at /mnt/data through /etc/fstab" in out and "alice: set AGENT_HOME=/mnt/data/agent" in out,
+          "link --dry-run plans symlinks, the fstab line and environment.d", out)
+    rc, out = nv("link", "lx")
+    check(rc == 0, "link applies on Linux", out)
+
+
+    def lx_system(g):
+        g.mount_ro("/dev/sda2", "/")
+        g.mount_ro("/dev/sda3", "/home")
+        h = "/home/alice/"
+        env = h + ".config/environment.d/60-nixvirt-data.conf"
+        run_sh = h + "kit/bin/run.sh"
+        real = g.is_file(run_sh, followsymlinks=False)
+        return {
+            "kit": g.readlink(h + "kit") if g.is_symlink(h + "kit") else None,
+            "agent": g.readlink(h + ".agent") if g.is_symlink(h + ".agent") else None,
+            "owner": g.lstatns(h + "kit")["st_uid"], "fstab": g.read_file("/etc/fstab").decode(), "mnt": g.is_dir("/mnt/data"),
+            "env": g.read_file(env) if g.exists(env) else None, "env_owner": g.lstatns(env)["st_uid"] if g.exists(env) else None,
+            "run": (g.read_file(run_sh), g.lstatns(run_sh)["st_mode"] & 0o7777) if real else None,
+            "json": g.read_file(h + ".agent.json") if g.exists(h + ".agent.json") else None,
+            "nested": g.exists(h + ".agent/.agent.json") if g.is_dir(h + ".agent", followsymlinks=False) else None,
+            "temp": [p for p in g.find(h) if "nixvirt-unlink" in p],
+        }
+
+
+    data_uuid = guest(LIMG, lambda g: g.vfs_uuid("/dev/sda1"), ro=True)
+    got = guest(LR, lx_system, ro=True)
+    check(got["kit"] == "/mnt/data/kit" and got["agent"] == "/mnt/data/agent" and got["owner"] == 1000 and got["json"] is None,
+          "carried folders become symlinks owned by the user, and the carried file leaves", repr(got))
+    check(got["fstab"] == fstab0 + "# nixvirt-data: begin, managed from the host\nUUID=%s /mnt/data ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2\n"
+          "# nixvirt-data: end\n" % data_uuid and got["mnt"], "a marked fstab block mounts the data disk and the rest stays", got["fstab"])
+    check(got["env"] == b"AGENT_HOME=/mnt/data/agent\n" and got["env_owner"] == 1000, "environment.d holds the user's environment", repr(got))
+    rc, out = nv("link", "lx")
+    check(rc == 0 and out.count("already links") == 2 and "already mounts" in out and "already set" in out, "link is idempotent on Linux", out)
+
+
+    def lx_tamper(g):
+        g.mount("/dev/sda1", "/")
+        st = g.lstatns("/kit/data.bin")
+        g.write("/kit/data.bin", b"E" * 8192)
+        g.utimens("/kit/data.bin", st["st_atime_sec"], st["st_atime_nsec"], st["st_mtime_sec"], st["st_mtime_nsec"])
+        g.write("/kit/bin/evil", b"\x7fELF")
+        g.chmod(0o755, "/kit/bin/evil")
+        g.chmod(0o755, "/kit/readme.txt")
+
+
+    guest(LIMG, lx_tamper)
+    rc, out = nv("show", "lx")
+    check(rc == 0 and "kit/data.bin" in out.split("SAME SIZE AND DATE")[1].split("\n\n")[0] and "change time check: 1 file" in out,
+          "the change time check catches a file rewritten with its old size and date on ext4", out)
+    runs = out.split("RUNS CODE")[1].split("\n\n")[0]
+    check("kit/bin/evil" in runs and "kit/readme.txt" in runs and "permissions 644 -> 755" in runs,
+          "an execute bit marks code, and a new execute permission is listed", out)
+    rc, out = nv("show", "lx", "--c-pair", LS, LBASE)
+    left = out.split("LEFT ON THE SYSTEM DISK")[1]
+    check("home/alice/Downloads" in left and "notes" not in left and "kit" not in left and ".agent" not in left,
+          "the revert scan reads a Linux session through its fstab and lists only what would be lost", out)
+
+    rc, out = nv("unlink", "lx")
+    check(rc == 0 and "remove the data disk from /etc/fstab" in out and "alice: remove" in out, "unlink applies on Linux", out)
+    got = guest(LR, lx_system, ro=True)
+    check(got["kit"] is None and got["run"] == (b"#!/bin/sh\necho hi\n", 0o755) and got["owner"] == 1000 and got["json"] == b'{"lx": 1}\n'
+          and got["nested"] is not None and not got["nested"] and not got["temp"], "unlink brings folders and the file back with owners and modes", repr(got))
+    check(got["fstab"] == fstab0 and got["env"] is None, "unlink removes exactly its fstab block and environment file", repr(got))
+    rc, out = nv("unlink", "lx")
+    check(rc == 0 and out.count("is already on the system disk") == 3 and "next:" not in out, "unlink is idempotent on Linux", out)
+    rc, out = nv("link", "lx")
+    check(rc == 0 and guest(LR, lx_system, ro=True)["kit"] == "/mnt/data/kit", "link works again after unlink on Linux", out)
+    rc, out = nv("unlink", "lx", "--only", "home/alice/kit",
+                 cfg=dropped("lx", ["home/alice/kit"], {"alice": {"AGENT_HOME": "/mnt/data/agent"}}))
+    got = guest(LR, lx_system, ro=True)
+    check(rc == 0 and got["kit"] is None and got["run"] == (b"#!/bin/sh\necho hi\n", 0o755) and got["agent"] == "/mnt/data/agent"
+          and got["env"] == b"AGENT_HOME=/mnt/data/agent\n" and "nixvirt-data: begin" in got["fstab"],
+          "on Linux, unlink --only follows the symlink and keeps the mount, the other links and unrelated variables", out + repr(got))
+    rc, out = nv("unlink", "lx", "--only", "home/alice/.agent")
+    got = guest(LR, lx_system, ro=True)
+    check(rc == 0 and got["agent"] is None and got["env"] is None and "alice: remove AGENT_HOME" in out,
+          "unlink --only removes an environment.d line pointing into the folder", out + repr(got))
+    rc, out = nv("link", "lx")
+    check(rc == 0 and guest(LR, lx_system, ro=True)["agent"] == "/mnt/data/agent", "link restores the Linux links after unlink --only", out)
+
+    rc, out = nv("revert-carry", "lx", "--pair", LS, LBASE, "--into", LN, answers="c\n")
+    check(rc == 0 and "carried 2 change(s)" in out, "revert-carry works on a Linux guest with a separate /home", out)
+
+
+    def lx_notes(g):
+        g.mount_ro("/dev/sda2", "/")
+        g.mount_ro("/dev/sda3", "/home")
+        return g.read_file("/home/alice/notes/a.txt"), g.lstatns("/home/alice/notes/b.txt")["st_uid"], g.exists("/home/alice/Downloads")
+
+
+    check(guest(LN, lx_notes, ro=True) == (b"a, edited\n", 1000, False), "carried Linux files keep their owner and nothing else carries", out)
+
+
+    def lx_layout(img):
+        def read(g):
+            parts = {p["part_num"]: (p["part_start"] >> 9, p["part_end"] >> 9) for p in g.part_list("/dev/sda")}
+            swap = g.vfs_uuid("/dev/sda4")
+            g.mount_ro("/dev/sda2", "/")
+            st = g.statvfs("/")
+            g.mount_ro("/dev/sda3", "/home")
+            return parts, swap, st["blocks"] * st["frsize"], sorted(g.find("/home")), g.debug("sh", ["sgdisk -v /dev/sda 2>&1"])
+        return guest(img, read, ro=True)
+
+
+    before = lx_layout(LR)
+    rc, out = nv("resize", "lx", "+64M", "-y")
+    after = lx_layout(LR)
+    check(rc == 0 and "Linux swap" in out and vsize(LR) == 256 << 20 and os.stat(LIMG).st_size == 256 << 20
+          and "Windows checks" not in out, "a Linux root grows with its disk, and the data disk follows", out)
+    check(after[0][4][1] <= (256 << 11) - 34 and after[0][3][0] > before[0][3][0] and after[1] == before[1] and after[3] == before[3]
+          and after[2] > before[2] + (50 << 20) and "No problems found" in after[4],
+          "/home and swap move to the new end with their contents, and ext4 fills the root partition", repr((before, after)))
+    rc, out = nv("resize", "lx", "-80M", "-y")
+    shrunk = lx_layout(LR)
+    check(rc == 0 and vsize(LR) == 176 << 20 and shrunk[2] < after[2] - (60 << 20) and shrunk[1] == before[1] and shrunk[3] == before[3]
+          and "No problems found" in shrunk[4], "an ext4 root shrinks, and /home and swap move down intact", out + repr(shrunk))
+    exact = (192 << 20) + 7 * 512
+    rc, out = nv("resize", "lx", str(exact), "-y")
+    check(rc == 0 and vsize(LR) == exact and os.stat(LIMG).st_size == exact and "No problems found" in lx_layout(LR)[4],
+          "a size in whole sectors, like a real drive's exact capacity, is kept to the byte", out)
+
+
+    def fs_image(path, kind):
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", path, "512M"], check=True)
+
+        def build(g):
+            d = "/dev/sda"
+            g.part_init(d, "gpt")
+            g.part_add(d, "p", 2048, 34815)
+            g.part_add(d, "p", 34816, 34816 + (400 << 11) - 1)
+            g.part_add(d, "p", 34816 + (400 << 11), 34816 + (416 << 11) - 1)
+            g.part_set_gpt_type(d, 3, SWAP)
+            g.mkfs("vfat", d + "1")
+            g.mkswap(d + "3")
+            if kind == "lvm":
+                g.pvcreate(d + "2")
+                g.vgcreate("vg0", [d + "2"])
+                g.lvcreate("root", "vg0", 200)
+                g.mkfs("ext4", "/dev/vg0/root")
+                root, line = "/dev/vg0/root", "/dev/mapper/vg0-root / ext4 rw 0 1"
+            else:
+                g.mkfs(kind, d + "2")
+                root, line = d + "2", "UUID=%s / %s rw 0 1" % (g.vfs_uuid(d + "2"), kind)
+            linux_root(g, root, [line])
+            g.write("/etc/marker", b"fx\n")
+        guest(path, build)
+
+
+    def fs_state(path, lvm):
+        def read(g):
+            root = "/dev/vg0/root" if lvm else "/dev/sda2"
+            g.mount_ro(root, "/")
+            st = g.statvfs("/")
+            return {"fs": st["blocks"] * st["frsize"], "marker": g.read_file("/etc/marker"), "verify": g.debug("sh", ["sgdisk -v /dev/sda 2>&1"])}
+        return guest(path, read, ro=True)
+
+
+    for kind in ("btrfs", "xfs", "lvm"):
+        path = W + "/fx-%s.qcow2" % kind
+        fs_image(path, kind)
+        live(path, "fx")
+        before = fs_state(path, kind == "lvm")
+        rc, out = nv("resize", "fx", "+128M", "-y", "--force")
+        after = fs_state(path, kind == "lvm")
+        check(rc == 0 and after["fs"] > before["fs"] + (100 << 20) and after["marker"] == b"fx\n" and "No problems found" in after["verify"],
+              "%s: the root filesystem grows with the disk" % kind, out + repr((before, after)))
+        rc, out = nv("resize", "fx", "-192M", "-y", "--force")
+        if kind == "btrfs":
+            shrunk = fs_state(path, False)
+            check(rc == 0 and shrunk["fs"] < after["fs"] - (100 << 20) and shrunk["marker"] == b"fx\n" and "No problems found" in shrunk["verify"],
+                  "btrfs: the root filesystem shrinks with the disk", out + repr(shrunk))
         else:
-            g.mkfs(kind, d + "2")
-            root, line = d + "2", "UUID=%s / %s rw 0 1" % (g.vfs_uuid(d + "2"), kind)
-        linux_root(g, root, [line])
-        g.write("/etc/marker", b"fx\n")
-    guest(path, build)
+            check(rc == 1 and "can only grow" in out and vsize(path) == 640 << 20, "%s: a shrink is refused before anything changes" % kind, out)
 
-
-def fs_state(path, lvm):
-    def read(g):
-        root = "/dev/vg0/root" if lvm else "/dev/sda2"
-        g.mount_ro(root, "/")
-        st = g.statvfs("/")
-        return {"fs": st["blocks"] * st["frsize"], "marker": g.read_file("/etc/marker"), "verify": g.debug("sh", ["sgdisk -v /dev/sda 2>&1"])}
-    return guest(path, read, ro=True)
-
-
-for kind in ("btrfs", "xfs", "lvm"):
-    path = W + "/fx-%s.qcow2" % kind
-    fs_image(path, kind)
-    live(path, "fx")
-    before = fs_state(path, kind == "lvm")
-    rc, out = nv("resize", "fx", "+128M", "-y", "--force")
-    after = fs_state(path, kind == "lvm")
-    check(rc == 0 and after["fs"] > before["fs"] + (100 << 20) and after["marker"] == b"fx\n" and "No problems found" in after["verify"],
-          "%s: the root filesystem grows with the disk" % kind, out + repr((before, after)))
-    rc, out = nv("resize", "fx", "-192M", "-y", "--force")
-    if kind == "btrfs":
-        shrunk = fs_state(path, False)
-        check(rc == 0 and shrunk["fs"] < after["fs"] - (100 << 20) and shrunk["marker"] == b"fx\n" and "No problems found" in shrunk["verify"],
-              "btrfs: the root filesystem shrinks with the disk", out + repr(shrunk))
-    else:
-        check(rc == 1 and "can only grow" in out and vsize(path) == 640 << 20, "%s: a shrink is refused before anything changes" % kind, out)
-print("all nixvirt-data tests passed")
+print("all nixvirt-data %s tests passed" % PART)
