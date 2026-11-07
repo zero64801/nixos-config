@@ -2,7 +2,6 @@
 
 let
   cfg = config.my.apps.discord;
-  sources = pkgs.util.importPins ./sources.json;
 in
 {
   options.my.apps.discord = {
@@ -68,10 +67,8 @@ in
             openASAR.enable = false;
             inherit (cfg) commandLineArgs;
             vencord.enable = true;
+            # nixcord pins Vencord together with its bun.lock and dependency hash, so the source cannot be swapped on its own.
             vencord.package = inputs.nixcord.packages.${pkgs.stdenv.hostPlatform.system}.vencord.overrideAttrs (old: {
-              src = sources.vencord // {
-                inherit (old.src) owner repo;
-              };
               postPatch = (old.postPatch or "") + lib.optionalString (cfg.localPlugins != {}) (''
                 mkdir -p src/userplugins
               '' + lib.concatStringsSep "\n" (lib.mapAttrsToList (n: v: ''

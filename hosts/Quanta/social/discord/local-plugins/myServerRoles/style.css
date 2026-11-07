@@ -6,6 +6,10 @@
     padding: 16px;
 }
 
+.vc-my-server-roles-muted {
+    color: var(--text-muted);
+}
+
 .vc-my-server-roles-count {
     display: block;
     margin-bottom: 12px;

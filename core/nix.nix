@@ -1,4 +1,4 @@
-{ inputs, hostName, ... }:
+{ inputs, hostName, pkgs, ... }:
 
 {
   nixpkgs = {
@@ -7,12 +7,12 @@
   };
 
   nix = {
+    package = pkgs.lixPackageSets.lix_2_96.lix;
     channel.enable = false;
 
     settings = {
       experimental-features = [ "nix-command" "flakes" "pipe-operator" ];
       extra-deprecated-features = [ "or-as-identifier" ];
-      trusted-users = [ "root" "@wheel" ];
 
       substituters = [ "https://nix-community.cachix.org" ];
       trusted-public-keys = [

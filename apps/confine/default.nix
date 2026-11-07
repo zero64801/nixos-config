@@ -48,11 +48,19 @@ let
         default = true;
         description = "Keep the private home across reboots on an impermanent host.";
       };
+
+      silenceWarnings = lib.mkOption {
+        type = lib.types.listOf (lib.types.enum [ "home" "seccomp" "network" ]);
+        default = [ ];
+        example = [ "network" ];
+        description = "Build warnings this app accepts on purpose, so rebuilds stop printing them.";
+      };
     };
   };
 
   wrapped = lib.mapAttrs (
-    name: app: wrap (removeAttrs app [ "install" "persist" ] // { name = app.name or name; })
+    name: app:
+    wrap (removeAttrs app [ "install" "persist" "silenceWarnings" ] // { name = app.name or name; })
   ) cfg.apps;
 
   # Read merged permissions, raw attrs miss values a profile supplied.
@@ -123,16 +131,16 @@ in
 
     warnings = lib.concatLists (
       lib.mapAttrsToList (
-        name: _:
+        name: app:
         let
           p = permsOf name;
+          warn = kind: cond: msg: lib.optional (cond && !lib.elem kind app.silenceWarnings) "my.confine.apps.${name}: ${msg}";
         in
-        lib.optional (p.home == "host")
-          "my.confine.apps.${name}: home = \"host\" gives the app the whole home directory."
-        ++ lib.optional (!p.seccomp.enable)
-          "my.confine.apps.${name}: seccomp is off, so terminal injection and the namespace group are unfiltered."
-        ++ lib.optional (p.network == "host" || p.network == true)
-          "my.confine.apps.${name}: network = \"host\" also exposes host abstract sockets, including the real X server."
+        warn "home" (p.home == "host") "home = \"host\" gives the app the whole home directory."
+        ++ warn "seccomp" (!p.seccomp.enable)
+          "seccomp is off, so terminal injection and the namespace group are unfiltered."
+        ++ warn "network" (p.network == "host" || p.network == true)
+          "network = \"host\" also exposes host abstract sockets, including the real X server."
       ) cfg.apps
     );
   };

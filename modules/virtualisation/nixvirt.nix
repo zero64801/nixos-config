@@ -106,7 +106,91 @@ let
             '';
       };
 
-  domains = map withDataDisk cfg.domains;
+  qemuUser = name: "vm-${name}";
+  tapOf = name: "vm-${name}";
+  lgEnabled = config.my.virtualisation.desktop.looking-glass.enable or false;
+  usesKvmfr = d: lib.hasInfix "/dev/kvmfr" (builtins.readFile d.definition);
+
+  # The fixed tap name is the guest's identity for hostAccess, and unlike an address the guest cannot change it.
+  withHostIdentity =
+    name: d:
+    let
+      iface = "/domain/devices/interface[source/@network='default']";
+      user = qemuUser name;
+    in
+    d
+    // {
+      definition =
+        pkgs.runCommand "${name}-identity.xml"
+          {
+            nativeBuildInputs = [
+              pkgs.xmlstarlet
+              pkgs.libxml2
+              config.virtualisation.libvirtd.package
+            ];
+          }
+          ''
+            src=${d.definition}
+            if [ "$(xmlstarlet sel -t -v 'count(/domain/seclabel)' "$src")" != 0 ]; then
+              echo "${name}: the domain XML sets a seclabel, qemuUsers sets its own" >&2
+              exit 1
+            fi
+            if [ "$(xmlstarlet sel -t -v "count(${iface})" "$src")" -gt 1 ]; then
+              echo "${name}: more than one interface on the default network, hostAccess needs one" >&2
+              exit 1
+            fi
+            xmlstarlet ed \
+              -d "${iface}/target" \
+              -s "${iface}" -t elem -n target -v "" \
+              -s "${iface}/target" -t attr -n dev -v ${tapOf name} \
+              ${lib.optionalString cfg.qemuUsers.enable ''
+                -s /domain -t elem -n seclabel -v "" \
+                -s /domain/seclabel -t attr -n type -v static \
+                -s /domain/seclabel -t attr -n model -v dac \
+                -s /domain/seclabel -t attr -n relabel -v yes \
+                -s /domain/seclabel -t elem -n label -v ${user}:${user} \
+              ''} "$src" > $out
+            virt-xml-validate $out domain
+          '';
+    };
+
+  domains = map (d: withHostIdentity (domainName d.definition) (withDataDisk d)) cfg.domains;
+  domainNames = map (d: domainName d.definition) cfg.domains;
+
+  vmUsers = lib.listToAttrs (
+    lib.imap0 (i: d: {
+      name = qemuUser (domainName d.definition);
+      value = {
+        isSystemUser = true;
+        uid = cfg.qemuUsers.uidBase + i;
+        group = qemuUser (domainName d.definition);
+        extraGroups = [ "qemu-vms" ] ++ lib.optional (lgEnabled && usesKvmfr d) "kvmfr";
+        description = "QEMU of the ${domainName d.definition} domain";
+      };
+    }) cfg.domains
+  );
+
+  vmGroups = lib.mapAttrs (_: u: { gid = u.uid; }) vmUsers;
+
+  qemuUids = [ config.users.users.qemu-libvirtd.uid ] ++ lib.mapAttrsToList (_: u: u.uid) vmUsers;
+
+  # libvirt makes the swtpm directory 0770 for its one default QEMU user, so a domain's own user could not reach its socket. Traverse is enough, each socket is chowned 0600 to its domain's user.
+  swtpmAclHook = pkgs.writeShellScript "libvirt-hook-swtpm-acl" ''
+    ${pkgs.coreutils}/bin/cat > /dev/null
+    case "$2/$3" in
+      prepare/begin) ;;
+      *) exit 0 ;;
+    esac
+    dir=/run/libvirt/qemu/swtpm
+    ${pkgs.coreutils}/bin/mkdir -p "$dir"
+    ${pkgs.coreutils}/bin/chown qemu-libvirtd:tss "$dir"
+    ${pkgs.coreutils}/bin/chmod 0770 "$dir"
+    ${pkgs.acl}/bin/setfacl -m g:qemu-vms:x "$dir"
+  '';
+
+  accessDomains = lib.attrNames cfg.hostAccess;
+  markOf = name: "0x" + lib.toHexString (1447886848 + 1 + lib.lists.findFirstIndex (n: n == name) 0 accessDomains);
+  portSet = ports: "{ ${lib.concatStringsSep ", " (map toString ports)} }";
 
   definitionOf =
     n: (lib.findFirst (d: domainName d.definition == n) { definition = null; } cfg.domains).definition;
@@ -1648,6 +1732,50 @@ in
       '';
     };
 
+    qemuUsers = {
+      enable = mkOption {
+        type = bool;
+        default = true;
+        description = ''
+          Run each domain's QEMU as its own user, vm-<domain>, instead of the shared qemu-libvirtd. libvirt hands that user
+          the domain's disks, firmware variables and passthrough devices at start and restores their owner at stop, so a guest
+          that broke out into its QEMU cannot reach another domain's files. These users cannot open network connections either.
+        '';
+      };
+
+      uidBase = mkOption {
+        type = ints.positive;
+        default = 2100;
+        description = ''
+          uid and gid of the first domain's user, the others count up in the order of `domains`. Fixed, because the
+          firewall matches them by number.
+        '';
+      };
+    };
+
+    hostAccess = mkOption {
+      type = attrsOf (submodule {
+        options = {
+          tcp = mkOption {
+            type = listOf ints.u16;
+            default = [ ];
+            description = "Host TCP ports this guest may reach.";
+          };
+          udp = mkOption {
+            type = listOf ints.u16;
+            default = [ ];
+            description = "Host UDP ports this guest may reach.";
+          };
+        };
+      });
+      default = { };
+      example = lib.literalExpression "{ win11.tcp = [ 3000 ]; }";
+      description = ''
+        Host ports one domain's guest may reach on top of what network isolation allows every guest, keyed by domain name.
+        Matched on the domain's network device, so another guest cannot gain the access by copying its MAC or IP address.
+      '';
+    };
+
     carryOnRevert = mkOption {
       type = attrsOf (submodule {
         options = {
@@ -1754,6 +1882,15 @@ in
         assertion = builtins.elem n (map (d: domainName d.definition) cfg.domains);
         message = "my.virtualisation.nixvirt.untrusted: no domain in my.virtualisation.nixvirt.domains is named ${n}";
       }) cfg.untrusted
+      ++ map (n: {
+        assertion = builtins.elem n domainNames;
+        message = "my.virtualisation.nixvirt.hostAccess: no domain in my.virtualisation.nixvirt.domains is named ${n}";
+      }) accessDomains
+      ++ map (n: {
+        # IFNAMSIZ: a longer tap name is truncated by the kernel and would no longer match the firewall rule.
+        assertion = builtins.stringLength (tapOf n) <= 15;
+        message = "my.virtualisation.nixvirt: domain ${n} gives the tap name ${tapOf n}, longer than the 15 characters Linux allows";
+      }) domainNames
     );
 
     virtualisation.libvirt = {
@@ -1762,13 +1899,61 @@ in
       connections."qemu:///system".domains = domains;
     };
 
-    users.users.${dataUser} = {
-      isSystemUser = true;
-      group = dataUser;
-      extraGroups = [ "kvm" ];
-      description = "Runs the libguestfs appliance that reads and resizes guest disks";
+    users.users = {
+      ${dataUser} = {
+        isSystemUser = true;
+        group = dataUser;
+        extraGroups = [ "kvm" ];
+        description = "Runs the libguestfs appliance that reads and resizes guest disks";
+      };
+    }
+    // lib.optionalAttrs cfg.qemuUsers.enable vmUsers;
+
+    users.groups = {
+      ${dataUser} = { };
+    }
+    // lib.optionalAttrs cfg.qemuUsers.enable (vmGroups // { qemu-vms = { }; });
+
+    virtualisation.libvirtd.hooks.qemu = mkIf cfg.qemuUsers.enable {
+      "05-swtpm-acl" = swtpmAclHook;
     };
-    users.groups.${dataUser} = { };
+
+    networking.nftables.enable = mkIf (cfg.qemuUsers.enable || cfg.hostAccess != { }) true;
+
+    networking.nftables.tables.vm-qemu = mkIf cfg.qemuUsers.enable {
+      family = "inet";
+      content = ''
+        chain output {
+          type filter hook output priority -100; policy accept;
+          meta skuid ${portSet qemuUids} ct state new drop
+        }
+      '';
+    };
+
+    networking.nftables.tables.vm-ports = mkIf (cfg.hostAccess != { }) {
+      family = "bridge";
+      content = ''
+        chain input {
+          type filter hook input priority -100; policy accept;
+          ${lib.concatMapStrings (n: ''
+            iifname "${tapOf n}" meta mark set ${markOf n}
+          '') accessDomains}
+        }
+      '';
+    };
+
+    my.virtualisation.base.networkIsolation.extraInputRules = lib.concatMapStrings (
+      n:
+      let
+        a = cfg.hostAccess.${n};
+      in
+      lib.optionalString (a.tcp != [ ]) ''
+        meta mark ${markOf n} tcp dport ${portSet a.tcp} accept
+      ''
+      + lib.optionalString (a.udp != [ ]) ''
+        meta mark ${markOf n} udp dport ${portSet a.udp} accept
+      ''
+    ) accessDomains;
 
     systemd.services.nixvirt = {
       restartTriggers = map (d: d.definition) domains;

@@ -24,6 +24,7 @@ let
     name = null;
     binaries = null;
     binPrefix = "";
+    keepDesktopNames = false;
     profile = [ ];
     network = false;
     wayland = false;
@@ -596,6 +597,8 @@ let
           shopt -u nullglob
           for dev in ''${matches[@]+"''${matches[@]}"}; do
             if [ -e "$dev" ]; then
+              # A link such as /dev/input/by-id/*-fido is bound at its target, the path programs find through sysfs.
+              dev=$(readlink -f "$dev")
               args+=(--dev-bind "$dev" "$dev")
             fi
           done
@@ -1002,7 +1005,7 @@ checked (runCommand confinedName
 
       for desktop in "''${entries[@]}"; do
         # Portals resolve the app id to a matching .desktop for name and icon, so a lone entry is renamed to the forged id.
-        if [ "''${#entries[@]}" -eq 1 ]; then
+        if [ "''${#entries[@]}" -eq 1 ] && ${lib.boolToString (!cfg.keepDesktopNames)}; then
           dest="$out/share/applications/${appId}.desktop"
         else
           dest="$out/share/applications/$(basename "$desktop")"
@@ -1017,6 +1020,14 @@ checked (runCommand confinedName
           sed -i "0,/^Name=/s/^Name=\(.*\)/Name=\1 (${binPrefixLabel})/" "$dest"
         ''}
       done
+
+      ${lib.optionalString cfg.keepDesktopNames ''
+        # The kept name shadows the unconfined entry, a hidden copy under the app id still serves the portals.
+        if [ "''${#entries[@]}" -eq 1 ] && [ "$dest" != "$out/share/applications/${appId}.desktop" ]; then
+          sed -e '/^NoDisplay=/d' -e '/^\[Desktop Entry\]$/a NoDisplay=true' "$dest" \
+            > "$out/share/applications/${appId}.desktop"
+        fi
+      ''}
     fi
   '')
 )

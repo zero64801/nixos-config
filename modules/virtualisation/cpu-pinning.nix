@@ -231,7 +231,7 @@ ${modeCase}
     }
 
     state_of() {
-      ${virsh} -c qemu:///system domstate "$1" 2>/dev/null | head -1 || echo unknown
+      ${virsh} -r -c qemu:///system domstate "$1" 2>/dev/null | head -1 || echo unknown
     }
 
     ONCE=0
@@ -355,9 +355,9 @@ in
 
     systemd.tmpfiles.rules = [
       "d /var/lib/my 0755 root root -"
-      "d /var/lib/my/vm-mode 2775 root libvirtd -"
+      "d /var/lib/my/vm-mode 2775 root wheel -"
       "d /run/my 0755 root root -"
-      "d /run/my/vm-mode 2775 root libvirtd -"
+      "d /run/my/vm-mode 2775 root wheel -"
     ];
 
     my.persistence.directories = [ "/var/lib/my/vm-mode" ];
@@ -365,15 +365,6 @@ in
     virtualisation.libvirtd.hooks.qemu."15-cpu-pin" = cpuPinHook;
     systemd.services.libvirtd-config.restartTriggers = [ cpuPinHook ];
 
-    security.polkit.extraConfig = ''
-      polkit.addRule(function(action, subject) {
-        if (action.id == "org.freedesktop.policykit.exec" &&
-            action.lookup("command_line") &&
-            action.lookup("command_line").indexOf("${vm-mode-root}") === 0 &&
-            subject.isInGroup("wheel")) {
-          return polkit.Result.YES;
-        }
-      });
-    '';
+    my.security.pkexecNoAuth = [ { program = "${vm-mode-root}"; } ];
   };
 }

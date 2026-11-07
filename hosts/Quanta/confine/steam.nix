@@ -50,7 +50,7 @@ lib.mkIf config.my.apps.gaming.steam.enable {
       "steam"
     ];
 
-    network = "host";
+    network = "isolated";
 
     x11 = "host";
 

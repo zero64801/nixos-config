@@ -245,5 +245,10 @@ in
         inherit (cfg.opacity) terminal desktop applications popups;
       };
     };
+
+    # The Home Manager Qt target only handles qtct, for any other platform the NixOS target already sets the same theme and style.
+    hm.stylix.targets.qt.enable = lib.mkIf (config.stylix.targets.qt.platform != "qtct") false;
+    # The rofi target sets the renamed programs.rofi.font even while rofi is off.
+    hm.stylix.targets.rofi.enable = lib.mkIf (!config.hm.programs.rofi.enable) false;
   };
 }

@@ -106,18 +106,17 @@ in
 
   services.avahi = {
     enable = true;
-    ipv6 = false;
-    extraConfig = ''
-      [publish]
-      publish-aaaa-on-ipv4=no
-    '';
     nssmdns4 = true;
-    publish = {
-      enable = true;
-      addresses = true;
-      workstation = true;
-    };
     openFirewall = true;
+    settings = {
+      server.use-ipv6 = false;
+      publish = {
+        disable-publishing = false;
+        publish-addresses = true;
+        publish-workstation = true;
+        publish-aaaa-on-ipv4 = false;
+      };
+    };
   };
 
   security.tpm2 = {

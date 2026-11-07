@@ -99,6 +99,11 @@ let
 
       die() { echo "vm-gpu: $*" >&2; exit 1; }
 
+      # Only root gets the read-write libvirt connection that dumpxml --security-info, start and create need without a touch.
+      as_root() {
+        [ "$(id -u)" -eq 0 ] || exec /run/wrappers/bin/pkexec "$(readlink -f "$0")" "$@"
+      }
+
       check_domain() { case "$1" in ${domainPattern}) ;; *) die "unknown domain '$1' (managed: $DOMAINS)" ;; esac; }
       check_mode() { case "$1" in ${modePattern}) ;; *) die "unknown mode '$1' (modes: $MODES)" ;; esac; }
 
@@ -141,12 +146,14 @@ let
           local m once
           m=$(saved_mode "$d"); once=$(once_mode "$d")
           [ -n "$once" ] && m="$once (once)"
-          printf '%-12s %-14s %s\n' "$d" "$m" "$(virsh domstate "$d" 2>/dev/null | head -1 || echo unknown)"
+          printf '%-12s %-14s %s\n' "$d" "$m" "$(virsh -r domstate "$d" 2>/dev/null | head -1 || echo unknown)"
         done
       }
 
       cmd_set() {
         local dom="$1" mode="$2" once="''${3:-}"
+        # The state directories are user writable, so a root write could follow a planted symlink.
+        [ "$(id -u)" -ne 0 ] || die "set modes as your user, not as root"
         check_domain "$dom"; check_mode "$mode"
         if [ "$once" = "--once" ]; then
           printf '%s' "$mode" > "$OVERRIDE_DIR/$dom"
@@ -200,8 +207,8 @@ let
       case "''${1:-}" in
         "") cmd_status ;;
         -h|--help|help) usage ;;
-        start) shift; cmd_start "$@" ;;
-        xml) shift; [ $# -ge 1 ] || die "xml needs a domain"; cmd_xml "$@" ;;
+        start) as_root "$@"; shift; cmd_start "$@" ;;
+        xml) as_root "$@"; shift; [ $# -ge 1 ] || die "xml needs a domain"; cmd_xml "$@" ;;
         *) [ $# -ge 2 ] || { usage >&2; exit 1; }; cmd_set "$@" ;;
       esac
     '';
@@ -328,11 +335,13 @@ in
 
     systemd.tmpfiles.rules = [
       "d /var/lib/my 0755 root root -"
-      "d /var/lib/my/gpu-mode 2775 root libvirtd -"
+      "d /var/lib/my/gpu-mode 2775 root wheel -"
       "d /run/my 0755 root root -"
-      "d /run/my/gpu-mode 2775 root libvirtd -"
+      "d /run/my/gpu-mode 2775 root wheel -"
     ];
 
     my.persistence.directories = [ "/var/lib/my/gpu-mode" ];
+
+    my.security.pkexecNoAuth = [ { program = "${vm-gpu}/bin/vm-gpu"; } ];
   };
 }

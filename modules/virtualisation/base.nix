@@ -7,9 +7,33 @@
 
 let
   inherit (lib) mkEnableOption mkIf mkMerge mkOption concatStringsSep optional optionals optionalString;
-  inherit (lib.types) bool listOf port str;
+  inherit (lib.types) bool lines listOf port str;
 
   cfg = config.my.virtualisation.base;
+  isolation = cfg.networkIsolation;
+
+  # Keeping the name, uuid and bridge mac of libvirt's own default network: a redefine under a different uuid is refused, and domains reference the network by name.
+  defaultNetwork = pkgs.writeText "libvirt-default-network.xml" ''
+    <network>
+      <name>default</name>
+      <uuid>d9261a02-4010-40bc-b148-0648d3639cf0</uuid>
+      <forward mode="nat">
+        <nat>
+          <port start="1024" end="65535"/>
+        </nat>
+      </forward>
+      <bridge name="${isolation.bridge}" stp="on" delay="0"/>
+      <mac address="52:54:00:37:86:50"/>
+      <port isolated="yes"/>
+      <ip address="192.168.122.1" netmask="255.255.255.0">
+        <dhcp>
+          <range start="192.168.122.2" end="192.168.122.254"/>
+        </dhcp>
+      </ip>
+    </network>
+  '';
+
+  portSet = ports: "{ ${concatStringsSep ", " (map toString ports)} }";
 in
 {
   options.my.virtualisation.base = {
@@ -76,6 +100,25 @@ in
         description = ''
           Allow VMs to reach host services beyond DHCP/DNS. Leave off
           for maximum isolation; turn on if a VM needs e.g. SSH to host.
+        '';
+      };
+
+      extraInputRules = mkOption {
+        type = lines;
+        default = "";
+        description = ''
+          nftables rules placed before the final drop of the chain that decides what guests may reach on the host.
+          Packets arriving here already passed the DHCP, DNS and allowedHost* accepts.
+        '';
+      };
+
+      interGuest = mkOption {
+        type = bool;
+        default = false;
+        description = ''
+          Let guests on the bridge reach each other. Off defines the
+          libvirt default network with <port isolated='yes'/>, so one
+          compromised guest cannot scan or attack the others.
         '';
       };
 
@@ -161,6 +204,15 @@ in
         allowedTCPPorts = [ 53 ] ++ cfg.networkIsolation.allowedHostTCPPorts;
       };
 
+      # restart = false: nixvirt destroys (hard powers off) every domain on a network it restarts, and the isolated flag is applied when a guest's tap joins the bridge anyway, so it takes effect for domains started after the next network start.
+      virtualisation.libvirt.connections."qemu:///system".networks = mkIf (!isolation.interGuest) [
+        {
+          definition = defaultNetwork;
+          active = true;
+          restart = false;
+        }
+      ];
+
       # nixos-fw's forward chain accepts all DNAT'd traffic via `ct status dnat accept`, so the drops live in a separate table at a lower priority number to run first.
       networking.nftables.enable = mkIf cfg.networkIsolation.enable true;
 
@@ -168,21 +220,37 @@ in
         family = "inet";
         content =
           let
-            bridge   = cfg.networkIsolation.bridge;
-            vmSubnet = cfg.networkIsolation.vmSubnet;
+            bridge   = isolation.bridge;
+            vmSubnet = isolation.vmSubnet;
             allowRule = dst: ''
               iifname "${bridge}" ip saddr ${vmSubnet} ip daddr ${dst} accept
             '';
-            allows = concatStringsSep "" (map allowRule cfg.networkIsolation.allowedLanHosts);
+            allows = concatStringsSep "" (map allowRule isolation.allowedLanHosts);
             dropRule = range: ''
               iifname "${bridge}" ip saddr ${vmSubnet} ip daddr ${range} ip daddr != ${vmSubnet} drop
             '';
-            rules = concatStringsSep "" (map dropRule cfg.networkIsolation.lanRanges);
+            rules = concatStringsSep "" (map dropRule isolation.lanRanges);
+
+            # The firewall's own port lists apply to every interface, so host services open to the LAN are open to guests too. Dropping here, at a lower priority number, is final and needs no coordination with whatever a module opens.
+            hostTcp = [ 53 ] ++ isolation.allowedHostTCPPorts;
+            hostUdp = [ 53 67 ] ++ isolation.allowedHostUDPPorts;
           in
           ''
             chain forward {
               type filter hook forward priority -100; policy accept;
               ${allows}${rules}
+            }
+
+            chain input {
+              type filter hook input priority -100; policy accept;
+              iifname != "${bridge}" accept
+              ct state established,related accept
+              tcp dport ${portSet hostTcp} accept
+              udp dport ${portSet hostUdp} accept
+              icmp type echo-request accept
+              ${isolation.extraInputRules}
+              ${optionalString isolation.allowHost "accept"}
+              drop
             }
           '';
       };
@@ -198,8 +266,8 @@ in
           config.virtualisation.libvirtd.qemu.vhostUserPackages;
       };
 
+      # libvirtd membership is root: polkit grants it unauthenticated domain definition with host disks.
       my.security.serviceAdminGroups = [
-        "libvirtd"
         "kvm"
       ]
       ++ optional cfg.enableVirgl "render";

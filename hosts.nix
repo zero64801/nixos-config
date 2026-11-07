@@ -27,10 +27,7 @@ let
         importDir ./core
         ++ importDir ./apps
         ++ importDir ./modules
-        ++ importDir ./hosts/${hostname}
-        ++ [
-          inputs.lix-module.nixosModules.default
-        ];
+        ++ importDir ./hosts/${hostname};
     };
 
 in

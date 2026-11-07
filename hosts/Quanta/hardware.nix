@@ -55,8 +55,6 @@
       ];
 
       kernelModules = [ "amdgpu" ];
-
-      systemd.enable = true;
     };
 
     extraModulePackages = [ ];
@@ -100,6 +98,5 @@
   systemd.services.NetworkManager-wait-online.enable = false;
 
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
-  hardware.keyboard.qmk.enable = true;
   hardware.bluetooth.enable = false;
 }

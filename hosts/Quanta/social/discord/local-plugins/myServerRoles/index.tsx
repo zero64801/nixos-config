@@ -1,11 +1,12 @@
 import "./style.css";
 
 import { ApplicationCommandInputType } from "@api/Commands";
+import { Text } from "@components/Text";
 import { getCurrentChannel } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import definePlugin from "@utils/types";
 import { Guild, Role } from "@vencord/discord-types";
-import { ChannelStore, ContextMenuApi, GuildMemberStore, GuildRoleStore, GuildStore, Menu, SelectedChannelStore, SelectedGuildStore, Text, UserProfileActions, UserStore } from "@webpack/common";
+import { ChannelStore, ContextMenuApi, GuildMemberStore, GuildRoleStore, GuildStore, Menu, openUserProfileModal, SelectedChannelStore, SelectedGuildStore, UserStore } from "@webpack/common";
 
 type RoleData = {
     guild: Guild;
@@ -44,9 +45,9 @@ function RolePill({ role }: { role: Role; }) {
     return (
         <div className="vc-my-server-roles-role">
             <span className="vc-my-server-roles-dot" style={{ backgroundColor: color }} />
-            <Text variant="text-md/medium" className="vc-my-server-roles-name">{role.name}</Text>
+            <Text size="md" weight="medium" className="vc-my-server-roles-name">{role.name}</Text>
             {role.managed && (
-                <Text variant="text-xs/medium" color="text-muted" className="vc-my-server-roles-managed">managed</Text>
+                <Text size="xs" weight="medium" defaultColor={false} className="vc-my-server-roles-muted vc-my-server-roles-managed">managed</Text>
             )}
         </div>
     );
@@ -61,21 +62,21 @@ function RolesModal({ data, ...props }: ModalProps & { data: RoleData | null; })
     return (
         <ModalRoot {...props} size={ModalSize.SMALL}>
             <ModalHeader separator>
-                <Text variant="heading-lg/semibold" className="vc-my-server-roles-title">{title}</Text>
+                <Text size="lg" weight="semibold" className="vc-my-server-roles-title">{title}</Text>
                 <ModalCloseButton onClick={props.onClose} />
             </ModalHeader>
             <ModalContent className="vc-my-server-roles-content">
                 {!data ? (
-                    <Text variant="text-md/normal" color="text-muted">
+                    <Text defaultColor={false} className="vc-my-server-roles-muted">
                         Open this from a server channel so I can read your server roles.
                     </Text>
                 ) : data.roles.length === 0 ? (
-                    <Text variant="text-md/normal" color="text-muted">
+                    <Text defaultColor={false} className="vc-my-server-roles-muted">
                         You do not have any assigned roles in this server.
                     </Text>
                 ) : (
                     <>
-                        <Text variant="text-sm/normal" color="text-muted" className="vc-my-server-roles-count">
+                        <Text size="sm" defaultColor={false} className="vc-my-server-roles-muted vc-my-server-roles-count">
                             {data.roles.length} assigned role{data.roles.length === 1 ? "" : "s"}
                         </Text>
                         <div className="vc-my-server-roles-list">
@@ -94,7 +95,7 @@ function openMyRolesModal(guildId?: string) {
     openModal(props => <RolesModal {...props} data={data} />);
 }
 
-function openMyServerProfile(guildId = getCurrentGuildId()) {
+async function openMyServerProfile(guildId = getCurrentGuildId()) {
     const currentUser = UserStore.getCurrentUser();
 
     if (!currentUser || !guildId) {
@@ -103,14 +104,11 @@ function openMyServerProfile(guildId = getCurrentGuildId()) {
     }
 
     try {
-        UserProfileActions.openUserProfileModal({
+        await openUserProfileModal({
             userId: currentUser.id,
             guildId,
             channelId: getCurrentChannelId(),
-            analyticsLocation: {
-                page: "Guild Channel",
-                section: "Profile Popout"
-            }
+            sourceAnalyticsLocations: ["username", "user profile popout"]
         });
     } catch {
         openMyRolesModal(guildId);

@@ -48,6 +48,13 @@ let
     binPrefix = "sb-";
   };
 
+  keptService = wrap {
+    package = serviceApp;
+    binaries = [ "svcapp" ];
+    appId = "com.test.Kept";
+    keepDesktopNames = true;
+  };
+
   # xdg-dbus-proxy validates rule names before connecting, so bad rules fail here.
   profileRules = lib.mapAttrsToList (
     profileName: _:
@@ -131,6 +138,7 @@ pkgs.runCommand "confine-launcher-behaviour"
     inherit (wrappedService) outPath;
     unwrappedService = serviceApp;
     prefixedApp = prefixedService;
+    keptApp = keptService;
     offlineApp = offline;
     noDesktopApp = noDesktop;
     multiDesktopApp = multiDesktop;
@@ -226,6 +234,20 @@ pkgs.runCommand "confine-launcher-behaviour"
       || fail "the main Exec was not rewritten, or the field code was eaten"
     grep -qx "Exec=$outPath/bin/svcapp --new" "$lone" \
       || fail "the Exec under [Desktop Action] was left pointing elsewhere"
+
+    kept="$keptApp/share/applications/svcapp.desktop"
+    hidden="$keptApp/share/applications/com.test.Kept.desktop"
+    [ -e "$kept" ] || fail "keepDesktopNames renamed the entry"
+    grep -qx "Exec=$keptApp/bin/svcapp %U" "$kept" \
+      || fail "the kept entry does not launch the shim"
+    grep -q '^NoDisplay=' "$kept" && fail "the kept entry was hidden"
+    [ -e "$hidden" ] || fail "keepDesktopNames left the portals no entry under the app id"
+    [ "$(sed -n '2p' "$hidden")" = "NoDisplay=true" ] \
+      || fail "the app id copy is not hidden inside [Desktop Entry]"
+    [ "$(grep -c '^NoDisplay=' "$hidden")" -eq 1 ] \
+      || fail "NoDisplay landed in a [Desktop Action] group too"
+    grep -qx "Exec=$keptApp/bin/svcapp --new" "$hidden" \
+      || fail "the hidden copy kept an unconfined action"
 
     [ -x "$prefixedApp/bin/sb-svcapp" ] || fail "the prefixed shim is missing"
     [ -e "$prefixedApp/bin/svcapp" ] \

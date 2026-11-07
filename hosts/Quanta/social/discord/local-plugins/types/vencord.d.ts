@@ -51,6 +51,10 @@ declare module "@components/BaseText" {
   export const BaseText: any;
 }
 
+declare module "@components/Text" {
+  export const Text: any;
+}
+
 declare module "@components/Icons" {
   export const DeleteIcon: any;
 }
@@ -205,14 +209,13 @@ declare module "@webpack/common" {
   export const PermissionsBits: Record<string, bigint>;
   export const PermissionStore: any;
   export const RestAPI: any;
-  export const showToast: (message: string, type?: number) => void;
+  export const showToast: (data: { text: string; variant?: "default" | "success" | "critical"; position?: "top" | "bottom"; duration?: number; }) => void;
   export const SelectedChannelStore: any;
   export const SelectedGuildStore: any;
-  export const Text: any;
   export const TextInput: any;
-  export const Toasts: any;
-  export const UserProfileActions: any;
   export const UserStore: any;
+
+  export function openUserProfileModal(opts: { userId: string; guildId?: string | null; channelId?: string | null; sourceAnalyticsLocations?: string[]; }): Promise<void>;
 
   export function openModal(render: (props: import("@vencord/discord-types").RenderModalProps) => any): string;
   export function useEffect(effect: () => void | (() => void), deps?: unknown[]): void;

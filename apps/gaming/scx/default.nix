@@ -76,15 +76,11 @@ in
       after = [ "scx-manual.service" ];
     };
 
-    security.polkit.extraConfig = ''
-      polkit.addRule(function(action, subject) {
-        if (action.id == "org.freedesktop.policykit.exec" &&
-            action.lookup("command_line") &&
-            action.lookup("command_line").indexOf("${cfg.package}/bin/scx-switch") === 0 &&
-            subject.isInGroup("wheel")) {
-          return polkit.Result.YES;
-        }
-      });
-    '';
+    my.security.pkexecNoAuth = [
+      {
+        program = "${cfg.package}/bin/scx-switch";
+        args = scripts.noAuthArgs;
+      }
+    ];
   };
 }

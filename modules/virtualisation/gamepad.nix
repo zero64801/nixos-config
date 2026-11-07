@@ -22,6 +22,7 @@ let
     runtimeInputs = [
       pkgs.libvirt
       pkgs.gnugrep
+      pkgs.coreutils
     ];
     text = ''
       usage() {
@@ -29,10 +30,14 @@ let
         exit 2
       }
 
+      as_root() {
+        [ "$(id -u)" -eq 0 ] || exec /run/wrappers/bin/pkexec "$(readlink -f "$0")" "$@"
+      }
+
       attached_domains() {
-        virsh -c qemu:///system list --name | while IFS= read -r d; do
+        virsh -r -c qemu:///system list --name | while IFS= read -r d; do
           [ -n "$d" ] || continue
-          xml=$(virsh -c qemu:///system dumpxml "$d" 2>/dev/null) || continue
+          xml=$(virsh -r -c qemu:///system dumpxml "$d" 2>/dev/null) || continue
           if printf '%s' "$xml" | grep -q 'vendor id="0x${cfg.vendorId}"' \
             && printf '%s' "$xml" | grep -q 'product id="0x${cfg.productId}"'; then
             echo "$d"
@@ -43,17 +48,22 @@ let
       case "''${1:-}" in
         on)
           [ -n "''${2:-}" ] || usage
-          virsh -c qemu:///system attach-device "$2" ${deviceXml} --live
+          case "$2" in
+            -*|*[!A-Za-z0-9._-]*) echo "vm-pad: invalid domain name '$2'" >&2; exit 2 ;;
+          esac
+          as_root "$@"
+          virsh -c qemu:///system attach-device --domain "$2" --file ${deviceXml} --live
           echo "vm-pad: attached ${cfg.vendorId}:${cfg.productId} to $2"
           ;;
         off)
+          as_root "$@"
           doms=$(attached_domains)
           if [ -z "$doms" ]; then
             echo "vm-pad: not attached to any running domain" >&2
             exit 1
           fi
           for d in $doms; do
-            virsh -c qemu:///system detach-device "$d" ${deviceXml} --live
+            virsh -c qemu:///system detach-device --domain "$d" --file ${deviceXml} --live
             echo "vm-pad: detached from $d"
           done
           ;;
@@ -91,6 +101,8 @@ in
 
   config = mkIf cfg.enable {
     environment.systemPackages = [ vm-pad ];
+
+    my.security.pkexecNoAuth = [ { program = "${vm-pad}/bin/vm-pad"; } ];
 
     programs.fish.shellAbbrs = {
       pad-on = "vm-pad on";

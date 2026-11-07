@@ -1,7 +1,7 @@
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import definePlugin, { PluginNative } from "@utils/types";
 import { Message } from "@vencord/discord-types";
-import { Menu, showToast, Toasts } from "@webpack/common";
+import { Menu, showToast } from "@webpack/common";
 
 const Native = VencordNative.pluginHelpers.SaveAs as PluginNative<typeof import("./native")>;
 
@@ -15,7 +15,7 @@ async function saveAs({ filename, url }: Attachment) {
         // The main process writes the file, so the renderer never needs access to the chosen folder.
         await DiscordNative.fileManager.saveWithDialog(data, filename);
     } catch (err) {
-        showToast(`Could not save ${filename}: ${err}`, Toasts.Type.FAILURE);
+        showToast({ text: `Could not save ${filename}: ${err}`, variant: "critical" });
     }
 }
 

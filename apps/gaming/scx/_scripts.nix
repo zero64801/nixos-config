@@ -10,13 +10,38 @@ let
         paths = lib.attrValues (lib.filterAttrs (_: v: lib.isDerivation v) pkgs.scx);
       };
 
-  # This runs passwordless via polkit for wheel, so nothing from argv may reach root execution unvalidated and pkexec's scrubbed PATH needs absolute store paths.
+  # Schedulers that only schedule. scx_chaos, scx_characterize and scx_forge also run or build programs, so they always need a touch.
+  presetSchedulers = [
+    "scx_beerland"
+    "scx_bpfland"
+    "scx_cosmos"
+    "scx_flash"
+    "scx_lavd"
+    "scx_p2dq"
+    "scx_rustland"
+    "scx_rusty"
+    "scx_tickless"
+  ];
+
+  noAuthArgs =
+    [ [ "game" ] [ "host" ] [ "disable" ] ]
+    ++ map (s: [ "apply" s ]) presetSchedulers
+    ++ map (f: [ "apply" "scx_lavd" f ]) [ "--performance" "--nopreempt" "--powersave" ];
+
+  # Only noAuthArgs run passwordless via polkit, but pkexec's scrubbed PATH still needs absolute store paths.
   scx-switch = pkgs.writeShellScriptBin "scx-switch" ''
     set -f
     if [ "$EUID" -ne 0 ]; then
       echo "Root required"
       exit 1
     fi
+
+    # polkit compares argv joined with spaces, so an argument holding a space could pose as an allowed list.
+    for a in "$@"; do
+      case "$a" in
+        *" "*) echo "Arguments must not contain spaces"; exit 1 ;;
+      esac
+    done
 
     stop_all() {
       systemctl stop scx 2>/dev/null || true
@@ -83,10 +108,8 @@ let
           echo "Scheduler binary not found: $BINARY"
           exit 1
         fi
-        # Flags word-split intentionally because the GUI passes them as one string.
-        FLAGS="''${*:3}"
         stop_all
-        run_manual "$BINARY" $FLAGS
+        run_manual "$BINARY" "''${@:3}"
         ;;
       *)
         echo "Usage: scx-switch [game|host|disable|apply <scheduler> [flags]]"
@@ -256,13 +279,13 @@ let
                 sched = self.combo_sched.currentText()
                 flags = self.edit_flags.text()
 
-                cmd = ["pkexec", SCX_SWITCH, "apply", sched, flags]
+                cmd = ["pkexec", SCX_SWITCH, "apply", sched] + flags.split()
                 subprocess.Popen(cmd)
 
                 QTimer.singleShot(500, self.update_status)
 
             def on_disable(self):
-                cmd = ["pkexec", SCX_SWITCH, "disable", "", ""]
+                cmd = ["pkexec", SCX_SWITCH, "disable"]
                 subprocess.Popen(cmd)
                 QTimer.singleShot(500, self.update_status)
 
@@ -285,5 +308,5 @@ let
   };
 in
 {
-  inherit scx-env scx-switch scx-gui scx-desktop-item;
+  inherit scx-env scx-switch scx-gui scx-desktop-item noAuthArgs;
 }

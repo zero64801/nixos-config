@@ -16,6 +16,12 @@
 
 let
   pnpm = pnpm_10.override { nodejs-slim = nodejs_24; };
+
+  pnpmSettings = ''
+    sed -i '/^store-dir=/d' .npmrc
+    substituteInPlace pnpm-workspace.yaml \
+      --replace-fail 'managePackageManagerVersions: true' 'managePackageManagerVersions: false'
+  '';
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "marinara-engine";
@@ -34,10 +40,7 @@ stdenv.mkDerivation (finalAttrs: {
     inherit (finalAttrs) pname version src;
     inherit pnpm;
     fetcherVersion = 3;
-    prePnpmInstall = ''
-      mkdir -p $out
-      sed -i '/^store-dir=/d' .npmrc
-    '';
+    postPatch = pnpmSettings;
     hash = "sha256-s19xFQW4rXsRkFENj8DRMyD3xKDmag2+7vT8iteU0g8=";
   };
 
@@ -64,9 +67,7 @@ stdenv.mkDerivation (finalAttrs: {
   pnpmInstallFlags = [ "--force" ];
   dontCheckForBrokenSymlinks = true;
 
-  postPatch = ''
-    sed -i '/^store-dir=/d' .npmrc
-
+  postPatch = pnpmSettings + ''
     substituteInPlace packages/server/scripts/write-build-meta.mjs \
       --replace-fail 'builtAt: new Date().toISOString()' \
                      'builtAt: new Date(Number(process.env.SOURCE_DATE_EPOCH ?? 0) * 1000).toISOString()'

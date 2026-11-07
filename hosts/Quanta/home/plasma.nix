@@ -2,6 +2,7 @@
 
 let
   displayGpu = "0000:05:00.0";
+  lgLaunch = lib.getExe config.my.virtualisation.desktop.looking-glass.launcher;
 
   layoutScript = pkgs.writeShellScript "display-layout" ''
     KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
@@ -116,10 +117,24 @@ in
     hm.programs.plasma = {
       enable = true;
 
-      hotkeys.commands.dev-workspace = {
-        name = "Open Dev Workspace";
-        key = "Meta+C";
-        command = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+      hotkeys.commands = {
+        dev-workspace = {
+          name = "Open Dev Workspace";
+          key = "Meta+C";
+          command = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+        };
+
+        looking-glass = {
+          name = "Open Looking Glass";
+          key = "Meta+G";
+          command = lgLaunch;
+        };
+
+        looking-glass-clipboard = {
+          name = "Open Looking Glass with the clipboard shared";
+          key = "Meta+Ctrl+G";
+          command = "${lgLaunch} --clipboard";
+        };
       };
 
       workspace = {

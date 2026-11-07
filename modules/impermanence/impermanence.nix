@@ -255,10 +255,6 @@ in
           assertion = options ? environment.persistence;
           message   = "my.impermanence requires the impermanence module.";
         }
-        {
-          assertion = cfg.btrfs.enable -> config.boot.initrd.systemd.enable;
-          message   = "my.impermanence.btrfs requires boot.initrd.systemd.enable = true";
-        }
       ];
 
       environment.persistence.${cfg.persistentStoragePath} = {
