@@ -2,7 +2,6 @@
 
 let
   displayGpu = "0000:05:00.0";
-  lgLaunch = lib.getExe config.my.virtualisation.desktop.looking-glass.launcher;
 
   layoutScript = pkgs.writeShellScript "display-layout" ''
     KSCREEN=${pkgs.kdePackages.libkscreen}/bin/kscreen-doctor
@@ -127,13 +126,7 @@ in
         looking-glass = {
           name = "Open Looking Glass";
           key = "Meta+Shift+G";
-          command = lgLaunch;
-        };
-
-        looking-glass-clipboard = {
-          name = "Open Looking Glass with the clipboard shared";
-          key = "Meta+Ctrl+G";
-          command = "${lgLaunch} --clipboard";
+          command = lib.getExe pkgs.looking-glass-client;
         };
       };
 

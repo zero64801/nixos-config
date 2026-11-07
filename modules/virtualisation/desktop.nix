@@ -19,72 +19,6 @@ let
     ''
     + builtins.readFile ./_hugepages-hook.sh
   );
-
-  lgClient = "${pkgs.looking-glass-client}/bin/looking-glass-client";
-
-  # The client keeps reconnecting to whichever guest serves SPICE next, so a shared clipboard is only safe while the guests that were running at launch stay the only ones.
-  lgLaunch = pkgs.writeShellApplication {
-    name = "looking-glass-launch";
-    runtimeInputs = [
-      config.virtualisation.libvirtd.package
-      pkgs.coreutils
-      pkgs.libnotify
-    ];
-    text = ''
-      untrusted=" ${concatStringsSep " " config.my.virtualisation.nixvirt.untrusted} "
-
-      lg_domains() {
-        virsh -r -c qemu:///system list --state-running --name | while IFS= read -r d; do
-          [ -n "$d" ] || continue
-          xml=$(virsh -r -c qemu:///system dumpxml "$d") || continue
-          case "$xml" in *"/dev/kvmfr"*) printf '%s ' "$d" ;; esac
-        done
-      }
-
-      clipboard=auto
-      if [ "''${1:-}" = --clipboard ]; then
-        clipboard=on
-        shift
-      fi
-
-      allowed=$(lg_domains || true)
-      if [ "$clipboard" = auto ]; then
-        clipboard=on
-        [ -n "$allowed" ] || clipboard=off
-        for d in $allowed; do
-          case "$untrusted" in *" $d "*) clipboard=off ;; esac
-        done
-      fi
-
-      if [ "$clipboard" = off ]; then
-        exec ${lgClient} "$@" spice:clipboard=no clipboard:toVM=no clipboard:toLocal=no
-      fi
-
-      ${lgClient} "$@" &
-      client=$!
-      trap 'kill "$client" 2>/dev/null || true' TERM INT HUP
-
-      while kill -0 "$client" 2>/dev/null; do
-        sleep 1
-        now=$(lg_domains) || continue
-        if [ -z "$allowed" ]; then
-          allowed=$now
-          continue
-        fi
-        for d in $now; do
-          case " $allowed " in
-            *" $d "*) ;;
-            *)
-              kill "$client" 2>/dev/null || true
-              notify-send -a "Looking Glass" "Looking Glass closed" "$d started while the clipboard was shared." || true
-              exit 0
-              ;;
-          esac
-        done
-      done
-      wait "$client"
-    '';
-  };
 in
 {
   options.my.virtualisation.desktop = {
@@ -121,16 +55,6 @@ in
         type = int;
         default = 32;
         description = "Static size in MB for the kvmfr module";
-      };
-
-      launcher = mkOption {
-        type = lib.types.package;
-        readOnly = true;
-        default = lgLaunch;
-        description = ''
-          looking-glass-launch: starts the client with the clipboard off while an untrusted domain uses kvmfr,
-          or with --clipboard on regardless. A client sharing the clipboard is closed when another kvmfr domain starts.
-        '';
       };
 
       escapeKey = mkOption {
@@ -201,26 +125,7 @@ in
 
       my.virtualisation.base.cgroupDeviceACL = [ "/dev/kvmfr0" ];
 
-      environment.systemPackages = [
-        pkgs.looking-glass-client
-        lgLaunch
-      ];
-
-      # Same id as the package's own entry, so the menu, launchers and pins all go through the clipboard policy.
-      hm.xdg.desktopEntries.looking-glass-client = {
-        name = "Looking Glass Client";
-        genericName = "Virtual Machine Viewer";
-        comment = "Client for Looking Glass KVMFR";
-        exec = lib.getExe lgLaunch;
-        icon = "looking-glass";
-        terminal = false;
-        categories = [ "System" ];
-        settings = {
-          Keywords = "KVM;VM;VFIO;";
-          StartupWMClass = "looking-glass-client";
-          SingleMainWindow = "true";
-        };
-      };
+      environment.systemPackages = [ pkgs.looking-glass-client ];
 
       hm.xdg.configFile."looking-glass/client.ini".text =
         let
