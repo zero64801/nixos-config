@@ -39,9 +39,11 @@ in
       wl-clipboard
     ];
 
+    # Plasma turns this on by default, and Akonadi then rebuilds its MariaDB database on every login because the home is not persisted.
+    programs.kde-pim.enable = false;
+
     environment.plasma6.excludePackages = with pkgs; [
       kdePackages.elisa
-      kdePackages.kdepim-runtime
       kdePackages.kmahjongg
       kdePackages.kmines
       kdePackages.konversation

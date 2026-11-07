@@ -38,6 +38,7 @@ in
 
       shellAbbrs = {
         ns = "nh os switch";
+        nb = "nh os boot";
         nu = "pin update";
         nsh = "nix shell nixpkgs#";
         nrn = "nix run nixpkgs#";
@@ -133,8 +134,10 @@ in
       fzf
     ];
 
+    # With generateCompletions off, fish parses every man page into this cache on its first start, so keeping it saves that per boot.
     my.persistence.home.directories = [
       ".local/share/fish"
+      ".cache/fish"
     ];
   };
 }

@@ -1,5 +1,6 @@
 {
   "directories": [
+    "/var/cache/man",
     "/var/lib/NetworkManager",
     "/var/lib/nixos",
     "/var/lib/systemd",

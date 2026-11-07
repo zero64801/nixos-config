@@ -1,4 +1,4 @@
-{ inputs, hostName, pkgs, ... }:
+{ inputs, hostName, lib, pkgs, ... }:
 
 {
   nixpkgs = {
@@ -27,7 +27,7 @@
 
     gc = {
       persistent = true;
-      automatic = true;
+      automatic = lib.mkDefault true;
       dates = "weekly";
       options = "--delete-older-than 7d";
     };
