@@ -19,6 +19,7 @@
 # define TIOCLINUX 0x541C
 #endif
 
+/* The filter the block helpers add to, switched to the 32-bit one under --multiarch. */
 static scmp_filter_ctx ctx;
 
 static void
@@ -51,66 +52,20 @@ block_arg (int errnum, int syscall_nr, struct scmp_arg_cmp arg)
     fail ("seccomp_rule_add", r);
 }
 
-/* _exact avoids the i386 socketcall rewrite that fails open (libseccomp issue #8) and errors are ignored as upstream, so under --multiarch this covers the 64-bit arch only. */
+/* _exact avoids the i386 socketcall rewrite that fails open (libseccomp issue #8). The filter these go into only ever holds the native arch, so unlike upstream a failure here is a real error. */
 static void
-block_family (int family)
+block_family (enum scmp_compare op, int family)
 {
-  seccomp_rule_add_exact (ctx, SCMP_ACT_ERRNO (EAFNOSUPPORT),
-                          SCMP_SYS (socket), 1,
-                          SCMP_A0 (SCMP_CMP_EQ, family));
+  int r = seccomp_rule_add_exact (ctx, SCMP_ACT_ERRNO (EAFNOSUPPORT),
+                                  SCMP_SYS (socket), 1,
+                                  SCMP_A0 (op, family));
+  if (r < 0)
+    fail ("seccomp_rule_add_exact (socket)", r);
 }
 
 static void
-block_families_from (int family)
+add_rules (int nesting, int devel, int multiarch)
 {
-  seccomp_rule_add_exact (ctx, SCMP_ACT_ERRNO (EAFNOSUPPORT),
-                          SCMP_SYS (socket), 1,
-                          SCMP_A0 (SCMP_CMP_GE, family));
-}
-
-static void
-usage (void)
-{
-  fprintf (stderr,
-           "usage: confine-seccomp [--allow-nesting] [--devel] [--multiarch]\n"
-           "                       [--allow-bluetooth] [--allow-can]\n");
-  exit (1);
-}
-
-int
-main (int argc, char **argv)
-{
-  int nesting = 0, devel = 0, multiarch = 0, bluetooth = 0, can = 0;
-  int allowed[8], n_allowed = 0;
-  int i, family, r;
-
-  for (i = 1; i < argc; i++)
-    {
-      if (strcmp (argv[i], "--allow-nesting") == 0)
-        nesting = 1;
-      else if (strcmp (argv[i], "--devel") == 0)
-        devel = 1;
-      else if (strcmp (argv[i], "--multiarch") == 0)
-        multiarch = 1;
-      else if (strcmp (argv[i], "--allow-bluetooth") == 0)
-        bluetooth = 1;
-      else if (strcmp (argv[i], "--allow-can") == 0)
-        can = 1;
-      else
-        usage ();
-    }
-
-  ctx = seccomp_init (SCMP_ACT_ALLOW);
-  if (ctx == NULL)
-    fail ("seccomp_init", ENOMEM);
-
-  if (multiarch)
-    {
-      r = seccomp_arch_add (ctx, SCMP_ARCH_X86);
-      if (r < 0 && r != -EEXIST)
-        fail ("seccomp_arch_add", r);
-    }
-
   block (EPERM, SCMP_SYS (syslog));
   block (EPERM, SCMP_SYS (uselib));
   block (EPERM, SCMP_SYS (acct));
@@ -172,6 +127,46 @@ main (int argc, char **argv)
       block_arg (EPERM, SCMP_SYS (personality),
                  SCMP_A0 (SCMP_CMP_NE, PER_LINUX));
     }
+}
+
+static void
+usage (void)
+{
+  fprintf (stderr,
+           "usage: confine-seccomp [--allow-nesting] [--devel] [--multiarch]\n"
+           "                       [--allow-bluetooth] [--allow-can]\n");
+  exit (1);
+}
+
+int
+main (int argc, char **argv)
+{
+  int nesting = 0, devel = 0, multiarch = 0, bluetooth = 0, can = 0;
+  int allowed[8], n_allowed = 0;
+  int i, family, r;
+  scmp_filter_ctx native;
+
+  for (i = 1; i < argc; i++)
+    {
+      if (strcmp (argv[i], "--allow-nesting") == 0)
+        nesting = 1;
+      else if (strcmp (argv[i], "--devel") == 0)
+        devel = 1;
+      else if (strcmp (argv[i], "--multiarch") == 0)
+        multiarch = 1;
+      else if (strcmp (argv[i], "--allow-bluetooth") == 0)
+        bluetooth = 1;
+      else if (strcmp (argv[i], "--allow-can") == 0)
+        can = 1;
+      else
+        usage ();
+    }
+
+  native = ctx = seccomp_init (SCMP_ACT_ALLOW);
+  if (ctx == NULL)
+    fail ("seccomp_init", ENOMEM);
+
+  add_rules (nesting, devel, multiarch);
 
   /* Keep this list numerically ordered, the gap walk below depends on it. */
   allowed[n_allowed++] = AF_UNSPEC;
@@ -188,15 +183,39 @@ main (int argc, char **argv)
   for (i = 0; i < n_allowed; i++)
     {
       for (; family < allowed[i]; family++)
-        block_family (family);
+        block_family (SCMP_CMP_EQ, family);
       family = allowed[i] + 1;
     }
-  block_families_from (family);
+  block_family (SCMP_CMP_GE, family);
 
-  r = seccomp_export_bpf (ctx, STDOUT_FILENO);
+  /* i386 code creates sockets through socketcall, which keeps the family in memory where seccomp cannot read it, and any
+   * exact socket rule then fails on both arches. Blocking socketcall outright breaks the 32-bit Steam client (flatpak
+   * reverted exactly that in 1a6ec6a1), so the 32-bit ABI gets its own filter without the family rules, merged in so
+   * the native ABI keeps them. A 64-bit process can still reach the unfiltered families through int 0x80 on purpose. */
+  if (multiarch)
+    {
+      ctx = seccomp_init (SCMP_ACT_ALLOW);
+      if (ctx == NULL)
+        fail ("seccomp_init", ENOMEM);
+      r = seccomp_arch_add (ctx, SCMP_ARCH_X86);
+      if (r < 0)
+        fail ("seccomp_arch_add", r);
+      r = seccomp_arch_remove (ctx, SCMP_ARCH_NATIVE);
+      if (r < 0)
+        fail ("seccomp_arch_remove", r);
+
+      add_rules (nesting, devel, multiarch);
+
+      /* On success the merge frees the 32-bit filter. */
+      r = seccomp_merge (native, ctx);
+      if (r < 0)
+        fail ("seccomp_merge", r);
+    }
+
+  r = seccomp_export_bpf (native, STDOUT_FILENO);
   if (r < 0)
     fail ("seccomp_export_bpf", r);
 
-  seccomp_release (ctx);
+  seccomp_release (native);
   return 0;
 }

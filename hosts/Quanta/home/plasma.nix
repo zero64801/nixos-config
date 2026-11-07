@@ -126,7 +126,7 @@ in
 
         looking-glass = {
           name = "Open Looking Glass";
-          key = "Meta+G";
+          key = "Meta+Shift+G";
           command = lgLaunch;
         };
 

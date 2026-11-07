@@ -6,10 +6,16 @@
 let
   mkFilter = pkgs.callPackage ../_lib/seccomp.nix { };
 
-  probe = pkgs.runCommandCC "confine-seccomp-probe" { } ''
-    mkdir -p "$out/bin"
-    $CC -O2 -Wall -Wextra -Werror -o "$out/bin/probe" ${./seccomp-probe.c}
-  '';
+  mkProbe =
+    p: name:
+    p.runCommandCC name { } ''
+      mkdir -p "$out/bin"
+      $CC -O2 -Wall -Wextra -Werror -o "$out/bin/probe" ${./seccomp-probe.c}
+    '';
+
+  probe = mkProbe pkgs "confine-seccomp-probe";
+  # A real i386 binary, since the 32-bit ABI is the half of a multiarch filter that only a 32-bit program exercises.
+  probe32 = mkProbe pkgs.pkgsi686Linux "confine-seccomp-probe32";
 
   variants = {
     none = null;
@@ -24,80 +30,143 @@ let
     can = mkFilter { can = true; };
   };
 
+  probes64 = "keyctl userns clone3 tiocsti tioclinux open_tree setns personality modify_ldt socket_packet socket_inet socket_can ptrace";
+  probes32 = "keyctl userns tiocsti ptrace modify_ldt socketcall_inet socketcall_packet";
+
   expected = ''
-    none          keyctl        ok
-    none          userns        ok
-    none          clone3        EINVAL
-    none          tiocsti       ENOTTY
-    none          socket_packet EPERM
-    none          socket_can    ok
-    none          socket_inet   ok
-    none          ptrace        ok
-    strict        keyctl        EPERM
-    strict        userns        EPERM
-    strict        clone3        ENOSYS
-    strict        tiocsti       EPERM
-    strict        socket_packet EAFNOSUPPORT
-    strict        socket_can    EAFNOSUPPORT
-    strict        socket_inet   ok
-    strict        ptrace        EPERM
-    nesting       keyctl        EPERM
-    nesting       userns        ok
-    nesting       clone3        EINVAL
-    nesting       tiocsti       EPERM
-    nesting       socket_packet EAFNOSUPPORT
-    nesting       socket_can    EAFNOSUPPORT
-    nesting       socket_inet   ok
-    nesting       ptrace        EPERM
-    devel         keyctl        EPERM
-    devel         userns        EPERM
-    devel         clone3        ENOSYS
-    devel         tiocsti       EPERM
-    devel         socket_packet EAFNOSUPPORT
-    devel         socket_can    EAFNOSUPPORT
-    devel         socket_inet   ok
-    devel         ptrace        ok
-    steam         keyctl        EPERM
-    steam         userns        ok
-    steam         clone3        EINVAL
-    steam         tiocsti       EPERM
-    # EPERM not EAFNOSUPPORT: the 32-bit arch makes libseccomp drop the socket-family rules, the kernel refuses AF_PACKET for lack of CAP_NET_RAW.
-    steam         socket_packet EPERM
-    steam         socket_can    ok
-    steam         socket_inet   ok
-    steam         ptrace        EPERM
-    can           keyctl        EPERM
-    can           userns        EPERM
-    can           clone3        ENOSYS
-    can           tiocsti       EPERM
-    can           socket_packet EAFNOSUPPORT
-    can           socket_can    ok
-    can           socket_inet   ok
-    can           ptrace        EPERM
+    none     64:keyctl            ok
+    none     64:userns            ok
+    none     64:clone3            EINVAL
+    none     64:tiocsti           ENOTTY
+    none     64:tioclinux         ENOTTY
+    none     64:open_tree         ok
+    none     64:setns             EBADF
+    none     64:personality       ok
+    none     64:modify_ldt        ok
+    none     64:socket_packet     EPERM
+    none     64:socket_inet       ok
+    none     64:socket_can        ok
+    none     64:ptrace            ok
+    strict   64:keyctl            EPERM
+    strict   64:userns            EPERM
+    strict   64:clone3            ENOSYS
+    strict   64:tiocsti           EPERM
+    strict   64:tioclinux         EPERM
+    strict   64:open_tree         ENOSYS
+    strict   64:setns             EPERM
+    strict   64:personality       EPERM
+    strict   64:modify_ldt        EPERM
+    strict   64:socket_packet     EAFNOSUPPORT
+    strict   64:socket_inet       ok
+    strict   64:socket_can        EAFNOSUPPORT
+    strict   64:ptrace            EPERM
+    nesting  64:keyctl            EPERM
+    nesting  64:userns            ok
+    nesting  64:clone3            EINVAL
+    nesting  64:tiocsti           EPERM
+    nesting  64:tioclinux         EPERM
+    nesting  64:open_tree         ok
+    nesting  64:setns             EBADF
+    nesting  64:personality       EPERM
+    nesting  64:modify_ldt        EPERM
+    nesting  64:socket_packet     EAFNOSUPPORT
+    nesting  64:socket_inet       ok
+    nesting  64:socket_can        EAFNOSUPPORT
+    nesting  64:ptrace            EPERM
+    devel    64:keyctl            EPERM
+    devel    64:userns            EPERM
+    devel    64:clone3            ENOSYS
+    devel    64:tiocsti           EPERM
+    devel    64:tioclinux         EPERM
+    devel    64:open_tree         ENOSYS
+    devel    64:setns             EPERM
+    devel    64:personality       ok
+    devel    64:modify_ldt        EPERM
+    devel    64:socket_packet     EAFNOSUPPORT
+    devel    64:socket_inet       ok
+    devel    64:socket_can        EAFNOSUPPORT
+    devel    64:ptrace            ok
+    steam    64:keyctl            EPERM
+    steam    64:userns            ok
+    steam    64:clone3            EINVAL
+    steam    64:tiocsti           EPERM
+    steam    64:tioclinux         EPERM
+    steam    64:open_tree         ok
+    steam    64:setns             EBADF
+    steam    64:personality       EPERM
+    steam    64:modify_ldt        ok
+    steam    64:socket_packet     EAFNOSUPPORT
+    steam    64:socket_inet       ok
+    steam    64:socket_can        EAFNOSUPPORT
+    steam    64:ptrace            EPERM
+    can      64:keyctl            EPERM
+    can      64:userns            EPERM
+    can      64:clone3            ENOSYS
+    can      64:tiocsti           EPERM
+    can      64:tioclinux         EPERM
+    can      64:open_tree         ENOSYS
+    can      64:setns             EPERM
+    can      64:personality       EPERM
+    can      64:modify_ldt        EPERM
+    can      64:socket_packet     EAFNOSUPPORT
+    can      64:socket_inet       ok
+    can      64:socket_can        ok
+    can      64:ptrace            EPERM
+    none     32:keyctl            ok
+    none     32:userns            ok
+    none     32:tiocsti           ENOTTY
+    none     32:ptrace            ok
+    none     32:modify_ldt        ok
+    none     32:socketcall_inet   ok
+    none     32:socketcall_packet EPERM
+    # Without --multiarch the filter does not know the 32-bit ABI, and libseccomp kills on an unknown arch.
+    strict   32:keyctl            SIGSYS
+    strict   32:userns            SIGSYS
+    strict   32:tiocsti           SIGSYS
+    strict   32:ptrace            SIGSYS
+    strict   32:modify_ldt        SIGSYS
+    strict   32:socketcall_inet   SIGSYS
+    strict   32:socketcall_packet SIGSYS
+    steam    32:keyctl            EPERM
+    steam    32:userns            ok
+    steam    32:tiocsti           EPERM
+    steam    32:ptrace            EPERM
+    steam    32:modify_ldt        ok
+    # The 32-bit Steam client creates its sockets through socketcall, so it has to keep working.
+    steam    32:socketcall_inet   ok
+    # EPERM from the kernel, not EAFNOSUPPORT from the filter: socketcall hides the family, so 32-bit families stay unfiltered as upstream.
+    steam    32:socketcall_packet EPERM
   '';
 
   # A literal fd is safe only because this script allocates no other descriptors.
   runVariant =
-    name: filter:
+    abi: bin: probes: name: filter:
     let
       seccomp = lib.optionalString (filter != null) "--seccomp 10";
       redirect = lib.optionalString (filter != null) "10<${filter}";
     in
     ''
-      for p in $probes; do
-        printf '%-13s %-13s %s\n' ${name} "$p" \
-          "$(bwrap "''${base[@]}" ${seccomp} -- ${probe}/bin/probe "$p" ${redirect})"
+      for p in ${probes}; do
+        res=$(bwrap "''${base[@]}" ${seccomp} -- ${bin}/bin/probe "$p" ${redirect}) && rc=0 || rc=$?
+        # bwrap reports a child killed by a signal as 128 plus its number, SIGSYS is 31.
+        [ "$rc" = 159 ] && res=SIGSYS
+        printf '%-8s %-21s %s\n' ${name} "${abi}:$p" "''${res:-exit$rc}"
       done
     '';
+
+  runs =
+    lib.mapAttrsToList (runVariant "64" probe probes64) variants
+    ++ lib.mapAttrsToList (runVariant "32" probe32 probes32) {
+      inherit (variants) none strict steam;
+    };
 
   inherit (pkgs) lib;
 in
 pkgs.runCommand "confine-seccomp-behaviour" { nativeBuildInputs = [ pkgs.bubblewrap ]; } ''
   base=(--ro-bind /nix/store /nix/store --proc /proc --dev /dev --unshare-all)
-  probes="keyctl userns clone3 tiocsti socket_packet socket_inet socket_can ptrace"
 
   {
-  ${lib.concatStrings (lib.mapAttrsToList runVariant variants)}
+  ${lib.concatStrings runs}
   } > actual
 
   cat > expected <<'EOF'
