@@ -37,8 +37,8 @@ in
       generateCompletions = false;
 
       shellAbbrs = {
-        ns = "nh os switch";
-        nb = "nh os boot";
+        ns = "rebuild";
+        nb = "rebuild boot";
         nu = "pin update";
         nsh = "nix shell nixpkgs#";
         nrn = "nix run nixpkgs#";

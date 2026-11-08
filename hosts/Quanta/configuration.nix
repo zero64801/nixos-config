@@ -48,6 +48,7 @@ in
 
     security = {
       yubikey.enable = true;
+      touchGuard.enable = true;
       serviceAdminGroups = [ "wheel" ];
     };
 

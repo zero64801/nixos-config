@@ -102,7 +102,7 @@ in
       name = "Dev Workspace";
       genericName = "Code Editor";
       comment = "VSCode in the sandboxed dev environment";
-      exec = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+      exec = "code";
       icon = "code";
       terminal = false;
       categories = [ "Development" "IDE" ];
@@ -120,7 +120,7 @@ in
         dev-workspace = {
           name = "Open Dev Workspace";
           key = "Meta+C";
-          command = ''bash -c "cd /home/dx/Projects/dev && exec direnv exec . code"'';
+          command = "code";
         };
 
         looking-glass = {

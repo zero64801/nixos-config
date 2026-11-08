@@ -90,6 +90,17 @@ let
     ];
   });
 
+  guarded = wrap (base // {
+    binaries = [ "touch" ];
+    portals = false;
+    dbus.filter = false;
+    binds.rw = [ "data" ];
+    binds.ro = [
+      "data/*/.git/hooks"
+      "nothing/*/matches"
+    ];
+  });
+
   noDesktop = wrap {
     package = pkgs.hello;
     appId = "com.test.NoDesktop";
@@ -140,6 +151,7 @@ pkgs.runCommand "confine-launcher-behaviour"
     prefixedApp = prefixedService;
     keptApp = keptService;
     offlineApp = offline;
+    guardedApp = guarded;
     noDesktopApp = noDesktop;
     multiDesktopApp = multiDesktop;
   }
@@ -271,6 +283,13 @@ pkgs.runCommand "confine-launcher-behaviour"
     touch "$XDG_RUNTIME_DIR/confine-shared/marker" "$XDG_RUNTIME_DIR/host-secret"
     export CONFINE_HOSTVAR=host-copied CONFINE_DECLARED=host-loses
     "$offlineApp/bin/env" > observed || fail "the sandbox did not run"
+
+    mkdir -p "$HOME/data/repo/.git/hooks"
+    "$guardedApp/bin/touch" "$HOME/data/repo/file" \
+      || fail "a writable bind with a read only pattern inside it became read only"
+    "$guardedApp/bin/touch" "$HOME/data/repo/.git/hooks/pre-commit" 2>/dev/null || true
+    [ -e "$HOME/data/repo/.git/hooks/pre-commit" ] \
+      && fail "a read only pattern inside a writable bind could be written"
 
     CONFINE_NETWORK_SETUP=probe "$offlineApp/bin/env" > refused 2>&1 \
       && fail "a launch asking for an undeclared network setup started anyway"

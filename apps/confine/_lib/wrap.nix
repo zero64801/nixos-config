@@ -117,6 +117,8 @@ let
     else
       b;
 
+  isPattern = b: lib.isString b && builtins.match ".*[*?[].*" b != null;
+
   xdgPortalOpen = runCommand "confine-xdg-open" { } ''
     mkdir -p $out/bin
     ln -s ${flatpak-xdg-utils}/bin/xdg-open $out/bin/xdg-open
@@ -159,6 +161,10 @@ let
       throw "confine: envPassthrough entries must be environment variable names"
     else if !lib.isString cfg.binPrefix || builtins.match "[A-Za-z0-9_.-]*" cfg.binPrefix == null then
       throw "confine: binPrefix may only contain letters, digits, dot, dash and underscore"
+    else if lib.any (b: isPattern b && builtins.match ".*[[:space:]].*" b != null) (cfg.binds.ro ++ cfg.binds.rw) then
+      throw "confine: bind patterns cannot contain whitespace"
+    else if lib.any (b: !lib.isString b && (isPattern b.from || isPattern b.to)) (cfg.binds.ro ++ cfg.binds.rw) then
+      throw "confine: bind patterns must be plain strings, each match is bound at its own path"
     else if !lib.all (s: s ? link && s ? target && lib.isString s.link && lib.isString s.target) cfg.symlinks then
       throw "confine: symlinks entries must be { link, target } string pairs"
     else if !lib.elem cfg.runtimeDir [ "private" "shared" ] then
@@ -276,12 +282,6 @@ let
       "--ro-bind"
       "/nix/store"
       "/nix/store"
-      "--ro-bind-try"
-      "/run/current-system"
-      "/run/current-system"
-      "--ro-bind-try"
-      "/run/booted-system"
-      "/run/booted-system"
       "--ro-bind"
       "/etc"
       "/etc"
@@ -425,6 +425,13 @@ let
 
       args=(${lib.escapeShellArgs staticArgs})
 
+      # A link like the host's, a mounted copy would hide that the running system is a store path.
+      for system_link in /run/current-system /run/booted-system; do
+        if system_target=$(readlink "$system_link"); then
+          args+=(--symlink "$system_target" "$system_link")
+        fi
+      done
+
       ${lib.optionalString hasNetwork ''
         # resolved answers over a unix socket, which would carry lookups around a network setup's tunnel.
         if [ -z "''${CONFINE_NETWORK_SETUP_BIN:-}" ]; then
@@ -476,6 +483,7 @@ let
       ''}
 
       ${lib.optionalString (cfg.envPassthrough != [ ]) ''
+        # shellcheck disable=SC2043 # a single declared name is still a list
         for var in ${lib.escapeShellArgs cfg.envPassthrough}; do
           value=''${!var:-}
           if [ -n "$value" ]; then
@@ -564,12 +572,42 @@ let
           fi
         }
 
-        ${lib.concatMapStrings (b: ''
-          add_bind ro ${lib.escapeShellArg b.from} ${lib.escapeShellArg b.to}
-        '') (map normaliseBind cfg.binds.ro)}
-        ${lib.concatMapStrings (b: ''
-          add_bind rw ${lib.escapeShellArg b.from} ${lib.escapeShellArg b.to}
-        '') (map normaliseBind cfg.binds.rw)}
+        ${lib.optionalString (lib.any isPattern (cfg.binds.ro ++ cfg.binds.rw)) ''
+          # A pattern binds whatever matches when the app starts, each match at its own path.
+          add_matches() {
+            local mode=$1 pattern=$2 match matches
+            case "$pattern" in
+              /*) : ;;
+              *) pattern="$HOME/$pattern" ;;
+            esac
+            shopt -s nullglob
+            # shellcheck disable=SC2206 # the pattern is a glob on purpose
+            matches=($pattern)
+            shopt -u nullglob
+            for match in ''${matches[@]+"''${matches[@]}"}; do
+              add_bind "$mode" "$match" "$match"
+            done
+          }
+        ''}
+
+        # Writable binds come first, a later mount of a parent would hide a read only path inside it.
+        ${lib.concatMapStrings (
+          mode:
+          lib.concatMapStrings (
+            b:
+            if isPattern b then
+              ''
+                add_matches ${mode} ${lib.escapeShellArg b}
+              ''
+            else
+              let
+                n = normaliseBind b;
+              in
+              ''
+                add_bind ${mode} ${lib.escapeShellArg n.from} ${lib.escapeShellArg n.to}
+              ''
+          ) cfg.binds.${mode}
+        ) [ "rw" "ro" ]}
       ''}
 
       ${lib.optionalString (cfg.symlinks != [ ]) ''

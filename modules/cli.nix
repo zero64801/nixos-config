@@ -1,7 +1,83 @@
-{ config, lib, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   cfg = config.my.cli;
+
+  nh = pkgs.symlinkJoin {
+    inherit (pkgs.nh) pname version;
+    paths = [ pkgs.nh ];
+    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+    # Otherwise nh hands its root commands the caller's PATH, where a user writable directory comes before the system.
+    postBuild = "wrapProgram $out/bin/nh --set NH_PRESERVE_ENV 0";
+    meta = { inherit (pkgs.nh.meta) description mainProgram; };
+  };
+
+  activate = pkgs.writeShellApplication {
+    name = "nixos-activate";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+        echo "usage: nixos-activate /nix/store/...-nixos-system-... [switch|boot|test]" >&2
+        exit 2
+      fi
+
+      system=$1
+      action=''${2:-switch}
+      case "$action" in
+        switch | boot | test) ;;
+        *)
+          echo "nixos-activate: unknown action $action" >&2
+          exit 2
+          ;;
+      esac
+
+      # A link could be repointed after the request was shown, a store path cannot change.
+      if [ "$(readlink -f -- "$system")" != "$system" ] || [[ $system != /nix/store/* ]]; then
+        echo "nixos-activate: give the system's store path itself, not a link to it" >&2
+        exit 1
+      fi
+      if [ ! -x "$system/bin/switch-to-configuration" ]; then
+        echo "nixos-activate: $system is not a NixOS system" >&2
+        exit 1
+      fi
+      if [ "$(id -u)" -ne 0 ]; then
+        echo "nixos-activate: run it as root" >&2
+        exit 1
+      fi
+
+      if [ "$action" != test ]; then
+        ${config.nix.package}/bin/nix-env --profile /nix/var/nix/profiles/system --set "$system"
+      fi
+      exec "$system/bin/switch-to-configuration" "$action"
+    '';
+  };
+
+  rebuild = pkgs.writeShellApplication {
+    name = "rebuild";
+    runtimeInputs = [ nh pkgs.coreutils pkgs.gnugrep ];
+    text = ''
+      action=switch
+      case "''${1:-}" in
+        switch | boot | test)
+          action=$1
+          shift
+          ;;
+      esac
+
+      out=$(mktemp -d)
+      trap 'rm -rf "$out"' EXIT
+
+      nh os build --out-link "$out/system" "$@"
+      system=$(readlink -f "$out/system")
+
+      # setuid cannot raise privileges under no_new_privs, as inside a confine sandbox, while run0 asks polkit instead.
+      if grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status; then
+        /run/current-system/sw/bin/run0 ${activate}/bin/nixos-activate "$system" "$action"
+      else
+        /run/wrappers/bin/sudo ${activate}/bin/nixos-activate "$system" "$action"
+      fi
+    '';
+  };
 in
 {
   options.my.cli.enable = lib.mkEnableOption "nh as the rebuild and garbage collection front end";
@@ -9,6 +85,7 @@ in
   config = lib.mkIf cfg.enable {
     programs.nh = {
       enable = true;
+      package = nh;
       flake = config.my.flakePath;
 
       # nix.gc's --delete-older-than keeps no fixed count, so a week without switching leaves nothing to roll back to.
@@ -18,6 +95,11 @@ in
         extraArgs = "--keep 5 --keep-since 7d --no-gcroots";
       };
     };
+
+    environment.systemPackages = [
+      activate
+      rebuild
+    ];
 
     nix.gc.automatic = false;
   };
