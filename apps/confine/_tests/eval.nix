@@ -173,6 +173,8 @@ let
       && !(builtins.tryEval (build { resources."memory max" = "4G"; }).drvPath).success
       && !(builtins.tryEval (build { resources.MemoryMax = "4G\nExecStart=x"; }).drvPath).success;
 
+    resourcesNeedTheScope = !(builtins.tryEval (build { scope = false; resources.MemoryMax = "4G"; }).drvPath).success;
+
     bindsCanBeRemapped =
       (build {
         binds.rw = [

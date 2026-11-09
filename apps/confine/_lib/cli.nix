@@ -6,7 +6,7 @@
   jq,
   systemd,
   util-linux,
-  helpers,
+  launch,
   index,
 }:
 
@@ -180,7 +180,7 @@ writeShellApplication {
       [ "$#" -gt 0 ] || set -- sh
       inner=(${coreutils}/bin/env -i "''${envs[@]}" "$@")
       if [ -n "$filter" ]; then
-        inner=(${helpers}/bin/confine-seccomp-exec "$filter" "''${inner[@]}")
+        inner=(${launch}/bin/confine-launch seccomp-exec "$filter" "''${inner[@]}")
       fi
       # Joining as the same uid leaves no capabilities after exec, and no_new_privs keeps file capabilities from adding any.
       exec nsenter --target "$pid" --user --mount --pid --net --ipc --uts --cgroup --root --wd --preserve-credentials -- \

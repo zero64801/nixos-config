@@ -6,6 +6,7 @@
 let
   inherit (pkgs) lib;
   wrap = pkgs.callPackage ../_lib/wrap.nix { };
+  launch = pkgs.callPackage ../_lib/launch.nix { };
 
   base = {
     package = pkgs.coreutils;
@@ -13,12 +14,14 @@ let
     appId = "com.test.Launcher";
   };
 
-  scriptOf =
+  launcherOf =
     settings:
     let
       w = wrap (base // settings);
     in
     "${w.launcher}/bin/${w.launcher.name}";
+
+  configOf = settings: (wrap (base // settings)).launchConfig;
 
   serviceApp = pkgs.runCommand "svcapp" { } ''
     mkdir -p $out/bin $out/share/dbus-1/services $out/share/systemd/user $out/etc/xdg/autostart
@@ -136,18 +139,20 @@ pkgs.runCommand "confine-launcher-behaviour"
   {
     nativeBuildInputs = [
       pkgs.gnugrep
+      pkgs.jq
+      pkgs.python3
       pkgs.xdg-dbus-proxy
     ];
 
-    plainScript = scriptOf { };
-    audioScript = scriptOf {
+    launchBin = "${launch}/bin/confine-launch";
+    plainLauncher = launcherOf { };
+    audioLauncher = launcherOf {
       profile = [
         "gui"
         "audio"
       ];
     };
-    # Several ports render as a comma list, which shellcheck rejects unquoted.
-    isolatedScript = scriptOf {
+    isolatedLauncher = launcherOf {
       portals = true;
       network = "isolated";
       networkPorts.toHost = [
@@ -156,16 +161,42 @@ pkgs.runCommand "confine-launcher-behaviour"
       ];
       networkPorts.fromHost = [ "0.0.0.0/8000" ];
     };
-    tunnelScript = scriptOf {
+    tunnelLauncher = launcherOf {
       network = "isolated";
       networkSetups.probe = pkgs.writeShellScript "probe-setup" "true";
     };
-    isolatedX11Script = scriptOf {
+    isolatedX11Launcher = launcherOf {
       profile = [
         "gui"
         "gpu"
       ];
       x11 = "isolated";
+    };
+    noContextLauncher = launcherOf {
+      profile = [ "gui" ];
+      waylandSecurityContext = false;
+    };
+    nestingLauncher = launcherOf { seccomp.nesting = true; };
+    sharedLauncher = launcherOf {
+      appId = "com.test.Shared";
+      runtimeDir = "shared";
+    };
+    plainConfig = configOf { };
+    unscopedConfig = configOf { scope = false; };
+    zenConfig = configOf {
+      profile = [ "gui" ];
+      waylandAppId = "zen-beta";
+    };
+    devicesConfig = configOf { devices = [ "/dev/hidraw*" ]; };
+    keysConfig = configOf {
+      devices = [ "/dev/hidraw*" ];
+      securityKeys = true;
+    };
+    limitsConfig = configOf {
+      resources = {
+        MemoryMax = "4G";
+        CPUQuota = "50%";
+      };
     };
     inherit (wrappedService) outPath;
     unwrappedService = serviceApp;
@@ -201,68 +232,138 @@ pkgs.runCommand "confine-launcher-behaviour"
       appId = "com.test.Xdg";
       binds.ro = [ "xdg-documents" ];
     };
-    nestingScript = scriptOf { seccomp.nesting = true; };
-    unscopedScript = scriptOf { scope = false; };
-    devicesScript = scriptOf { devices = [ "/dev/hidraw*" ]; };
-    keysScript = scriptOf {
-      devices = [ "/dev/hidraw*" ];
-      securityKeys = true;
+    contextApp = shell {
+      appId = "com.test.Context";
+      wayland = true;
+    };
+    forwardApp = shell {
+      appId = "com.test.Forward";
+      portals = true;
+      binds.ro = [ "visible" ];
+    };
+    limitedApp = shell {
+      appId = "com.test.Limited";
+      resources.MemoryMax = "1G";
     };
   }
   ''
     fail() { echo "confine: $1" >&2; exit 1; }
 
-    # A literal fd number collided with the D-Bus sync pipe and the pulse config.
-    grep -q -- '--seccomp 10' "$audioScript" \
-      && fail "the seccomp descriptor is a literal again"
-    grep -q 'confine_seccomp_fd' "$audioScript" \
-      || fail "the seccomp descriptor is no longer allocated"
-    # The script's own comments mention the flag, so strip them first.
-    grep -vE '^[[:space:]]*#' "$audioScript" | grep -q -- '--ro-bind-data' \
-      && fail "pulse is back on a descriptor, which pasta closes"
+    export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/rt"
+    mkdir -p "$HOME" "$XDG_RUNTIME_DIR/confine-shared"
+    rt=$XDG_RUNTIME_DIR
 
-    env_line=$(grep -n 'CONFINE_DECLARED' "${scriptOf { env.CONFINE_DECLARED = "x"; }}" | head -1 | cut -d: -f1)
-    pass_line=$(grep -n 'for var in TERM LANG' "${scriptOf { env.CONFINE_DECLARED = "x"; }}" | head -1 | cut -d: -f1)
-    [ -n "$env_line" ] && [ -n "$pass_line" ] || fail "could not locate the env blocks"
-    [ "$env_line" -gt "$pass_line" ] \
-      || fail "declared env is emitted before the host passthrough and loses to it"
+    # The launcher prints what it would run as JSON.
+    plan() {
+      CONFINE_DRY_RUN=1 "$@" env 2> plan-err || fail "the dry run of $1 failed: $(cat plan-err)"
+    }
+    # has FILE KEY ARGS...: the array KEY holds ARGS in a row.
+    has() {
+      local file=$1 key=$2
+      shift 2
+      jq -e --arg key "$key" --argjson want "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
+        '.[$key] as $a | ($want | length) as $n | any(range(0; ($a | length) - $n + 1); $a[.:. + $n] == $want)' \
+        "$file" > /dev/null
+    }
+    unix_socket() {
+      mkdir -p "$(dirname "$1")"
+      python3 -I -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$1"
+    }
 
-    grep -q 'timeout 10 cat "$instance/info"' "$isolatedScript" \
-      || fail "the bwrapinfo read is unbounded again"
+    plan "$plainLauncher" > plain.json
+    has plain.json bwrap --disable-userns || fail "sandboxes without nesting lost the kernel namespace lock"
+    plan "$nestingLauncher" > nesting.json
+    has nesting.json bwrap --disable-userns && fail "nesting = true still disables user namespaces"
+    has plain.json bwrap --dir "$rt" --chmod 0700 "$rt" || fail "the default runtime dir is no longer private"
+    # A server's socket is only shareable if the directory it writes to is host-backed, bind(2) refuses to create one at an existing name.
+    plan "$sharedLauncher" > shared.json
+    has shared.json bwrap --bind "$rt/app/com.test.Shared" "$rt" \
+      || fail "runtimeDir = shared does not back the runtime dir with the app directory"
+
+    # The build sandbox's /bin/sh is a bind mount, so a private /bin with a link stands in for the host's.
+    ${pkgs.util-linux}/bin/unshare -Urm ${pkgs.bash}/bin/bash -c "
+      ${pkgs.util-linux}/bin/mount -t tmpfs none /bin && ln -s ${pkgs.bash}/bin/bash /bin/sh \
+        && CONFINE_DRY_RUN=1 '$plainLauncher' env
+    " > fhs.json || fail "the dry run under a private /bin failed"
+    has fhs.json bwrap --tmpfs /bin --symlink ${pkgs.bash}/bin/bash /bin/sh --remount-ro /bin \
+      || fail "sandboxes no longer get the host's /bin links read only"
+
+    # Instance ids are random like Flatpak's, pids would sit a few apart.
+    ids=$(for _ in 1 2 3; do
+      plan "$plainLauncher" | jq -r '.bwrap[] | capture("/confine/com\\.test\\.Launcher\\.(?<id>[0-9]+)/passwd$").id'
+    done | sort -n)
+    [ "$(wc -l <<< "$ids")" = 3 ] || fail "could not read the instance ids: $ids"
+    [ $(( $(tail -1 <<< "$ids") - $(head -1 <<< "$ids") )) -gt 100000 ] || fail "instance ids are no longer random: $ids"
 
     # Without a security context KWin offers sandboxed clients fake input, screen capture and background clipboard reads.
-    grep -q '/bin/confine-security-context "$runtime_dir/$context_socket" confine' "$audioScript" \
-      || fail "a Wayland app starts without a security context"
-    grep -q -- '--setenv CONFINE_WAYLAND_SANDBOXED 1' "$audioScript" \
+    unix_socket "$rt/pulse/native"
+    plan "$audioLauncher" > audio.json
+    rm "$rt/pulse/native"
+    jq -e --arg rt "$rt" '.bwrap as $a | any(range(0; ($a | length) - 2);
+        $a[.] == "--ro-bind" and ($a[. + 1] | test("/confine-com\\.test\\.Launcher\\.[0-9]+\\.context$")) and $a[. + 2] == $rt + "/wayland-0")' \
+      audio.json > /dev/null || fail "a Wayland app starts without a security context"
+    has audio.json bwrap --setenv CONFINE_WAYLAND_SANDBOXED 1 \
       || fail "nested launches cannot tell they already sit in a security context"
-    grep -q 'refusing to start without one' "$audioScript" \
-      || fail "a refused security context no longer stops the launch"
-    grep -q 'zen-beta "$instance_id"' "${scriptOf { profile = [ "gui" ]; waylandAppId = "zen-beta"; }}" \
-      || fail "waylandAppId does not reach the compositor"
-    grep -q 'confine-security-context' "${scriptOf { profile = [ "gui" ]; waylandSecurityContext = false; }}" \
-      && fail "waylandSecurityContext = false still creates a context"
-    grep -q 'confine-security-context' "$plainScript" \
-      && fail "an app without Wayland creates a security context"
+    plan "$noContextLauncher" > nocontext.json
+    grep -q '\.context"' nocontext.json && fail "waylandSecurityContext = false still creates a context"
+    grep -q '\.context"' plain.json && fail "an app without Wayland creates a security context"
+    [ "$(jq -r .contextAppId "$zenConfig")" = zen-beta ] || fail "waylandAppId does not reach the compositor"
 
-    grep -q 'probe) export CONFINE_NETWORK_SETUP_BIN=' "$tunnelScript" \
-      || fail "a declared network setup cannot be selected"
-    grep -qx 'unset CONFINE_NETWORK_SETUP_BIN' "$tunnelScript" \
-      || fail "an inherited CONFINE_NETWORK_SETUP_BIN is not cleared"
-    # Anything the setup leaves running would otherwise hold the seccomp and info descriptors.
-    setup_line=$(grep -n 'CONFINE_NETWORK_SETUP_BIN:-' "$tunnelScript" | head -1 | cut -d: -f1)
-    seccomp_line=$(grep -n 'exec {confine_seccomp_fd}' "$tunnelScript" | head -1 | cut -d: -f1)
-    [ -n "$setup_line" ] && [ -n "$seccomp_line" ] || fail "could not locate the network setup"
-    [ "$setup_line" -lt "$seccomp_line" ] \
-      || fail "the network setup runs after the sandbox descriptors are open"
+    has audio.json bwrap --ro-bind "$rt/pulse/native" /run/flatpak/pulse/native || fail "the pulse socket is not bound"
+    # pasta closes inherited descriptors, so nothing may reach bwrap on one but the filter and info it opens itself.
+    jq -e '[.bwrap[] | select(. == "--ro-bind-data" or . == "--bind-data" or . == "--file" or . == "--args"
+        or . == "--seccomp" or . == "--info-fd" or . == "--userns" or . == "--block-fd" or . == "--sync-fd")] == []' \
+      audio.json > /dev/null || fail "the planned command line hands bwrap a descriptor"
+
+    plan "$tunnelLauncher" > tunnel.json
     # resolved's socket would carry lookups around the tunnel.
-    grep '^args=(' "$tunnelScript" | grep -q 'systemd/resolve' \
-      && fail "the resolved socket is bound unconditionally"
-    grep -A1 'if \[ -z "${"$"}{CONFINE_NETWORK_SETUP_BIN:-}" \]; then' "$tunnelScript" \
-      | grep -q -- '--ro-bind-try /run/systemd/resolve' \
+    has tunnel.json bwrap --ro-bind-try /run/systemd/resolve /run/systemd/resolve \
       || fail "the resolved socket is not bound for launches without a network setup"
+    CONFINE_NETWORK_SETUP=probe plan "$tunnelLauncher" > tunnel-setup.json
+    grep -q /run/systemd/resolve tunnel-setup.json && fail "the resolved socket is bound around the network setup"
 
-    grep -q -- "-t '0.0.0.0/8000' -u '0.0.0.0/8000'" "$isolatedScript" \
-      || fail "a string networkPorts entry is not passed to pasta as given"
+    plan "$isolatedLauncher" > isolated.json
+    has isolated.json pasta -t 0.0.0.0/8000 -u 0.0.0.0/8000 || fail "a string networkPorts entry is not passed to pasta as given"
+    has isolated.json pasta -T 3000,2081 -U 3000,2081 || fail "ports to the host are not passed to pasta"
+    has isolated.json bwrap --share-net || fail "the isolated sandbox does not stay in pasta's namespace"
+
+    plan "$isolatedX11Launcher" > x11.json
+    has x11.json satellite --dev-bind-try /dev/dri /dev/dri || fail "the isolated X server is not given the GPU, so GLX will fail"
+    has x11.json satellite --ro-bind-try /run/opengl-driver /run/opengl-driver || fail "the isolated X server is not given the driver tree"
+    has x11.json satellite --disable-userns || fail "the isolated X server can create user namespaces"
+
+    [ "$(jq .scope "$plainConfig")" = true ] || fail "apps no longer get a scope of their own"
+    [ "$(jq .scope "$unscopedConfig")" = false ] || fail "scope = false still creates a scope"
+    [ "$(jq -c .resources "$limitsConfig")" = '[["CPUQuota","50%"],["MemoryMax","4G"]]' ] \
+      || fail "resources do not reach the launcher: $(jq -c .resources "$limitsConfig")"
+    [ "$(jq .securityKeys "$devicesConfig")" = false ] || fail "device wildcards no longer leave security keys out"
+    [ "$(jq .securityKeys "$keysConfig")" = true ] || fail "securityKeys = true still filters security keys"
+
+    # pasta's far side runs the network setup before it opens the filter and info descriptors, so nothing the setup
+    # leaves running holds them.
+    mkfifo inner-args inner-info
+    printf '#!%s\n%s/ls -l /proc/self/fd/ > %s/setup-fds\n' ${pkgs.bash}/bin/bash ${pkgs.coreutils}/bin "$PWD" > setup
+    printf '#!%s\nprintf "%%s\\n" "$@" > %s/bwrap-args\n%s/readlink /proc/self/fd/$2 /proc/self/fd/$4 > %s/bwrap-fds\n' \
+      ${pkgs.bash}/bin/bash "$PWD" ${pkgs.coreutils}/bin "$PWD" > fake-bwrap
+    chmod +x setup fake-bwrap
+    printf 'filter' > filter.bpf
+    cat inner-info > /dev/null &
+    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/fake-bwrap" "$PWD/inner-args" &
+    inner=$!
+    printf -- '--ro-bind\0/a\0/b\0' > inner-args
+    wait "$inner" || fail "the inner step failed"
+    grep -q 'filter.bpf\|inner-info' setup-fds && fail "the network setup ran with a sandbox descriptor open: $(cat setup-fds)"
+    [ "$(sed -n '1p;3p;5,7p' bwrap-args | tr '\n' ' ')" = "--seccomp --info-fd --ro-bind /a /b " ] \
+      || fail "the inner step passed bwrap the wrong arguments: $(tr '\n' ' ' < bwrap-args)"
+    [ "$(tr '\n' ' ' < bwrap-fds)" = "$PWD/filter.bpf $PWD/inner-info " ] \
+      || fail "the inner step's descriptors point elsewhere: $(cat bwrap-fds)"
+    rm bwrap-args
+    printf '#!%s\nexit 1\n' ${pkgs.bash}/bin/bash > setup
+    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/fake-bwrap" "$PWD/inner-args" &
+    inner=$!
+    printf -- '--ro-bind\0/a\0/b\0' > inner-args
+    wait "$inner" && fail "a failed network setup did not stop the sandbox"
+    [ -e bwrap-args ] && fail "bwrap ran after the network setup failed"
 
     for f in share/dbus-1/services/com.test.Svc.service \
              share/systemd/user/svcapp.service \
@@ -272,15 +373,6 @@ pkgs.runCommand "confine-launcher-behaviour"
       grep -q "$outPath/bin" "$outPath/$f" \
         || fail "$f does not point at the wrapper"
     done
-
-    grep -q 'satellite_args' "$isolatedX11Script" \
-      || fail "the isolated X11 path no longer builds its arguments as expected"
-    sed -n '/satellite_args=(/,/^        )/p' "$isolatedX11Script" > sat || true
-    sed -n '/satellite_args+=(/,/^          )/p' "$isolatedX11Script" >> sat || true
-    grep -q -- '--dev-bind-try /dev/dri' sat \
-      || fail "the isolated X server is not given the GPU, so GLX will fail"
-    grep -q -- '--ro-bind-try /run/opengl-driver' sat \
-      || fail "the isolated X server is not given the driver tree"
 
     check_rules() {
       local label=$1 out
@@ -346,8 +438,6 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -qx 'Name=New' "$plone" \
       || fail "the [Desktop Action] name was suffixed too, only the entry name should be"
 
-    export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/rt"
-    mkdir -p "$HOME" "$XDG_RUNTIME_DIR/confine-shared"
     touch "$XDG_RUNTIME_DIR/confine-shared/marker" "$XDG_RUNTIME_DIR/host-secret"
     export CONFINE_HOSTVAR=host-copied CONFINE_DECLARED=host-loses
     "$offlineApp/bin/env" > observed || fail "the sandbox did not run"
@@ -371,18 +461,6 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -qx host-secret rtroot \
       && fail "an unbound runtime dir entry leaked into the sandbox"
     grep -qx ipc-link rtroot || fail "the declared symlink was not created"
-
-    # A server's socket is only shareable if the directory it writes to is host-backed, bind(2) refuses to create one at an existing name.
-    grep -q -- '--bind "$runtime_dir/app/com.test.Shared" "$runtime_dir"' \
-      "${scriptOf { appId = "com.test.Shared"; runtimeDir = "shared"; }}" \
-      || fail "runtimeDir = shared does not back the runtime dir with the app directory"
-    grep -q -- '--dir "$runtime_dir"' "$plainScript" \
-      || fail "the default runtime dir is no longer private"
-    # The build sandbox's /bin/sh is a bind mount, not a link, so only the generated loop can be checked here.
-    grep -q 'for fhs_dir in /bin /usr/bin; do' "$plainScript" \
-      || fail "sandboxes no longer get the host's /bin and /usr/bin links"
-    grep -q -- '--remount-ro "$fhs_dir"' "$plainScript" \
-      || fail "the /bin and /usr/bin links became writable inside the sandbox"
 
     grep -qx 'CONFINE_HOSTVAR=host-copied' observed \
       || fail "envPassthrough did not copy the host value"
@@ -445,13 +523,42 @@ pkgs.runCommand "confine-launcher-behaviour"
     "$xdgApp/bin/bash" -c "$cu/ls '$HOME/Docs'" > xdg-out || fail "the xdg-documents sandbox did not run"
     grep -qx doc-marker xdg-out || fail "xdg-documents did not resolve through user-dirs.dirs"
 
-    grep -q -- '--disable-userns' "$plainScript" || fail "sandboxes without nesting lost the kernel namespace lock"
-    grep -q -- '--disable-userns' "$nestingScript" && fail "nesting = true still disables user namespaces"
-    grep -q 'systemd-run --user --scope' "$plainScript" || fail "apps no longer get a scope of their own"
-    grep -q 'systemd-run' "$unscopedScript" && fail "scope = false still creates a scope"
-    grep -q 'SRANDOM' "$plainScript" || fail "instance ids are no longer random"
-    grep -q 'is_security_key' "$devicesScript" || fail "device wildcards no longer leave security keys out"
-    grep -q 'is_security_key' "$keysScript" && fail "securityKeys = true still filters security keys"
+    status=0
+    "$accountsApp/bin/bash" -c 'exit 7' || status=$?
+    [ "$status" = 7 ] || fail "the app's exit status is lost: $status"
+    status=0
+    "$accountsApp/bin/bash" -c 'kill -TERM $$' || status=$?
+    [ "$status" = 143 ] || fail "an app ended by a signal does not report 128 plus the signal: $status"
+    "$accountsApp/bin/bash" -c "$cu/sleep 30" &
+    launcher=$!
+    $cu/sleep 1
+    kill -TERM "$launcher"
+    status=0
+    wait "$launcher" || status=$?
+    [ "$status" = 143 ] || fail "a launcher stopped with SIGTERM does not report it: $status"
+
+    # Files handed over between @@ markers lose the markers, and one the sandbox already sees passes as it is.
+    mkdir -p "$HOME/visible" "$TMPDIR/hidden"
+    touch "$HOME/visible/seen" "$TMPDIR/hidden/unseen"
+    "$forwardApp/bin/bash" -c 'printf "%s\n" "$@"' _ first @@ "$HOME/visible/seen" @@ @@u "file://$HOME/visible/seen" @@ last \
+      > forwarded 2> forward-err || fail "the forwarding sandbox did not run: $(cat forward-err)"
+    [ "$(tr '\n' ' ' < forwarded)" = "first $HOME/visible/seen file://$HOME/visible/seen last " ] \
+      || fail "forwarding changed what the sandbox already sees: $(tr '\n' ' ' < forwarded)"
+    # The build has no document portal, so the file goes through unchanged and the launcher says why.
+    "$forwardApp/bin/bash" -c 'printf "%s\n" "$@"' _ @@ "$TMPDIR/hidden/unseen" @@ > forwarded 2> forward-err
+    [ "$(cat forwarded)" = "$TMPDIR/hidden/unseen" ] || fail "an unforwardable file did not pass unchanged: $(cat forwarded)"
+    grep -q 'could not hand .* to the document portal' forward-err || fail "a failed forward is not reported"
+
+    # Limits that cannot be applied must stop the launch rather than be dropped, and the build has no user manager.
+    "$limitedApp/bin/bash" -c true 2> limited-err && fail "an app with resource limits started without its scope"
+    grep -q 'refusing to start without the scope that carries the resource limits' limited-err \
+      || fail "the missing scope failed for the wrong reason: $(cat limited-err)"
+
+    unix_socket "$rt/wayland-0"
+    "$contextApp/bin/bash" -c true 2> context-err && fail "a Wayland app started when the compositor gave no security context"
+    grep -q 'refusing to start without one' context-err \
+      || fail "a refused security context failed for the wrong reason: $(cat context-err)"
+    rm "$rt/wayland-0"
 
     pone="$portalApp/share/applications/com.test.Portal.desktop"
     grep -qx "Exec=$portalApp/bin/svcapp @@u %U @@" "$pone" \

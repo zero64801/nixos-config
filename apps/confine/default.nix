@@ -95,7 +95,7 @@ let
 
   cli = pkgs.callPackage ./_lib/cli.nix {
     inherit index;
-    helpers = pkgs.callPackage ./_lib/helpers.nix { };
+    launch = pkgs.callPackage ./_lib/launch.nix { };
   };
 in
 {

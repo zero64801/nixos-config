@@ -2,6 +2,7 @@
 
 Bubblewrap sandboxes for NixOS packages, built to match Flatpak's sandbox and go further where Nix makes it possible.
 Each app runs from its normal Nix package, with a launcher that sets up the sandbox, a filtered D-Bus proxy, portals and, when asked for, its own network namespace.
+The launcher is a small Rust program that reads the app's settings from JSON written at build time, so starting an app runs no shell.
 
 ## Use
 
@@ -49,7 +50,7 @@ Everything is closed unless an app or one of its profiles opens it.
 | `dbus.system.talk`, `.call` | `[ ]` | System bus rules. |
 | `env`, `envPassthrough` | `{ }`, `[ ]` | Variables to set, and host variables to copy, into an otherwise cleared environment. |
 | `seccomp.nesting`, `.devel`, `.multiarch`, `.bluetooth`, `.can`, `.ioUring` | `false` | Openings in the seccomp filter, Flatpak's plus io_uring. `nesting` allows user namespaces for browsers' own sandboxes. |
-| `scope`, `resources` | `true`, `{ }` | A systemd scope per running app, with optional properties such as `MemoryMax` or `CPUWeight`. |
+| `scope`, `resources` | `true`, `{ }` | A systemd scope per running app, with optional limits in systemd-run's spelling: `MemoryMax`, `MemoryHigh`, `MemorySwapMax`, `MemoryLow` and `MemoryMin` as sizes like `4G` or `infinity`, `CPUWeight`, `StartupCPUWeight`, `IOWeight`, `StartupIOWeight` and `TasksMax` as numbers, `CPUQuota` as a percentage. An app with limits refuses to start where it cannot get its scope, such as inside another sandbox. |
 | `waylandAppId`, `binaries`, `binPrefix`, `keepDesktopNames`, `symlinks`, `runtimeDir`, `extraPastaArgs`, `extraBwrapArgs` | | Finer control, described in `_lib/wrap.nix`. |
 
 ## Commands
@@ -58,6 +59,13 @@ Everything is closed unless an app or one of its profiles opens it.
 `confine ps` lists running sandboxes, `confine kill` stops one with everything in it, and `confine run --command=sh APP` starts a command inside an app's sandbox.
 `confine enter INSTANCE` joins a running sandbox, without privileges and under the same seccomp filter, which `flatpak enter` does not apply.
 `confine-import APP_ID` turns a Flathub app's permissions into a starting `confine.apps` entry.
+
+## Startup
+
+The launcher starts the D-Bus proxy and pasta at once and builds the bwrap command line while systemd moves it into the app's scope, then moves those helpers in after it.
+Measured on a desktop, an app starts in about 8 ms, or 15 ms with its scope, where `flatpak run` of a similar app took about 70 ms.
+Most of the scope's share is the kernel moving the launcher between cgroups, which waits for an RCU grace period.
+Mounting cgroup2 with `favordynmods` removes that wait, at a small cost to every fork and exit on the system.
 
 ## Compared with Flatpak
 
