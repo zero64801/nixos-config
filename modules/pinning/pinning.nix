@@ -15,6 +15,7 @@ let
     inherit (cfg) flakePath;
     pinsFilePath = cfg.pinsFile;
     hostName = config.networking.hostName;
+    nix = config.nix.package;
   };
 
 in
