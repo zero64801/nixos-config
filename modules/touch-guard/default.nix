@@ -105,7 +105,7 @@ in
       let
         # Plasma's polkit dialog dims the notification and shows one PAM message at a time, so it gets the description with the key's cue at its end.
         dialog = svc == "polkit-1";
-        keyCue = dialog && config.security.pam.services.${svc}.u2fAuth && (config.security.pam.u2f.settings.cue or false);
+        keyCue = dialog && config.security.pam.services.${svc}.u2f.enable && (config.security.pam.u2f.settings.cue or false);
       in
       {
         # After rootok, wheel and faillock, before the first module that can authenticate.
