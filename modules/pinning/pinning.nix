@@ -23,6 +23,13 @@ in
   options.my.pinning = {
     enable = mkEnableOption "flake input pinning management";
 
+    package = mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default = pin;
+      description = "The pin command this module installs.";
+    };
+
     flakePath = mkOption {
       type    = str;
       default = config.my.flakePath;

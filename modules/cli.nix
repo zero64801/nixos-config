@@ -73,10 +73,13 @@ let
         fi
       done
 
-      out=$(mktemp -d)
+      runtime=''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+      mkdir -p "$runtime/rebuild"
+      out=$(mktemp -d "$runtime/rebuild/XXXXXX")
       trap 'rm -rf "$out"' EXIT
 
-      nh os build --out-link "$out/system" "''${args[@]}"
+      # Named outright rather than taken from whatever hostname nh happens to see.
+      ${cfg.rebuildNh}/bin/nh os build --hostname ${config.networking.hostName} --out-link "$out/system" "''${args[@]}"
       system=$(readlink -f "$out/system")
 
       # An update changes hundreds of things, a config change hiding among them would not stand out in the diff.
@@ -91,7 +94,7 @@ let
         exit 1
       fi
 
-      # setuid cannot raise privileges under no_new_privs, as inside a confine sandbox, while run0 asks polkit instead.
+      # setuid cannot raise privileges under no_new_privs, while run0 asks polkit instead.
       if grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status; then
         /run/current-system/sw/bin/run0 ${activate}/bin/nixos-activate "$system" "$action"
       else
@@ -101,7 +104,16 @@ let
   };
 in
 {
-  options.my.cli.enable = lib.mkEnableOption "nh as the rebuild and garbage collection front end";
+  options.my.cli = {
+    enable = lib.mkEnableOption "nh as the rebuild and garbage collection front end";
+
+    rebuildNh = lib.mkOption {
+      type = lib.types.package;
+      default = nh;
+      defaultText = lib.literalExpression "config.programs.nh.package";
+      description = "The nh rebuild evaluates and builds with. Its out link goes under $XDG_RUNTIME_DIR/rebuild.";
+    };
+  };
 
   config = lib.mkIf cfg.enable {
     programs.nh = {
