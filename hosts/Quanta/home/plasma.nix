@@ -98,17 +98,6 @@ in
       export KWIN_DRM_DEVICES
     '';
 
-    hm.xdg.desktopEntries.dev-workspace = {
-      name = "Dev Workspace";
-      genericName = "Code Editor";
-      comment = "VSCode in the sandboxed dev environment";
-      exec = "code";
-      icon = "code";
-      terminal = false;
-      categories = [ "Development" "IDE" ];
-      settings.StartupWMClass = "Code";
-    };
-
     hm.home.packages = with pkgs; [
       haruna
     ];
@@ -118,7 +107,7 @@ in
 
       hotkeys.commands = {
         dev-workspace = {
-          name = "Open Dev Workspace";
+          name = "Open Visual Studio Code";
           key = "Meta+C";
           command = "code";
         };
