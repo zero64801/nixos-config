@@ -28,9 +28,10 @@ let
       bluetooth = true;
     };
     can = mkFilter { can = true; };
+    iouring = mkFilter { ioUring = true; };
   };
 
-  probes64 = "keyctl userns clone3 tiocsti tioclinux open_tree setns personality modify_ldt socket_packet socket_inet socket_can ptrace";
+  probes64 = "keyctl userns clone3 tiocsti tioclinux open_tree setns personality modify_ldt socket_packet socket_inet socket_can ptrace io_uring";
   probes32 = "keyctl userns tiocsti ptrace modify_ldt socketcall_inet socketcall_packet";
 
   expected = ''
@@ -47,6 +48,7 @@ let
     none     64:socket_inet       ok
     none     64:socket_can        ok
     none     64:ptrace            ok
+    none     64:io_uring          EFAULT
     strict   64:keyctl            EPERM
     strict   64:userns            EPERM
     strict   64:clone3            ENOSYS
@@ -60,6 +62,7 @@ let
     strict   64:socket_inet       ok
     strict   64:socket_can        EAFNOSUPPORT
     strict   64:ptrace            EPERM
+    strict   64:io_uring          ENOSYS
     nesting  64:keyctl            EPERM
     nesting  64:userns            ok
     nesting  64:clone3            EINVAL
@@ -73,6 +76,7 @@ let
     nesting  64:socket_inet       ok
     nesting  64:socket_can        EAFNOSUPPORT
     nesting  64:ptrace            EPERM
+    nesting  64:io_uring          ENOSYS
     devel    64:keyctl            EPERM
     devel    64:userns            EPERM
     devel    64:clone3            ENOSYS
@@ -86,6 +90,7 @@ let
     devel    64:socket_inet       ok
     devel    64:socket_can        EAFNOSUPPORT
     devel    64:ptrace            ok
+    devel    64:io_uring          ENOSYS
     steam    64:keyctl            EPERM
     steam    64:userns            ok
     steam    64:clone3            EINVAL
@@ -99,6 +104,7 @@ let
     steam    64:socket_inet       ok
     steam    64:socket_can        EAFNOSUPPORT
     steam    64:ptrace            EPERM
+    steam    64:io_uring          ENOSYS
     can      64:keyctl            EPERM
     can      64:userns            EPERM
     can      64:clone3            ENOSYS
@@ -112,6 +118,21 @@ let
     can      64:socket_inet       ok
     can      64:socket_can        ok
     can      64:ptrace            EPERM
+    can      64:io_uring          ENOSYS
+    iouring  64:keyctl            EPERM
+    iouring  64:userns            EPERM
+    iouring  64:clone3            ENOSYS
+    iouring  64:tiocsti           EPERM
+    iouring  64:tioclinux         EPERM
+    iouring  64:open_tree         ENOSYS
+    iouring  64:setns             EPERM
+    iouring  64:personality       EPERM
+    iouring  64:modify_ldt        EPERM
+    iouring  64:socket_packet     EAFNOSUPPORT
+    iouring  64:socket_inet       ok
+    iouring  64:socket_can        EAFNOSUPPORT
+    iouring  64:ptrace            EPERM
+    iouring  64:io_uring          EFAULT
     none     32:keyctl            ok
     none     32:userns            ok
     none     32:tiocsti           ENOTTY
@@ -175,6 +196,16 @@ pkgs.runCommand "confine-seccomp-behaviour" { nativeBuildInputs = [ pkgs.bubblew
   # The heredoc carries Nix indentation and attrset iteration is alphabetical.
   normalise() { awk 'NF >= 3 && $1 !~ /^#/ { print $1, $2, $3 }' "$1" | sort; }
   normalise expected > e && normalise actual > a
+
+  # Nix build sandboxes may refuse io_uring themselves, then only the filter's bytes can show the opt-in changes anything.
+  if grep -q '^none 64:io_uring ENOSYS$' a; then
+    echo "io_uring is unavailable in this build sandbox, comparing filters instead" >&2
+    sed -i '/64:io_uring /d' e a
+    if cmp -s ${variants.strict} ${variants.iouring}; then
+      echo "confine: ioUring = true builds the same filter as the default." >&2
+      exit 1
+    fi
+  fi
 
   if ! diff -u e a; then
     echo "" >&2

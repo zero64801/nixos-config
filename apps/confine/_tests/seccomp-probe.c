@@ -27,6 +27,9 @@
 #ifndef SYS_open_tree
 # define SYS_open_tree 428
 #endif
+#ifndef SYS_io_uring_setup
+# define SYS_io_uring_setup 425
+#endif
 
 static const char *
 errname (void)
@@ -116,6 +119,9 @@ main (int argc, char **argv)
 #endif
   else if (strcmp (argv[1], "ptrace") == 0)
     rc = ptrace (PTRACE_TRACEME, 0, NULL, NULL);
+  else if (strcmp (argv[1], "io_uring") == 0)
+    /* A NULL params pointer makes a reachable io_uring_setup fail with EFAULT before it creates anything. */
+    rc = syscall (SYS_io_uring_setup, 1, NULL);
   else
     {
       fprintf (stderr, "confine-seccomp-probe: unknown probe %s\n", argv[1]);

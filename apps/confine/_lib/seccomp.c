@@ -64,7 +64,7 @@ block_family (enum scmp_compare op, int family)
 }
 
 static void
-add_rules (int nesting, int devel, int multiarch)
+add_rules (int nesting, int devel, int multiarch, int io_uring)
 {
   block (EPERM, SCMP_SYS (syslog));
   block (EPERM, SCMP_SYS (uselib));
@@ -119,6 +119,14 @@ add_rules (int nesting, int devel, int multiarch)
       block (ENOSYS, SCMP_SYS (mount_setattr));
     }
 
+  /* io_uring reaches large parts of the kernel that seccomp cannot inspect and carried most kernel exploits in Google's kCTF, and ENOSYS makes libuv and liburing fall back to threads. */
+  if (!io_uring)
+    {
+      block (ENOSYS, SCMP_SYS (io_uring_setup));
+      block (ENOSYS, SCMP_SYS (io_uring_enter));
+      block (ENOSYS, SCMP_SYS (io_uring_register));
+    }
+
   /* Debugging and profiling are expected to come from outside the sandbox. */
   if (!devel)
     {
@@ -134,14 +142,14 @@ usage (void)
 {
   fprintf (stderr,
            "usage: confine-seccomp [--allow-nesting] [--devel] [--multiarch]\n"
-           "                       [--allow-bluetooth] [--allow-can]\n");
+           "                       [--allow-bluetooth] [--allow-can] [--allow-io-uring]\n");
   exit (1);
 }
 
 int
 main (int argc, char **argv)
 {
-  int nesting = 0, devel = 0, multiarch = 0, bluetooth = 0, can = 0;
+  int nesting = 0, devel = 0, multiarch = 0, bluetooth = 0, can = 0, io_uring = 0;
   int allowed[8], n_allowed = 0;
   int i, family, r;
   scmp_filter_ctx native;
@@ -158,6 +166,8 @@ main (int argc, char **argv)
         bluetooth = 1;
       else if (strcmp (argv[i], "--allow-can") == 0)
         can = 1;
+      else if (strcmp (argv[i], "--allow-io-uring") == 0)
+        io_uring = 1;
       else
         usage ();
     }
@@ -166,7 +176,7 @@ main (int argc, char **argv)
   if (ctx == NULL)
     fail ("seccomp_init", ENOMEM);
 
-  add_rules (nesting, devel, multiarch);
+  add_rules (nesting, devel, multiarch, io_uring);
 
   /* Keep this list numerically ordered, the gap walk below depends on it. */
   allowed[n_allowed++] = AF_UNSPEC;
@@ -204,7 +214,7 @@ main (int argc, char **argv)
       if (r < 0)
         fail ("seccomp_arch_remove", r);
 
-      add_rules (nesting, devel, multiarch);
+      add_rules (nesting, devel, multiarch, io_uring);
 
       /* On success the merge frees the 32-bit filter. */
       r = seccomp_merge (native, ctx);

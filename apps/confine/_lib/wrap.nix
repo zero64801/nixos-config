@@ -7,11 +7,14 @@
   bubblewrap,
   coreutils,
   dbus,
+  findutils,
+  gnugrep,
   flatpak-xdg-utils,
   getent,
   gnused,
   iproute2,
   passt,
+  systemd,
   wayland-proxy-virtwl,
   xdg-dbus-proxy,
   xwayland-satellite,
@@ -20,6 +23,7 @@
 let
   mkFilter = callPackage ./seccomp.nix { };
   securityContext = callPackage ./security-context.nix { };
+  helpers = callPackage ./helpers.nix { };
   profiles = import ./profiles.nix;
 
   defaults = {
@@ -41,7 +45,9 @@ let
     portals = false;
     a11y = false;
     home = "private";
+    hostAccounts = false;
     devices = [ ];
+    securityKeys = false;
     binds = {
       ro = [ ];
       rw = [ ];
@@ -49,6 +55,12 @@ let
     symlinks = [ ];
     runtimeDir = "private";
     workdir = null;
+    gitGuard = {
+      enable = false;
+      depth = 4;
+    };
+    scope = true;
+    resources = { };
     dbus = {
       filter = true;
       log = false;
@@ -78,6 +90,7 @@ let
       devel = false;
       bluetooth = false;
       can = false;
+      ioUring = false;
     };
     extraBwrapArgs = [ ];
   };
@@ -98,9 +111,14 @@ let
         bv
     ) b;
 
+  # Host-only identity and credentials that a readable /etc would otherwise hand over.
   maskedFiles = [
     "/etc/shadow"
     "/etc/gshadow"
+    "/etc/subuid"
+    "/etc/subgid"
+    "/etc/u2f_keys"
+    "/etc/nix/netrc"
   ];
   maskedDirs = [ "/etc/ssh" ];
 
@@ -123,6 +141,23 @@ let
       b;
 
   isPattern = b: lib.isString b && builtins.match ".*[*?[].*" b != null;
+
+  xdgNames = [
+    "xdg-desktop"
+    "xdg-documents"
+    "xdg-download"
+    "xdg-music"
+    "xdg-pictures"
+    "xdg-public-share"
+    "xdg-videos"
+    "xdg-templates"
+    "xdg-config"
+    "xdg-cache"
+    "xdg-data"
+    "xdg-state"
+  ];
+  bindPath = b: if lib.isString b then b else b.from;
+  knownXdg = p: !(lib.hasPrefix "xdg-" p) || lib.hasPrefix "xdg-run/" p || lib.elem (lib.head (lib.splitString "/" p)) xdgNames;
 
   xdgPortalOpen = runCommand "confine-xdg-open" { } ''
     mkdir -p $out/bin
@@ -181,6 +216,14 @@ let
       throw "confine: workdir must be null, ro or rw, not ${builtins.toJSON cfg.workdir}"
     else if !lib.elem cfg.runtimeDir [ "private" "shared" ] then
       throw "confine: runtimeDir must be private or shared, not ${builtins.toJSON cfg.runtimeDir}"
+    else if !lib.all (b: knownXdg (bindPath b) && (lib.isString b || knownXdg b.to)) (cfg.binds.ro ++ cfg.binds.rw) then
+      throw "confine: unknown xdg- location in binds, known are xdg-run/ and ${lib.concatStringsSep ", " xdgNames}"
+    else if !lib.isInt cfg.gitGuard.depth || cfg.gitGuard.depth < 1 || cfg.gitGuard.depth > 8 then
+      throw "confine: gitGuard.depth must be an integer from 1 to 8"
+    else if lib.any (k: builtins.match "[A-Z][A-Za-z]+" k == null) (lib.attrNames cfg.resources) then
+      throw "confine: resources are systemd property names such as MemoryMax or CPUWeight"
+    else if lib.any (v: !(lib.isInt v || (lib.isString v && builtins.match "[^\n]+" v != null))) (lib.attrValues cfg.resources) then
+      throw "confine: resources values must be integers or single-line strings"
     else if lib.any (n: builtins.match "[A-Za-z0-9_-]+" n == null) (lib.attrNames cfg.networkSetups) then
       throw "confine: networkSetups names may only contain letters, digits, dash and underscore"
     else if cfg.networkSetups != { } && !isolatedNetwork then
@@ -221,7 +264,16 @@ let
     else
       throw "confine: networkPorts entries must be integers or pasta port specs";
 
-  filter = mkFilter { inherit (cfg.seccomp) nesting multiarch devel bluetooth can; };
+  filter = mkFilter {
+    inherit (cfg.seccomp)
+      nesting
+      multiarch
+      devel
+      bluetooth
+      can
+      ioUring
+      ;
+  };
 
   useSystemBus = cfg.dbus.system.talk != [ ] || cfg.dbus.system.call != [ ];
   useProxy = cfg.dbus.filter;
@@ -239,8 +291,7 @@ let
     ''
     + "exec bwrap "
     + lib.optionalString cfg.seccomp.enable "--seccomp \"$confine_seccomp_fd\" "
-    + "\"$@\""
-    + lib.optionalString cfg.portals " 4>\"$CONFINE_INFO\"";
+    + "\"$@\" 4>\"$CONFINE_INFO\"";
 
   sessionProxyArgs =
     [ "--filter" ]
@@ -276,12 +327,24 @@ let
   closeSyncFd = lib.optionalString useProxy " {sync_fd}<&-";
   useWaylandProxy = cfg.waylandProxy && cfg.wayland;
   useSecurityContext = cfg.waylandSecurityContext && (cfg.wayland || isolatedX11);
+  needsGuard = cfg.binds.ro != [ ] || cfg.gitGuard.enable;
+  usesXdgNames = lib.any (
+    b: lib.hasPrefix "xdg-" (bindPath b) && !lib.hasPrefix "xdg-run/" (bindPath b)
+  ) (cfg.binds.ro ++ cfg.binds.rw);
+  resourceArgs = lib.concatMapStringsSep " " (
+    k: "-p ${lib.escapeShellArg "${k}=${toString cfg.resources.${k}}"}"
+  ) (lib.attrNames cfg.resources);
   contextAppId = if cfg.waylandAppId != null then cfg.waylandAppId else appId;
 
   staticArgs =
     [ "--unshare-all" ]
     # In isolated mode this keeps pasta's namespace rather than the host's.
     ++ lib.optional hasNetwork "--share-net"
+    # The kernel half of the namespace lock, so a gap in the seccomp half cannot give the app a mount table of its own, the pairing Flatpak uses.
+    ++ lib.optionals (!cfg.seccomp.nesting) [
+      "--unshare-user"
+      "--disable-userns"
+    ]
     ++ [
       "--die-with-parent"
       "--clearenv"
@@ -334,16 +397,19 @@ let
     runtimeInputs = [
       bubblewrap
       coreutils
+      getent
+      gnused
     ]
     ++ lib.optional useProxy xdg-dbus-proxy
-    ++ lib.optional (cfg.workdir != null) getent
+    ++ lib.optional (cfg.scope || cfg.gitGuard.enable) systemd
+    ++ lib.optional (cfg.gitGuard.enable || cfg.sysfs) findutils
+    ++ lib.optional cfg.gitGuard.enable gnugrep
     ++ lib.optional useA11y dbus
     ++ lib.optional useWaylandProxy wayland-proxy-virtwl
     ++ lib.optional isolatedX11 xwayland-satellite
     ++ lib.optionals isolatedNetwork [
       passt
       iproute2
-      gnused
     ];
 
     text = ''
@@ -355,27 +421,69 @@ let
         exit 1
       fi
 
+      ${lib.optionalString cfg.scope ''
+        # A scope of its own lets the whole app be listed, stopped and limited as one unit, as Flatpak's app-flatpak-*.scope does. A nested launch has no user manager to ask and runs in its parent's.
+        if [ -z "''${CONFINE_SCOPE:-}" ] && systemctl --user show --property=Version >/dev/null 2>&1; then
+          CONFINE_SCOPE="app-confine-${appId}-$$.scope"
+          export CONFINE_SCOPE
+          exec systemd-run --user --scope --quiet --collect --unit="$CONFINE_SCOPE" \
+            --description=${lib.escapeShellArg "${name} (confined)"} ${resourceArgs} -- "$0" "$target" "$@"
+        fi
+      ''}
+
       runtime_dir=''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-      instance_id=$$
-      instance="$runtime_dir/confine/${appId}.$instance_id"
-      flatpak_dir="$runtime_dir/.flatpak/$instance_id"
-      rm -rf "$instance"
-      mkdir -p "$instance"
-      chmod 700 "$instance"
+      mkdir -p "$runtime_dir/confine" ${lib.optionalString cfg.portals ''"$runtime_dir/.flatpak"''}
+      # Random ids claimed by an atomic mkdir, as Flatpak allocates its own, so neither another instance nor a real Flatpak sharing .flatpak can collide.
+      instance=""
+      for _ in $(seq 100); do
+        instance_id=$SRANDOM
+        if mkdir -m 700 "$runtime_dir/confine/${appId}.$instance_id" 2>/dev/null; then
+          ${
+            if cfg.portals then
+              ''
+                if mkdir -m 700 "$runtime_dir/.flatpak/$instance_id" 2>/dev/null; then
+                  instance="$runtime_dir/confine/${appId}.$instance_id"
+                  break
+                fi
+                rmdir "$runtime_dir/confine/${appId}.$instance_id"
+              ''
+            else
+              ''
+                instance="$runtime_dir/confine/${appId}.$instance_id"
+                break
+              ''
+          }
+        fi
+      done
+      if [ -z "$instance" ]; then
+        echo "confine: could not allocate an instance id" >&2
+        exit 1
+      fi
+      flatpak_dir=${if cfg.portals then ''"$runtime_dir/.flatpak/$instance_id"'' else ''""''}
+
+      printf 'app=%s\nname=%s\nlauncher=%s\nlauncher_pid=%s\nscope=%s\nstarted=%s\nfilter=%s\n' \
+        ${appId} ${lib.escapeShellArg name} "$0" "$$" "''${CONFINE_SCOPE:-}" "$(date +%s)" \
+        ${if cfg.seccomp.enable then "${filter}" else ''""''} > "$instance/state"
 
       proxy_pid=""
       satellite_pid=""
       wayland_proxy_pid=""
       security_context_pid=""
-      launch_pid=""
+      info_pid=""
       # shellcheck disable=SC2329 # reached through the traps below
       cleanup() {
-        for pid in "$proxy_pid" "$satellite_pid" "$wayland_proxy_pid" "$security_context_pid" "$launch_pid"; do
+        for pid in "$proxy_pid" "$satellite_pid" "$wayland_proxy_pid" "$security_context_pid" "$info_pid"; do
           if [ -n "$pid" ]; then
             kill "$pid" 2>/dev/null || true
           fi
         done
-        rm -rf "$instance" "$flatpak_dir"
+        if declare -F audit_git >/dev/null; then
+          audit_git || true
+        fi
+        rm -rf "$instance"
+        if [ -n "$flatpak_dir" ]; then
+          rm -rf "$flatpak_dir"
+        fi
         ${lib.optionalString useWaylandProxy ''
           rm -f "$runtime_dir/confine-${appId}.$instance_id"
         ''}
@@ -403,36 +511,26 @@ let
           ;;
       esac
 
-      ${lib.optionalString (isolatedNetwork && cfg.portals) ''
-        # pasta adds a PID namespace, so bwrap's child-pid is replaced by the descendant whose mnt namespace inode matches.
-        resolve_host_pid() {
-          local info="$flatpak_dir/bwrapinfo.json" want frontier next pid kid _try
-          want=$(sed -n 's/.*"mnt-namespace": *\([0-9]*\).*/\1/p' "$info")
-          [ -n "$want" ] || return 1
-
-          for _try in $(seq 40); do
-            frontier=$launch_pid
-            for _ in 1 2 3 4 5 6; do
-              next=""
-              for pid in $frontier; do
-                if [ "$(readlink "/proc/$pid/ns/mnt" 2>/dev/null)" = "mnt:[$want]" ]; then
-                  sed -i "s/\"child-pid\": *[0-9]*/\"child-pid\": $pid/" "$info"
-                  return 0
-                fi
-                kid=$(cat "/proc/$pid/task/$pid/children" 2>/dev/null) || kid=""
-                next="$next $kid"
-              done
-              frontier=$next
-              [ -n "''${frontier// /}" ] || break
-            done
-            sleep 0.025
-          done
-
-          # Better no file than a pid the portal resolves to another process.
-          rm -f "$info"
-          return 1
-        }
-      ''}
+      # bwrap names its first sandboxed process, but pasta puts a pid namespace in between, so the host pid is the process in that mount namespace whose parent is outside it.
+      find_sandbox_pid() {
+        local want=$1 entry pid parent key value
+        for entry in /proc/[0-9]*; do
+          pid=''${entry#/proc/}
+          [ "$(readlink "/proc/$pid/ns/mnt" 2>/dev/null)" = "mnt:[$want]" ] || continue
+          parent=""
+          while IFS=$'\t' read -r key value; do
+            if [ "$key" = PPid: ]; then
+              parent=$value
+              break
+            fi
+          done 2>/dev/null < "/proc/$pid/status" || continue
+          if [ -n "$parent" ] && [ "$(readlink "/proc/$parent/ns/mnt" 2>/dev/null)" != "mnt:[$want]" ]; then
+            printf '%s' "$pid"
+            return 0
+          fi
+        done
+        return 1
+      }
 
       ${lib.optionalString cfg.portals ''
         printf '[Application]\nname=%s\n\n[Instance]\ninstance-id=%s\nsession-bus-proxy=%s\nsystem-bus-proxy=%s\n' \
@@ -482,6 +580,17 @@ let
           args+=(--tmpfs ${lib.escapeShellArg d})
         fi
       '') maskedDirs}
+
+      ${lib.optionalString (!cfg.hostAccounts) ''
+        # Only this user and the overflow id, as Flatpak writes them, so the host's other accounts stay out.
+        user_name=$(id -un)
+        group_name=$(id -gn)
+        real_name=$(getent passwd "$(id -u)" | cut -d: -f5) || real_name=""
+        printf '%s:x:%s:%s:%s:%s:/bin/sh\nnfsnobody:x:65534:65534:Unmapped user:/:/sbin/nologin\n' \
+          "$user_name" "$(id -u)" "$(id -g)" "$real_name" "$HOME" > "$instance/passwd"
+        printf '%s:x:%s:%s\nnfsnobody:x:65534:\n' "$group_name" "$(id -g)" "$user_name" > "$instance/group"
+        args+=(--ro-bind "$instance/passwd" /etc/passwd --ro-bind "$instance/group" /etc/group)
+      ''}
 
       # Host plugin trees (QT_PLUGIN_PATH, GTK_PATH, QML2_IMPORT_PATH, GIO_EXTRA_MODULES) stay out because mismatched toolkit plugins crash apps and GSettings must fall back to the keyfile backend.
       for var in TERM LANG LOCALE_ARCHIVE TZDIR TERMINFO_DIRS \
@@ -561,6 +670,49 @@ let
       chmod 700 "$runtime_dir/app/${appId}"
       args+=(--bind "$runtime_dir/app/${appId}" "$runtime_dir/app/${appId}")
 
+      # Folders the sandbox shares with the host as themselves, for the guards and for file forwarding, which only some apps turn on.
+      # shellcheck disable=SC2034
+      {
+        rw_roots=()
+        visible_roots=(/nix/store "$runtime_dir/doc")
+        declare -A pinned=()
+      }
+
+      ${lib.optionalString needsGuard ''
+        pin_dir() {
+          if [ -z "''${pinned[$1]:-}" ]; then
+            pinned[$1]=1
+            args+=(--bind "$1" "$1")
+          fi
+        }
+
+        # A read only path inside a writable shared folder could be swapped out from inside by renaming a folder above it, so every folder in between is pinned in place and none of them may be a link.
+        guard_path() {
+          local path=$1 root best="" rel dir part
+          for root in ''${rw_roots[@]+"''${rw_roots[@]}"}; do
+            if [[ "$path" == "$root"/* ]] && [ "''${#root}" -gt "''${#best}" ]; then
+              best=$root
+            fi
+          done
+          [ -n "$best" ] || return 0
+          rel=''${path#"$best"/}
+          dir=$best
+          local IFS=/ parts=()
+          read -ra parts <<< "$rel"
+          for part in "''${parts[@]}"; do
+            [ -n "$part" ] || continue
+            dir="$dir/$part"
+            if [ -L "$dir" ]; then
+              echo "confine: refusing to start, $dir is a link inside a shared folder, so the sandbox could redirect what it guards" >&2
+              exit 1
+            fi
+            if [ "$dir" != "$path" ] && [ -d "$dir" ]; then
+              pin_dir "$dir"
+            fi
+          done
+        }
+      ''}
+
       ${
         if homeMode == "private" then
           ''
@@ -575,6 +727,8 @@ let
         else
           ''
             args+=(--bind "$HOME" "$HOME")
+            rw_roots+=("$HOME")
+            visible_roots+=("$HOME")
           ''
       }
 
@@ -591,19 +745,72 @@ let
           fi
         done
         args+=(${if cfg.workdir == "rw" then "--bind" else "--ro-bind"} "$launch_dir" "$launch_dir" --chdir "$launch_dir")
+        ${lib.optionalString (cfg.workdir == "rw") ''
+          rw_roots+=("$launch_dir")
+        ''}
+        visible_roots+=("$launch_dir")
       ''}
 
       ${lib.optionalString (cfg.binds.ro != [ ] || cfg.binds.rw != [ ]) ''
+        ${lib.optionalString usesXdgNames ''
+          # Flatpak's names for the user folders. user-dirs.dirs is parsed, not sourced, since it is user data.
+          xdg_path() {
+            local spec=$1 name rest key value dirs_file
+            name=''${spec%%/*}
+            rest=''${spec#"$name"}
+            case "$name" in
+              xdg-config) printf '%s%s' "''${XDG_CONFIG_HOME:-$HOME/.config}" "$rest"; return 0 ;;
+              xdg-cache) printf '%s%s' "''${XDG_CACHE_HOME:-$HOME/.cache}" "$rest"; return 0 ;;
+              xdg-data) printf '%s%s' "''${XDG_DATA_HOME:-$HOME/.local/share}" "$rest"; return 0 ;;
+              xdg-state) printf '%s%s' "''${XDG_STATE_HOME:-$HOME/.local/state}" "$rest"; return 0 ;;
+              xdg-desktop) key=DESKTOP value=Desktop ;;
+              xdg-documents) key=DOCUMENTS value=Documents ;;
+              xdg-download) key=DOWNLOAD value=Downloads ;;
+              xdg-music) key=MUSIC value=Music ;;
+              xdg-pictures) key=PICTURES value=Pictures ;;
+              xdg-public-share) key=PUBLICSHARE value=Public ;;
+              xdg-videos) key=VIDEOS value=Videos ;;
+              xdg-templates) key=TEMPLATES value=Templates ;;
+              *) return 1 ;;
+            esac
+            value="$HOME/$value"
+            dirs_file=''${XDG_CONFIG_HOME:-$HOME/.config}/user-dirs.dirs
+            if [ -r "$dirs_file" ]; then
+              local line
+              while IFS= read -r line; do
+                case "$line" in
+                  "XDG_''${key}_DIR=\""*\")
+                    line=''${line#*=\"}
+                    line=''${line%\"}
+                    case "$line" in
+                      \$HOME/*) value="$HOME/''${line#\$HOME/}" ;;
+                      /*) value=$line ;;
+                    esac
+                    ;;
+                esac
+              done < "$dirs_file"
+            fi
+            # A disabled user folder points at the home itself, which Flatpak leaves out too.
+            if [ "$value" = "$HOME" ] || [ "$value" = "$HOME/" ]; then
+              echo "confine: $name is the whole home, left out" >&2
+              return 1
+            fi
+            printf '%s%s' "$value" "$rest"
+          }
+        ''}
+
         add_bind() {
           local mode=$1 from=$2 to=$3 src dest
           case "$from" in
             xdg-run/*) src="$runtime_dir/''${from#xdg-run/}" ;;
+            xdg-*) src=$(xdg_path "$from") || return 0 ;;
             ./*) src="$launch_dir/''${from#./}" ;;
             /*) src="$from" ;;
             *)  src="$HOME/$from" ;;
           esac
           case "$to" in
             xdg-run/*) dest="$runtime_dir/''${to#xdg-run/}" ;;
+            xdg-*) dest=$(xdg_path "$to") || return 0 ;;
             ./*) dest="$launch_dir/''${to#./}" ;;
             /*) dest="$to" ;;
             *)  dest="$HOME/$to" ;;
@@ -616,8 +823,17 @@ let
               *)  mkdir -p "$src" ;;
             esac
             args+=(--bind-try "$src" "$dest")
+            if [ "$src" = "$dest" ] && [ -d "$src" ]; then
+              rw_roots+=("$src")
+            fi
           else
+            if [ "$src" = "$dest" ] && { [ -e "$src" ] || [ -L "$src" ]; }; then
+              guard_path "$src"
+            fi
             args+=(--ro-bind-try "$src" "$dest")
+          fi
+          if [ "$src" = "$dest" ]; then
+            visible_roots+=("$src")
           fi
         }
 
@@ -627,6 +843,7 @@ let
             local mode=$1 pattern=$2 match matches
             case "$pattern" in
               /*) : ;;
+              xdg-*) pattern=$(xdg_path "$pattern") || return 0 ;;
               ./*) pattern="$launch_dir/''${pattern#./}" ;;
               *) pattern="$HOME/$pattern" ;;
             esac
@@ -676,7 +893,106 @@ let
         '') cfg.symlinks}
       ''}
 
+      ${lib.optionalString cfg.gitGuard.enable ''
+        find_git() {
+          find "$1" -maxdepth ${toString cfg.gitGuard.depth} \( -name node_modules -prune \) -o \( -name .git -print0 -prune \) 2>/dev/null
+        }
+
+        # Git outside the sandbox later runs a repository's hooks and config commands, and follows commondir to another repository's config, so each repository in a writable shared folder keeps those read only, with its .git pinned so it cannot be renamed away and rebuilt.
+        guard_git_dir() {
+          local gitdir=$1 sub
+          pin_dir "$gitdir"
+          for sub in config config.worktree commondir; do
+            if [ -e "$gitdir/$sub" ] || [ -L "$gitdir/$sub" ]; then
+              guard_path "$gitdir/$sub"
+              args+=(--ro-bind "$gitdir/$sub" "$gitdir/$sub")
+            fi
+          done
+          if [ -e "$gitdir/hooks" ] || [ -L "$gitdir/hooks" ]; then
+            guard_path "$gitdir/hooks"
+            args+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
+          else
+            # The sandbox could otherwise create the folder, so an empty read only one takes its place.
+            args+=(--ro-bind "$instance/empty" "$gitdir/hooks")
+          fi
+        }
+
+        mkdir -m 755 "$instance/empty"
+        : > "$instance/git-guarded"
+        for root in ''${rw_roots[@]+"''${rw_roots[@]}"}; do
+          while IFS= read -r -d "" git_path; do
+            guard_path "$git_path"
+            printf '%s\n' "$git_path" >> "$instance/git-guarded"
+            if [ -f "$git_path" ]; then
+              args+=(--ro-bind "$git_path" "$git_path")
+              continue
+            fi
+            if [ -e "$git_path/commondir" ]; then
+              printf '%s\n' "$git_path/commondir" >> "$instance/git-guarded"
+            fi
+            guard_git_dir "$git_path"
+            for nested in "$git_path"/modules/* "$git_path"/worktrees/*; do
+              if [ -d "$nested" ] && [ ! -L "$nested" ]; then
+                guard_git_dir "$nested"
+              fi
+            done
+          done < <(find_git "$root")
+        done
+
+        git_is_risky() {
+          local gitdir=$1 hook
+          # A gitfile made inside points git at a folder of the sandbox's choosing.
+          [ -f "$gitdir" ] && return 0
+          for hook in "$gitdir"/hooks/*; do
+            if [ -f "$hook" ] && [ -x "$hook" ] && [[ "$hook" != *.sample ]]; then
+              return 0
+            fi
+          done
+          grep -qiE '^[[:space:]]*(fsmonitor|hookspath|sshcommand|askpass|pager|editor|textconv|clean|smudge|process|program|helper|driver|external|command)[[:space:]]*=|^[[:space:]]*\[(include|includeif)' \
+            "$gitdir/config" "$gitdir/config.worktree" 2>/dev/null
+        }
+
+        # Repositories made while the sandbox ran had no guard, and a commondir in a checkout redirects git to another repository's config, so those are reported when the sandbox ends and the commondir is removed.
+        audit_git() {
+          local root git_path flagged=() summary
+          [ -f "$instance/git-guarded" ] || return 0
+          for root in ''${rw_roots[@]+"''${rw_roots[@]}"}; do
+            while IFS= read -r -d "" git_path; do
+              if [ -d "$git_path" ] && [ -e "$git_path/commondir" ] \
+                && ! grep -qxF "$git_path/commondir" "$instance/git-guarded"; then
+                rm -f "$git_path/commondir"
+                flagged+=("$git_path/commondir (removed)")
+              fi
+              if ! grep -qxF "$git_path" "$instance/git-guarded" && git_is_risky "$git_path"; then
+                flagged+=("$git_path")
+              fi
+            done < <(find_git "$root")
+          done
+          [ "''${#flagged[@]}" -gt 0 ] || return 0
+          summary="Repositories changed inside ${name} could run code through git outside it: ''${flagged[*]}"
+          echo "confine: $summary" >&2
+          busctl --user call org.freedesktop.Notifications /org/freedesktop/Notifications \
+            org.freedesktop.Notifications Notify 'susssasa{sv}i' confine 0 dialog-warning \
+            "Check these repositories before using git on them" "$summary" 0 0 -1 >/dev/null 2>&1 || true
+        }
+      ''}
+
       ${lib.optionalString (cfg.devices != [ ]) ''
+        ${lib.optionalString (!cfg.securityKeys) ''
+          # udev tags FIDO and other security keys, and an app that did not ask for one should not be able to request signatures from it.
+          is_security_key() {
+            local major minor line
+            [ -c "$1" ] || return 1
+            read -r major minor < <(stat -c '%t %T' "$1") || return 1
+            while IFS= read -r line; do
+              if [ "$line" = E:ID_SECURITY_TOKEN=1 ]; then
+                return 0
+              fi
+            done 2>/dev/null < "/run/udev/data/c$((16#$major)):$((16#$minor))"
+            return 1
+          }
+        ''}
+
         add_devices() {
           local pattern=$1 dev matches
           shopt -s nullglob
@@ -687,6 +1003,12 @@ let
             if [ -e "$dev" ]; then
               # A link such as /dev/input/by-id/*-fido is bound at its target, the path programs find through sysfs.
               dev=$(readlink -f "$dev")
+              ${lib.optionalString (!cfg.securityKeys) ''
+                if is_security_key "$dev"; then
+                  echo "confine: left out $dev, a security key, which needs securityKeys = true" >&2
+                  continue
+                fi
+              ''}
               args+=(--dev-bind "$dev" "$dev")
             fi
           done
@@ -942,10 +1264,8 @@ let
         export CONFINE_FILTER=${filter}
       ''}
 
-      ${lib.optionalString cfg.portals ''
-        args+=(--info-fd 4)
-        export CONFINE_INFO="$instance/info"
-      ''}
+      args+=(--info-fd 4)
+      export CONFINE_INFO="$instance/info"
 
       ${lib.optionalString isolatedNetwork ''
         # pasta maps the caller to uid 0 and Chromium refuses to run as root.
@@ -969,6 +1289,89 @@ let
         fi
       ''}
 
+      ${lib.optionalString cfg.portals ''
+        # Files handed over from outside arrive between @@ markers, as in Flatpak's desktop entries, and one the sandbox cannot already see is exported through the document portal for this app alone.
+        path_visible() {
+          local path=$1 root
+          for root in "''${visible_roots[@]}"; do
+            if [ "$path" = "$root" ] || [[ "$path" == "$root"/* ]]; then
+              return 0
+            fi
+          done
+          return 1
+        }
+
+        uri_encode() {
+          local LC_ALL=C s=$1 out="" c i hex
+          for ((i = 0; i < ''${#s}; i++)); do
+            c=''${s:i:1}
+            case "$c" in
+              [A-Za-z0-9/._~-]) out+=$c ;;
+              *)
+                printf -v hex '%%%02X' "'$c"
+                out+=$hex
+                ;;
+            esac
+          done
+          printf '%s' "$out"
+        }
+
+        forward_arg() {
+          local mode=$1 arg=$2 path doc_id doc_path
+          path=$arg
+          if [ "$mode" = @@u ]; then
+            case "$arg" in
+              file://*)
+                path=''${arg#file://}
+                path=''${path#localhost}
+                path=$(printf '%b' "''${path//%/\\x}")
+                ;;
+              /*) ;;
+              *)
+                printf '%s' "$arg"
+                return 0
+                ;;
+            esac
+          fi
+          path=$(realpath -m -- "$path")
+          if [ ! -e "$path" ] || path_visible "$path"; then
+            printf '%s' "$arg"
+            return 0
+          fi
+          if ! doc_id=$(${helpers}/bin/confine-document-add ${appId} "$path"); then
+            echo "confine: could not hand $path to the document portal" >&2
+            printf '%s' "$arg"
+            return 0
+          fi
+          doc_path="$runtime_dir/doc/$doc_id/$(basename -- "$path")"
+          if [ "$mode" = @@u ]; then
+            printf 'file://%s' "$(uri_encode "$doc_path")"
+          else
+            printf '%s' "$doc_path"
+          fi
+        }
+
+        forwarded=()
+        forwarding=""
+        for arg in "$@"; do
+          case "$arg" in
+            @@ | @@u)
+              if [ -z "$forwarding" ]; then
+                forwarding=$arg
+              else
+                forwarding=""
+              fi
+              continue
+              ;;
+          esac
+          if [ -n "$forwarding" ]; then
+            arg=$(forward_arg "$forwarding" "$arg")
+          fi
+          forwarded+=("$arg")
+        done
+        set -- ''${forwarded[@]+"''${forwarded[@]}"}
+      ''}
+
       args+=(${lib.escapeShellArgs cfg.extraBwrapArgs})
 
       # shellcheck disable=SC2016 # the inner script must not expand out here
@@ -979,33 +1382,36 @@ let
         launch=(pasta "''${pasta_args[@]}" -- "''${launch[@]}")
       ''}
 
-      ${
-        if cfg.portals then
-          ''
-            # The portal opens a pidfd on child-pid from the instance's bwrapinfo.json, and since 1.19 a missing file fails the whole lookup.
-            mkdir -p "$flatpak_dir"
-            mkfifo -m 600 "$instance/info"
-
-            "''${launch[@]}"${closeSyncFd} &
-            launch_pid=$!
-
-            if ! timeout 10 cat "$instance/info" > "$flatpak_dir/bwrapinfo.json"; then
-              echo "confine: the sandbox never started" >&2
-              exit 1
-            fi
-            ${lib.optionalString isolatedNetwork ''
-              resolve_host_pid || echo "confine: could not resolve the sandbox pid, portals may not identify this app" >&2
+      # bwrap writes its pid and namespaces once the sandbox stands. Reading them on the side records the instance for confine ps and enter, and for the portal, without holding up the app or taking its signals.
+      mkfifo -m 600 "$instance/info"
+      (
+        if timeout 10 cat "$instance/info" > "$instance/bwrapinfo.json" && [ -s "$instance/bwrapinfo.json" ]; then
+          want=$(sed -n 's/.*"mnt-namespace": *\([0-9]*\).*/\1/p' "$instance/bwrapinfo.json")
+          sandbox_pid=""
+          if [ -n "$want" ]; then
+            for _ in $(seq 40); do
+              if sandbox_pid=$(find_sandbox_pid "$want"); then
+                break
+              fi
+              sandbox_pid=""
+              sleep 0.025
+            done
+          fi
+          if [ -n "$sandbox_pid" ]; then
+            printf 'pid=%s\n' "$sandbox_pid" >> "$instance/state"
+            ${lib.optionalString cfg.portals ''
+              # The portal opens a pidfd on child-pid, and since 1.19 a missing file fails the whole lookup.
+              sed "s/\"child-pid\": *[0-9]*/\"child-pid\": $sandbox_pid/" "$instance/bwrapinfo.json" \
+                > "$flatpak_dir/bwrapinfo.json"
             ''}
+          else
+            echo "confine: could not find the sandbox's pid${lib.optionalString cfg.portals ", portals may not identify this app"}" >&2
+          fi
+        fi
+      ) &
+      info_pid=$!
 
-            status=0
-            wait "$launch_pid" || status=$?
-            exit "$status"
-          ''
-        else
-          ''
-            "''${launch[@]}"${closeSyncFd}
-          ''
-      }
+      "''${launch[@]}"${closeSyncFd}
     '';
   };
 
@@ -1124,6 +1530,13 @@ checked (runCommand confinedName
         for bin in "''${binaries[@]}"; do
           sed -i -E "s#^(Exec|TryExec)=([^ ]*/)?$bin([[:space:]]|\$)#\1=$out/bin/${cfg.binPrefix}$bin\3#" "$dest"
         done
+        ${lib.optionalString cfg.portals ''
+          # File and URL field codes are fenced the way Flatpak exports them, so the launcher can hand those files over.
+          sed -i -E \
+            -e '/^Exec=/s/(^|[[:space:]])%([fF])([[:space:]]|$)/\1@@ %\2 @@\3/g' \
+            -e '/^Exec=/s/(^|[[:space:]])%([uU])([[:space:]]|$)/\1@@u %\2 @@\3/g' \
+            "$dest"
+        ''}
         ${lib.optionalString (cfg.binPrefix != "") ''
           sed -i "0,/^Name=/s/^Name=\(.*\)/Name=\1 (${binPrefixLabel})/" "$dest"
         ''}

@@ -106,6 +106,27 @@ let
     appId = "com.test.NoDesktop";
   };
 
+  portalService = wrap {
+    package = serviceApp;
+    binaries = [ "svcapp" ];
+    appId = "com.test.Portal";
+    portals = true;
+  };
+
+  # bash as the app, with coreutils by absolute path, since the build sandbox's /bin/sh is a mount and not a link to mirror.
+  shell =
+    settings:
+    wrap (
+      {
+        package = pkgs.bash;
+        binaries = [ "bash" ];
+        appId = "com.test.Shell";
+        portals = false;
+        dbus.filter = false;
+      }
+      // settings
+    );
+
   multiDesktop = wrap {
     package = pkgs.foot;
     appId = "com.test.MultiDesktop";
@@ -154,6 +175,39 @@ pkgs.runCommand "confine-launcher-behaviour"
     guardedApp = guarded;
     noDesktopApp = noDesktop;
     multiDesktopApp = multiDesktop;
+    portalApp = portalService;
+    accountsApp = shell { };
+    hostAccountsApp = shell {
+      appId = "com.test.HostAccounts";
+      hostAccounts = true;
+    };
+    usernsLockedApp = shell {
+      appId = "com.test.UsernsLocked";
+      seccomp.enable = false;
+    };
+    usernsOpenApp = shell {
+      appId = "com.test.UsernsOpen";
+      seccomp = {
+        enable = false;
+        nesting = true;
+      };
+    };
+    gitApp = shell {
+      appId = "com.test.Git";
+      binds.rw = [ "data" ];
+      gitGuard.enable = true;
+    };
+    xdgApp = shell {
+      appId = "com.test.Xdg";
+      binds.ro = [ "xdg-documents" ];
+    };
+    nestingScript = scriptOf { seccomp.nesting = true; };
+    unscopedScript = scriptOf { scope = false; };
+    devicesScript = scriptOf { devices = [ "/dev/hidraw*" ]; };
+    keysScript = scriptOf {
+      devices = [ "/dev/hidraw*" ];
+      securityKeys = true;
+    };
   }
   ''
     fail() { echo "confine: $1" >&2; exit 1; }
@@ -340,6 +394,72 @@ pkgs.runCommand "confine-launcher-behaviour"
       || fail "PATH is not what the launcher set"
     grep -q '^SSH_AUTH_SOCK=' observed \
       && fail "an agent socket leaked through --clearenv"
+
+    cu=${pkgs.coreutils}/bin
+
+    # Flatpak writes only the user and the overflow id, the host's other accounts stay out.
+    "$accountsApp/bin/bash" -c "$cu/cat /etc/passwd" > passwd-inside || fail "the accounts sandbox did not run"
+    [ "$(wc -l < passwd-inside)" = 2 ] || fail "the sandbox passwd is not just the user and nfsnobody: $(cat passwd-inside)"
+    grep -q "^$(id -un):x:$(id -u):" passwd-inside || fail "the sandbox passwd lacks the user"
+    grep -q '^nfsnobody:x:65534:' passwd-inside || fail "the sandbox passwd lacks the overflow id"
+    "$hostAccountsApp/bin/bash" -c "$cu/cat /etc/passwd" > passwd-host
+    cmp -s passwd-host /etc/passwd || fail "hostAccounts = true does not show the host's passwd"
+
+    # The kernel half of the lock holds with seccomp off, and nesting lifts it.
+    "$usernsLockedApp/bin/bash" -c "${pkgs.util-linux}/bin/unshare -U $cu/true" 2>/dev/null \
+      && fail "a sandbox without nesting could still create a user namespace"
+    "$usernsOpenApp/bin/bash" -c "${pkgs.util-linux}/bin/unshare -U $cu/true" \
+      || fail "nesting = true no longer allows a user namespace"
+
+    mkdir -p "$HOME/data/repo/.git/hooks" "$HOME/data/nohooks/.git"
+    printf '[core]\n' > "$HOME/data/repo/.git/config"
+    printf '[core]\n' > "$HOME/data/nohooks/.git/config"
+    "$gitApp/bin/bash" -c "
+      cd '$HOME/data/repo'
+      $cu/mv .git .git-old 2>/dev/null && echo renamed
+      $cu/touch .git/hooks/post-checkout 2>/dev/null && echo hook
+      { echo '[core] fsmonitor = x' >> .git/config; } 2>/dev/null && echo config
+      echo /elsewhere > .git/commondir && echo commondir
+      $cu/mkdir .git/hooks/inner 2>/dev/null && echo inner
+      $cu/mkdir '$HOME/data/nohooks/.git/hooks/x' 2>/dev/null && echo placeholder
+      $cu/mkdir -p '$HOME/data/new/.git/hooks'
+      printf '#!/bin/sh\n' > '$HOME/data/new/.git/hooks/pre-commit'
+      $cu/chmod +x '$HOME/data/new/.git/hooks/pre-commit'
+    " > git-results 2> git-stderr || fail "the git sandbox did not run: $(cat git-stderr)"
+    [ "$(cat git-results)" = commondir ] || fail "a guarded repository could be changed: $(tr '\n' ' ' < git-results)"
+    [ -d "$HOME/data/repo/.git" ] || fail "the guarded .git is gone"
+    [ -e "$HOME/data/repo/.git/commondir" ] && fail "a commondir planted in a checkout survived the session"
+    grep -q 'commondir (removed)' git-stderr || fail "the planted commondir was not reported"
+    grep -q "$HOME/data/new/.git" git-stderr || fail "a repository made inside with a hook was not reported"
+
+    mkdir -p "$TMPDIR/elsewhere" "$HOME/data/linked"
+    ln -s "$TMPDIR/elsewhere" "$HOME/data/linked/.git"
+    "$gitApp/bin/bash" -c true 2> linked-err && fail "a .git link inside a shared folder did not stop the launch"
+    grep -q 'refusing to start' linked-err || fail "a .git link failed for the wrong reason: $(cat linked-err)"
+    rm "$HOME/data/linked/.git"
+
+    mkdir -p "$HOME/.config" "$HOME/Docs"
+    touch "$HOME/Docs/doc-marker"
+    # shellcheck disable=SC2016
+    printf 'XDG_DOCUMENTS_DIR="$HOME/Docs"\n' > "$HOME/.config/user-dirs.dirs"
+    "$xdgApp/bin/bash" -c "$cu/ls '$HOME/Docs'" > xdg-out || fail "the xdg-documents sandbox did not run"
+    grep -qx doc-marker xdg-out || fail "xdg-documents did not resolve through user-dirs.dirs"
+
+    grep -q -- '--disable-userns' "$plainScript" || fail "sandboxes without nesting lost the kernel namespace lock"
+    grep -q -- '--disable-userns' "$nestingScript" && fail "nesting = true still disables user namespaces"
+    grep -q 'systemd-run --user --scope' "$plainScript" || fail "apps no longer get a scope of their own"
+    grep -q 'systemd-run' "$unscopedScript" && fail "scope = false still creates a scope"
+    grep -q 'SRANDOM' "$plainScript" || fail "instance ids are no longer random"
+    grep -q 'is_security_key' "$devicesScript" || fail "device wildcards no longer leave security keys out"
+    grep -q 'is_security_key' "$keysScript" && fail "securityKeys = true still filters security keys"
+
+    pone="$portalApp/share/applications/com.test.Portal.desktop"
+    grep -qx "Exec=$portalApp/bin/svcapp @@u %U @@" "$pone" \
+      || fail "a portal app's desktop entry does not fence its URLs for forwarding: $(grep ^Exec "$pone")"
+    grep -qx "Exec=$portalApp/bin/svcapp --new" "$pone" \
+      || fail "an Exec without field codes was changed"
+    grep -q '@@' "$outPath/share/applications/com.test.Svc.desktop" \
+      && fail "an app without portals got forwarding markers"
 
     left=$(find "$XDG_RUNTIME_DIR/confine" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
     [ "$left" -eq 0 ] || fail "$left instance directories survived the run"

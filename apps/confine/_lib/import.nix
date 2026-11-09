@@ -168,16 +168,11 @@ writeShellApplication {
           return ;;
         xdg-run/*)
           path="$spec" ;;
-        xdg-download*)  path="Downloads''${spec#xdg-download}" ;;
-        xdg-documents*) path="Documents''${spec#xdg-documents}" ;;
-        xdg-pictures*)  path="Pictures''${spec#xdg-pictures}" ;;
-        xdg-videos*)    path="Videos''${spec#xdg-videos}" ;;
-        xdg-music*)     path="Music''${spec#xdg-music}" ;;
-        xdg-desktop*)   path="Desktop''${spec#xdg-desktop}" ;;
-        xdg-public-share*) path="Public''${spec#xdg-public-share}" ;;
-        xdg-config*)    path=".config''${spec#xdg-config}" ;;
-        xdg-data*)      path=".local/share''${spec#xdg-data}" ;;
-        xdg-cache*)     path=".cache''${spec#xdg-cache}" ;;
+        # confine resolves the same names through user-dirs.dirs when the app starts.
+        xdg-download* | xdg-documents* | xdg-pictures* | xdg-videos* | xdg-music* \
+          | xdg-desktop* | xdg-public-share* | xdg-templates* \
+          | xdg-config/* | xdg-data/* | xdg-cache/* | xdg-state/*)
+          path="$spec" ;;
         # Bracketed to match a literal tilde, not a home expansion.
         [~]/*)          path="''${spec:2}" ;;
         /*)             path="$spec" ;;

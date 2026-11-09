@@ -69,6 +69,34 @@ let
   privateHomes = lib.filter (name: cfg.apps.${name}.persist && (permsOf name).home == "private") (
     lib.attrNames cfg.apps
   );
+
+  # What confine info and run read: each app's launcher, default command and merged permissions.
+  index = pkgs.writeText "confine-apps.json" (
+    builtins.toJSON (
+      lib.mapAttrs (
+        _: w:
+        let
+          p = w.permissions;
+          main =
+            if p.binaries != null then
+              lib.head p.binaries
+            else
+              p.package.meta.mainProgram or (lib.getName p.package);
+        in
+        {
+          inherit (p) appId;
+          launcher = "${w.launcher}/bin/${w.launcher.name}";
+          main = "${p.package}/bin/${main}";
+          permissions = removeAttrs p [ "package" ];
+        }
+      ) wrapped
+    )
+  );
+
+  cli = pkgs.callPackage ./_lib/cli.nix {
+    inherit index;
+    helpers = pkgs.callPackage ./_lib/helpers.nix { };
+  };
 in
 {
   options.confine = {
@@ -122,7 +150,10 @@ in
 
     environment.systemPackages =
       lib.attrValues (lib.filterAttrs (name: _: cfg.apps.${name}.install) wrapped)
-      ++ lib.optional (cfg.apps != { }) importTool;
+      ++ lib.optionals (cfg.apps != { }) [
+        importTool
+        cli
+      ];
 
     confine.persistentHomeDirectories = map (name: ".local/share/confine/${(permsOf name).appId}") privateHomes;
 

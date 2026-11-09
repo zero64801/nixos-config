@@ -32,6 +32,7 @@ in
   multiarch ? false,
   bluetooth ? false,
   can ? false,
+  ioUring ? false,
 }:
 
 let
@@ -40,7 +41,8 @@ let
     ++ lib.optional devel "--devel"
     ++ lib.optional multiarch "--multiarch"
     ++ lib.optional bluetooth "--allow-bluetooth"
-    ++ lib.optional can "--allow-can";
+    ++ lib.optional can "--allow-can"
+    ++ lib.optional ioUring "--allow-io-uring";
 
   suffix = if flags == [ ] then "strict" else lib.concatStringsSep "-" (map (lib.removePrefix "--") flags);
 in

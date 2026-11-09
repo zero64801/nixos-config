@@ -106,6 +106,11 @@ let
       in
       builders.wrap plain ? launcher && builders.seccomp { } ? drvPath;
 
+    # confine ps, enter and kill need the command next to the apps, as flatpak's own CLI ships with it.
+    commandShipsWithApps =
+      lib.any (p: (p.name or "") == "confine") (evalWith { a = plain; }).environment.systemPackages
+      && !lib.any (p: (p.name or "") == "confine") (evalWith { }).environment.systemPackages;
+
     installIsRespected =
       lib.length (evalWith { a = plain // { install = false; }; }).environment.systemPackages
       < lib.length (evalWith { a = plain; }).environment.systemPackages;

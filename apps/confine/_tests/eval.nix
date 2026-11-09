@@ -148,6 +148,31 @@ let
     guiDoesNotGrantTheFlatpakPortal =
       !lib.elem "org.freedesktop.portal.Flatpak" (perms { profile = [ "gui" ]; }).dbus.session.talk;
 
+    # Flatpak's defaults: io_uring and security keys closed, a scope per app, generated accounts.
+    flatpakDefaults =
+      !bare.seccomp.ioUring && !bare.securityKeys && bare.scope && !bare.hostAccounts && !bare.gitGuard.enable;
+
+    ioUringReachesFilter = filterName { seccomp.ioUring = true; } == "confine-filter-allow-io-uring.bpf";
+
+    # Secret Service hands out every app's secrets, an app that needs it has to name it.
+    chromiumLeavesTheKeyringAlone =
+      !lib.elem "org.freedesktop.secrets" (perms { profile = [ "chromium" ]; }).dbus.session.talk;
+
+    xdgNamesAreChecked =
+      (build { binds.rw = [ "xdg-download" "xdg-documents/work" ]; }).drvPath != null
+      && !(builtins.tryEval (build { binds.ro = [ "xdg-downloads" ]; }).drvPath).success
+      && !(builtins.tryEval (build { binds.ro = [ { from = "Music"; to = "xdg-nowhere"; } ]; }).drvPath).success;
+
+    gitGuardDepthIsBounded =
+      (build { gitGuard = { enable = true; depth = 2; }; }).drvPath != null
+      && !(builtins.tryEval (build { gitGuard.depth = 0; }).drvPath).success
+      && !(builtins.tryEval (build { gitGuard.depth = 20; }).drvPath).success;
+
+    resourcesAreSystemdProperties =
+      (build { resources = { MemoryMax = "4G"; CPUWeight = 50; }; }).drvPath != null
+      && !(builtins.tryEval (build { resources."memory max" = "4G"; }).drvPath).success
+      && !(builtins.tryEval (build { resources.MemoryMax = "4G\nExecStart=x"; }).drvPath).success;
+
     bindsCanBeRemapped =
       (build {
         binds.rw = [
