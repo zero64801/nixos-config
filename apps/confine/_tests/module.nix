@@ -12,26 +12,16 @@ let
       inherit (pkgs.stdenv.hostPlatform) system;
       modules = [
         ../default.nix
-        (
-          { lib, ... }:
-          {
-            options.my.persistence.home.directories = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-            };
-            config = {
-              # confine-import is built from the repo's own util scaffold.
-              nixpkgs.pkgs = pkgs.extend (import ../../../pkgs/functions.nix null);
-              boot.loader.grub.devices = [ "nodev" ];
-              fileSystems."/" = {
-                device = "none";
-                fsType = "tmpfs";
-              };
-              system.stateVersion = "25.11";
-              my.confine.apps = apps;
-            };
-          }
-        )
+        {
+          nixpkgs.pkgs = pkgs;
+          boot.loader.grub.devices = [ "nodev" ];
+          fileSystems."/" = {
+            device = "none";
+            fsType = "tmpfs";
+          };
+          system.stateVersion = "25.11";
+          confine.apps = apps;
+        }
       ];
     }).config;
 
@@ -47,7 +37,7 @@ let
 
   checks = {
     # readOnly plus a default counts as two definitions and threw on read.
-    packagesIsReadable = (evalWith { a = plain; }).my.confine.packages ? a;
+    packagesIsReadable = (evalWith { a = plain; }).confine.packages ? a;
 
     isolatedX11WithProfileWayland =
       failures {
@@ -105,10 +95,10 @@ let
       warnings { a = plain // { network = "host"; }; }
     );
 
-    persistenceCoversPrivateHomesOnly =
-      (evalWith { a = plain; }).my.persistence.home.directories == [ ".local/share/confine/com.vendor.App" ]
-      && (evalWith { a = plain // { home = "host"; }; }).my.persistence.home.directories == [ ]
-      && (evalWith { a = plain // { persist = false; }; }).my.persistence.home.directories == [ ];
+    persistentDirectoriesCoverPrivateHomesOnly =
+      (evalWith { a = plain; }).confine.persistentHomeDirectories == [ ".local/share/confine/com.vendor.App" ]
+      && (evalWith { a = plain // { home = "host"; }; }).confine.persistentHomeDirectories == [ ]
+      && (evalWith { a = plain // { persist = false; }; }).confine.persistentHomeDirectories == [ ];
 
     installIsRespected =
       lib.length (evalWith { a = plain // { install = false; }; }).environment.systemPackages

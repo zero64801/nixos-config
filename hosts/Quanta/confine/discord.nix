@@ -8,7 +8,7 @@ let
   };
 in
 lib.mkIf config.my.apps.discord.enable {
-  my.confine.apps.discord = {
+  confine.apps.discord = {
     package = discord;
     appId = "com.discordapp.Discord";
     install = false;
@@ -52,5 +52,5 @@ lib.mkIf config.my.apps.discord.enable {
 
   systemd.user.sockets.speech-dispatcher.wantedBy = [ "sockets.target" ];
 
-  hm.programs.nixcord.discord.package = config.my.confine.packages.discord;
+  hm.programs.nixcord.discord.package = config.confine.packages.discord;
 }

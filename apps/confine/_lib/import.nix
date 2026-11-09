@@ -1,6 +1,5 @@
 {
   writeShellApplication,
-  util,
   flatpak,
 }:
 
@@ -9,7 +8,13 @@ writeShellApplication {
   runtimeInputs = [ flatpak ];
 
   text = ''
-    ${util.cliPrelude}
+    if [ -t 1 ]; then
+      bold=$'\e[1m' red=$'\e[31m' green=$'\e[32m' yellow=$'\e[33m' blue=$'\e[34m' reset=$'\e[0m'
+    else
+      bold="" red="" green="" yellow="" blue="" reset=""
+    fi
+    die() { echo -e "''${red}Error:''${reset} $*" >&2; exit 1; }
+    info() { echo -e "''${blue}::''${reset} $*"; }
 
     remote=flathub
     app_id=""
@@ -245,7 +250,7 @@ writeShellApplication {
       attr="\"$(esc "$name")\""
     fi
 
-    echo "my.confine.apps.$attr = {"
+    echo "confine.apps.$attr = {"
     echo "  package = pkgs.CHANGEME;"
     echo "  appId = \"$(esc "$app_id")\";"
     [ "''${#profiles[@]}" -gt 0 ] && echo "  profile = [ $(printf '"%s" ' "''${profiles[@]}")];"

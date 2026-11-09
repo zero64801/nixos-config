@@ -2,7 +2,7 @@
 
 let
   proxy = config.my.apps.wgProxy;
-  tavern = config.my.confine.packages.sillytavern;
+  tavern = config.confine.packages.sillytavern;
   port = 8000;
 
   proxied = pkgs.writeShellScriptBin "sillytavern" ''
@@ -60,7 +60,7 @@ let
   '';
 in
 {
-  my.confine.apps.sillytavern = {
+  confine.apps.sillytavern = {
     package = pkgs.sillytavern;
     appId = "app.sillytavern.SillyTavern";
     install = false;

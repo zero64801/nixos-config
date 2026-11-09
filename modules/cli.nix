@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, inputs, lib, pkgs, ... }:
 
 let
   cfg = config.my.cli;
@@ -54,7 +54,7 @@ let
 
   rebuild = pkgs.writeShellApplication {
     name = "rebuild";
-    runtimeInputs = [ nh pkgs.coreutils pkgs.gnugrep ];
+    runtimeInputs = [ nh pkgs.coreutils pkgs.gnugrep pkgs.jq ];
     text = ''
       action=switch
       case "''${1:-}" in
@@ -63,12 +63,33 @@ let
           shift
           ;;
       esac
+      mixed=0
+      args=()
+      for arg in "$@"; do
+        if [ "$arg" = --mixed ]; then
+          mixed=1
+        else
+          args+=("$arg")
+        fi
+      done
 
       out=$(mktemp -d)
       trap 'rm -rf "$out"' EXIT
 
-      nh os build --out-link "$out/system" "$@"
+      nh os build --out-link "$out/system" "''${args[@]}"
       system=$(readlink -f "$out/system")
+
+      # An update changes hundreds of things, a config change hiding among them would not stand out in the diff.
+      running=/run/current-system/etc/nixos-sources.json
+      built=$system/etc/nixos-sources.json
+      if [ "$mixed" = 0 ] && [ -e "$running" ] && [ -e "$built" ] \
+        && [ "$(jq -r .inputs "$running")" != "$(jq -r .inputs "$built")" ] \
+        && [ "$(jq -r .config "$running")" != "$(jq -r .config "$built")" ]; then
+        echo "rebuild: this build updates flake inputs and changes your config at once, so touch-guard would show both in one diff." >&2
+        echo "  Split it into two rebuilds, the update alone and the config change alone, for example with git stash." >&2
+        echo "  To take both together anyway: rebuild --mixed" >&2
+        exit 1
+      fi
 
       # setuid cannot raise privileges under no_new_privs, as inside a confine sandbox, while run0 asks polkit instead.
       if grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status; then
@@ -100,6 +121,17 @@ in
       activate
       rebuild
     ];
+
+    environment.etc."nixos-sources.json".text = builtins.toJSON {
+      inputs = builtins.hashFile "sha256" "${inputs.self}/flake.lock";
+      config = builtins.unsafeDiscardStringContext "${
+        builtins.path {
+          path = inputs.self;
+          name = "config-source";
+          filter = path: _: !(lib.elem (baseNameOf path) [ "flake.lock" "pins.json" ]);
+        }
+      }";
+    };
 
     nix.gc.automatic = false;
   };

@@ -4,7 +4,7 @@ let
   port = 40404;
 in
 {
-  my.confine.apps.sonobus = {
+  confine.apps.sonobus = {
     package = pkgs.sonobus;
     appId = "net.sonobus.SonoBus";
 

@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.my.confine;
+  cfg = config.confine;
 
   wrap = pkgs.callPackage ./_lib/wrap.nix { };
   importTool = pkgs.callPackage ./_lib/import.nix { };
@@ -46,11 +46,11 @@ let
       persist = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Keep the private home across reboots on an impermanent host.";
+        description = "List the private home in persistentHomeDirectories, for an impermanent host to keep across reboots.";
       };
 
       silenceWarnings = lib.mkOption {
-        type = lib.types.listOf (lib.types.enum [ "home" "seccomp" "network" ]);
+        type = lib.types.listOf (lib.types.enum [ "home" "seccomp" "network" "wayland" ]);
         default = [ ];
         example = [ "network" ];
         description = "Build warnings this app accepts on purpose, so rebuilds stop printing them.";
@@ -71,7 +71,7 @@ let
   );
 in
 {
-  options.my.confine = {
+  options.confine = {
     apps = lib.mkOption {
       type = lib.types.attrsOf appType;
       default = { };
@@ -88,43 +88,52 @@ in
         Manager program modules do.
       '';
     };
+
+    persistentHomeDirectories = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      # No default, readOnly plus a default throws once config sets it.
+      readOnly = true;
+      description = ''
+        Home directories, relative to HOME, that hold the private homes of apps
+        with persist = true. Hand them to whatever keeps state across reboots
+        on an impermanent system.
+      '';
+    };
   };
 
   config = {
-    my.confine.packages = wrapped;
+    confine.packages = wrapped;
 
     environment.systemPackages =
       lib.attrValues (lib.filterAttrs (name: _: cfg.apps.${name}.install) wrapped)
       ++ lib.optional (cfg.apps != { }) importTool;
 
-    my.persistence.home.directories = map (
-      name: ".local/share/confine/${(permsOf name).appId}"
-    ) privateHomes;
+    confine.persistentHomeDirectories = map (name: ".local/share/confine/${(permsOf name).appId}") privateHomes;
 
     assertions = lib.concatLists (
       lib.mapAttrsToList (name: app: [
         {
           assertion = (permsOf name).x11 != "isolated" || (permsOf name).wayland;
-          message = "my.confine.apps.${name}: x11 = \"isolated\" needs wayland = true.";
+          message = "confine.apps.${name}: x11 = \"isolated\" needs wayland = true.";
         }
         {
           assertion = builtins.match "[A-Za-z0-9][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]+)+" app.appId != null;
-          message = "my.confine.apps.${name}: appId ${app.appId} must be reverse-DNS, e.g. com.vendor.App.";
+          message = "confine.apps.${name}: appId ${app.appId} must be reverse-DNS, e.g. com.vendor.App.";
         }
         {
           assertion = (permsOf name).dbus.filter || !(permsOf name).a11y;
-          message = "my.confine.apps.${name}: a11y needs dbus.filter = true, the proxy is what carries it.";
+          message = "confine.apps.${name}: a11y needs dbus.filter = true, the proxy is what carries it.";
         }
         {
           assertion =
             (permsOf name).dbus.filter
             || ((permsOf name).dbus.system.talk == [ ] && (permsOf name).dbus.system.call == [ ]);
-          message = "my.confine.apps.${name}: dbus.system rules need dbus.filter = true.";
+          message = "confine.apps.${name}: dbus.system rules need dbus.filter = true.";
         }
         {
           assertion =
             lib.length (lib.filter (other: other.appId == app.appId) (lib.attrValues cfg.apps)) == 1;
-          message = "my.confine.apps.${name}: appId ${app.appId} is used by more than one app.";
+          message = "confine.apps.${name}: appId ${app.appId} is used by more than one app.";
         }
       ]) cfg.apps
     );
@@ -134,13 +143,15 @@ in
         name: app:
         let
           p = permsOf name;
-          warn = kind: cond: msg: lib.optional (cond && !lib.elem kind app.silenceWarnings) "my.confine.apps.${name}: ${msg}";
+          warn = kind: cond: msg: lib.optional (cond && !lib.elem kind app.silenceWarnings) "confine.apps.${name}: ${msg}";
         in
         warn "home" (p.home == "host") "home = \"host\" gives the app the whole home directory."
         ++ warn "seccomp" (!p.seccomp.enable)
           "seccomp is off, so terminal injection and the namespace group are unfiltered."
         ++ warn "network" (p.network == "host" || p.network == true)
           "network = \"host\" also exposes host abstract sockets, including the real X server."
+        ++ warn "wayland" ((p.wayland || p.x11 == "isolated") && !p.waylandSecurityContext)
+          "without a Wayland security context the compositor offers fake input, screen capture and background clipboard reads."
       ) cfg.apps
     );
   };

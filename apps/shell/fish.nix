@@ -39,7 +39,7 @@ in
       shellAbbrs = {
         ns = "rebuild";
         nb = "rebuild boot";
-        nu = "pin update";
+        nu = "pin update && rebuild";
         nsh = "nix shell nixpkgs#";
         nrn = "nix run nixpkgs#";
 

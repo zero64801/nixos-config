@@ -384,7 +384,7 @@ in
 
     (lib.mkIf (cfg.discordWrapper.enable && config.my.apps.discord.enable) {
       # The voice engine sends its own UDP and ignores Chromium's proxy switch, so only a tun catches it.
-      my.confine.apps.discord.networkSetups.vless = tunSetup;
+      confine.apps.discord.networkSetups.vless = tunSetup;
 
       hm.imports = [
         ({ config, lib, pkgs, ... }:

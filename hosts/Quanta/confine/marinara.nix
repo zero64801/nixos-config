@@ -2,7 +2,7 @@
 
 let
   proxy = config.my.apps.wgProxy;
-  engine = config.my.confine.packages.marinara-engine;
+  engine = config.confine.packages.marinara-engine;
 
   proxied = pkgs.writeShellScriptBin "marinara" ''
     set -euo pipefail
@@ -55,7 +55,7 @@ let
   '';
 in
 {
-  my.confine.apps.marinara-engine = {
+  confine.apps.marinara-engine = {
     package = pkgs.marinara-engine;
     appId = "dev.marinara.Engine";
     install = false;

@@ -38,13 +38,19 @@ in
     };
   };
 
-  config = mkIf config.my.impermanence.enable {
-    environment.persistence.${persistentPath} = {
-      inherit (cfg) directories files;
+  config = lib.mkMerge [
+    {
+      my.persistence.home.directories = config.confine.persistentHomeDirectories;
+    }
 
-      users.${user} = mkIf hasHomeEntries {
-        inherit (cfg.home) directories files;
+    (mkIf config.my.impermanence.enable {
+      environment.persistence.${persistentPath} = {
+        inherit (cfg) directories files;
+
+        users.${user} = mkIf hasHomeEntries {
+          inherit (cfg.home) directories files;
+        };
       };
-    };
-  };
+    })
+  ];
 }

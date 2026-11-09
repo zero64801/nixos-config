@@ -72,6 +72,15 @@ let
     symlinksRejectBareStrings =
       !(builtins.tryEval (build { symlinks = [ "xdg-run/discord-ipc-0" ]; }).drvPath).success;
 
+    waylandSecurityContextByDefault =
+      bare.waylandSecurityContext
+      && !(builtins.tryEval (build { waylandAppId = "two words"; }).drvPath).success
+      && (builtins.tryEval (build { waylandAppId = "zen-beta"; }).drvPath).success;
+
+    bindPatternsAreStringsWithoutSpaces =
+      !(builtins.tryEval (build { binds.ro = [ "a b/*" ]; }).drvPath).success
+      && !(builtins.tryEval (build { binds.ro = [ { from = "x/*"; to = "y"; } ]; }).drvPath).success;
+
     runtimeDirIsPrivateByDefault =
       bare.runtimeDir == "private"
       && !(builtins.tryEval (build { runtimeDir = "sideways"; }).drvPath).success;

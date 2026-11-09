@@ -73,6 +73,7 @@ in
         github.enable = true;
       };
       direnv.enable = true;
+      confinedTerminal.enable = true;
       zeditor.enable = true;
       scx.enable = true;
       gaming = {

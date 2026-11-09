@@ -1,9 +1,10 @@
 { config, lib, ... }:
 
 lib.mkIf config.my.apps.zen.enable {
-  my.confine.apps.zen = {
+  confine.apps.zen = {
     package = config.hm.programs.zen-browser.finalPackage;
     appId = "app.zen_browser.zen";
+    waylandAppId = "zen-beta";
     install = false;
     keepDesktopNames = true;
 
@@ -54,5 +55,5 @@ lib.mkIf config.my.apps.zen.enable {
     "widget.use-xdg-desktop-portal.open-uri" = 1;
   };
 
-  hm.home.packages = [ (lib.hiPrio config.my.confine.packages.zen) ];
+  hm.home.packages = [ (lib.hiPrio config.confine.packages.zen) ];
 }

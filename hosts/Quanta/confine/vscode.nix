@@ -86,10 +86,11 @@ let
   };
 in
 {
-  my.confine.apps = {
+  confine.apps = {
     vscode = workspace // {
       package = pkgs.vscode;
       appId = "com.visualstudio.code";
+      waylandAppId = "code";
       binaries = [ "code" ];
       networkPorts.fromHost = [
         13469
@@ -102,11 +103,6 @@ in
       package = pkgs.claude-code;
       appId = "com.anthropic.ClaudeCode";
       binaries = [ "claude" ];
-    };
-
-    dev-shell = workspace // {
-      package = pkgs.writeShellScriptBin "dev-shell" ''exec ${pkgs.fish}/bin/fish "$@"'';
-      appId = "dev.workspace.Shell";
     };
   };
 }

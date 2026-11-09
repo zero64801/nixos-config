@@ -37,7 +37,7 @@ let
   };
 in
 lib.mkIf config.my.apps.gaming.steam.enable {
-  my.confine.apps.steam = {
+  confine.apps.steam = {
     package = steamWithPortalOpen;
     appId = "com.valvesoftware.Steam";
     install = false;
@@ -82,5 +82,5 @@ lib.mkIf config.my.apps.gaming.steam.enable {
 
   };
 
-  programs.steam.package = config.my.confine.packages.steam;
+  programs.steam.package = config.confine.packages.steam;
 }

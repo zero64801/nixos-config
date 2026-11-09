@@ -8,6 +8,7 @@
   coreutils,
   dbus,
   flatpak-xdg-utils,
+  getent,
   gnused,
   iproute2,
   passt,
@@ -18,6 +19,7 @@
 
 let
   mkFilter = callPackage ./seccomp.nix { };
+  securityContext = callPackage ./security-context.nix { };
   profiles = import ./profiles.nix;
 
   defaults = {
@@ -29,6 +31,8 @@ let
     network = false;
     wayland = false;
     waylandProxy = false;
+    waylandSecurityContext = true;
+    waylandAppId = null;
     x11 = "none";
     pipewire = false;
     pulse = false;
@@ -44,6 +48,7 @@ let
     };
     symlinks = [ ];
     runtimeDir = "private";
+    workdir = null;
     dbus = {
       filter = true;
       log = false;
@@ -161,12 +166,19 @@ let
       throw "confine: envPassthrough entries must be environment variable names"
     else if !lib.isString cfg.binPrefix || builtins.match "[A-Za-z0-9_.-]*" cfg.binPrefix == null then
       throw "confine: binPrefix may only contain letters, digits, dot, dash and underscore"
+    else if
+      cfg.waylandAppId != null
+      && (!lib.isString cfg.waylandAppId || builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" cfg.waylandAppId == null)
+    then
+      throw "confine: waylandAppId must be a plain application id, not ${builtins.toJSON cfg.waylandAppId}"
     else if lib.any (b: isPattern b && builtins.match ".*[[:space:]].*" b != null) (cfg.binds.ro ++ cfg.binds.rw) then
       throw "confine: bind patterns cannot contain whitespace"
     else if lib.any (b: !lib.isString b && (isPattern b.from || isPattern b.to)) (cfg.binds.ro ++ cfg.binds.rw) then
       throw "confine: bind patterns must be plain strings, each match is bound at its own path"
     else if !lib.all (s: s ? link && s ? target && lib.isString s.link && lib.isString s.target) cfg.symlinks then
       throw "confine: symlinks entries must be { link, target } string pairs"
+    else if !lib.elem cfg.workdir [ null "ro" "rw" ] then
+      throw "confine: workdir must be null, ro or rw, not ${builtins.toJSON cfg.workdir}"
     else if !lib.elem cfg.runtimeDir [ "private" "shared" ] then
       throw "confine: runtimeDir must be private or shared, not ${builtins.toJSON cfg.runtimeDir}"
     else if lib.any (n: builtins.match "[A-Za-z0-9_-]+" n == null) (lib.attrNames cfg.networkSetups) then
@@ -263,6 +275,8 @@ let
   # The readiness fd keeps the proxy alive, the sandbox must not inherit it.
   closeSyncFd = lib.optionalString useProxy " {sync_fd}<&-";
   useWaylandProxy = cfg.waylandProxy && cfg.wayland;
+  useSecurityContext = cfg.waylandSecurityContext && (cfg.wayland || isolatedX11);
+  contextAppId = if cfg.waylandAppId != null then cfg.waylandAppId else appId;
 
   staticArgs =
     [ "--unshare-all" ]
@@ -322,6 +336,7 @@ let
       coreutils
     ]
     ++ lib.optional useProxy xdg-dbus-proxy
+    ++ lib.optional (cfg.workdir != null) getent
     ++ lib.optional useA11y dbus
     ++ lib.optional useWaylandProxy wayland-proxy-virtwl
     ++ lib.optional isolatedX11 xwayland-satellite
@@ -351,10 +366,11 @@ let
       proxy_pid=""
       satellite_pid=""
       wayland_proxy_pid=""
+      security_context_pid=""
       launch_pid=""
       # shellcheck disable=SC2329 # reached through the traps below
       cleanup() {
-        for pid in "$proxy_pid" "$satellite_pid" "$wayland_proxy_pid" "$launch_pid"; do
+        for pid in "$proxy_pid" "$satellite_pid" "$wayland_proxy_pid" "$security_context_pid" "$launch_pid"; do
           if [ -n "$pid" ]; then
             kill "$pid" 2>/dev/null || true
           fi
@@ -362,6 +378,9 @@ let
         rm -rf "$instance" "$flatpak_dir"
         ${lib.optionalString useWaylandProxy ''
           rm -f "$runtime_dir/confine-${appId}.$instance_id"
+        ''}
+        ${lib.optionalString useSecurityContext ''
+          rm -f "$runtime_dir/confine-${appId}.$instance_id.context"
         ''}
       }
       trap cleanup EXIT
@@ -546,16 +565,33 @@ let
           ''
       }
 
+      ${lib.optionalString (cfg.workdir != null || cfg.binds.ro != [ ] || cfg.binds.rw != [ ]) ''
+        launch_dir=$(pwd -P)
+      ''}
+      ${lib.optionalString (cfg.workdir != null) ''
+        # The home itself, or anything above it, would hand over every file the sandbox exists to hide. HOME can point elsewhere, the account's home cannot.
+        account_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+        for home_dir in "$HOME" "$account_home"; do
+          if [ "$launch_dir" = / ] || { [ -n "$home_dir" ] && [[ "$home_dir/" == "$launch_dir"/* ]]; }; then
+            echo "confine: refusing to share $launch_dir, it contains your whole home" >&2
+            exit 1
+          fi
+        done
+        args+=(${if cfg.workdir == "rw" then "--bind" else "--ro-bind"} "$launch_dir" "$launch_dir" --chdir "$launch_dir")
+      ''}
+
       ${lib.optionalString (cfg.binds.ro != [ ] || cfg.binds.rw != [ ]) ''
         add_bind() {
           local mode=$1 from=$2 to=$3 src dest
           case "$from" in
             xdg-run/*) src="$runtime_dir/''${from#xdg-run/}" ;;
+            ./*) src="$launch_dir/''${from#./}" ;;
             /*) src="$from" ;;
             *)  src="$HOME/$from" ;;
           esac
           case "$to" in
             xdg-run/*) dest="$runtime_dir/''${to#xdg-run/}" ;;
+            ./*) dest="$launch_dir/''${to#./}" ;;
             /*) dest="$to" ;;
             *)  dest="$HOME/$to" ;;
           esac
@@ -563,7 +599,7 @@ let
           # Absolute paths are never created, that would paper over an unmounted disk.
           if [ "$mode" = rw ]; then
             case "$from" in
-              /*) : ;;
+              /* | ./*) : ;;
               *)  mkdir -p "$src" ;;
             esac
             args+=(--bind-try "$src" "$dest")
@@ -578,6 +614,7 @@ let
             local mode=$1 pattern=$2 match matches
             case "$pattern" in
               /*) : ;;
+              ./*) pattern="$launch_dir/''${pattern#./}" ;;
               *) pattern="$HOME/$pattern" ;;
             esac
             shopt -s nullglob
@@ -668,13 +705,34 @@ let
           echo "confine: no wayland socket at $runtime_dir/$host_wayland_socket" >&2
           exit 1
         fi
-        wayland_socket=$host_wayland_socket
+        context_socket=$host_wayland_socket
+      ''}
+
+      ${lib.optionalString useSecurityContext ''
+        # The compositor keeps fake input, screen capture, window management and background clipboard reads from security context clients, the way it does for Flatpak.
+        if [ -z "''${CONFINE_WAYLAND_SANDBOXED:-}" ]; then
+          context_socket=confine-${appId}.$instance_id.context
+          mkfifo -m 600 "$instance/security-context"
+          ${securityContext}/bin/confine-security-context "$runtime_dir/$context_socket" confine \
+            ${lib.escapeShellArg contextAppId} "$instance_id" > "$instance/security-context" &
+          security_context_pid=$!
+          if ! read -r -t 10 context_state < "$instance/security-context" || [ "$context_state" != ready ]; then
+            echo "confine: the compositor did not accept a Wayland security context, refusing to start without one" >&2
+            exit 1
+          fi
+        fi
+        # A nested launch reuses its socket, which already belongs to a context, since compositors hide the context manager from it.
+        args+=(--setenv CONFINE_WAYLAND_SANDBOXED 1)
+      ''}
+
+      ${lib.optionalString cfg.wayland ''
+        wayland_socket=$context_socket
       ''}
 
       ${lib.optionalString useWaylandProxy ''
-        # Withholds zwlr_data_control_manager_v1, whose unfocused clipboard reads KWin's blacklist misses, and stays off by default because it drops fractional scaling.
+        # Relays only core protocols, which also drops GPU buffer sharing, input methods and fractional scaling, so it stays off by default.
         wayland_socket=confine-${appId}.$instance_id
-        wayland-proxy-virtwl --wayland-display="$wayland_socket" &
+        WAYLAND_DISPLAY=$context_socket wayland-proxy-virtwl --wayland-display="$wayland_socket" &
         wayland_proxy_pid=$!
 
         for _ in $(seq 200); do
@@ -688,10 +746,9 @@ let
       ''}
 
       ${lib.optionalString cfg.wayland ''
-        # No security-context, KWin's allowInterface() (wayland_server.cpp) already refuses fake_input without X-KDE-Wayland-Interfaces.
         args+=(
-          --ro-bind "$runtime_dir/$wayland_socket" "$runtime_dir/$wayland_socket"
-          --setenv WAYLAND_DISPLAY "$wayland_socket"
+          --ro-bind "$runtime_dir/$wayland_socket" "$runtime_dir/$host_wayland_socket"
+          --setenv WAYLAND_DISPLAY "$host_wayland_socket"
         )
       ''}
 
@@ -709,7 +766,7 @@ let
           --ro-bind-try /run/current-system /run/current-system
           --ro-bind /etc /etc
           --dir "$runtime_dir"
-          --ro-bind "$runtime_dir/$host_wayland_socket" "$runtime_dir/$host_wayland_socket"
+          --ro-bind "$runtime_dir/$context_socket" "$runtime_dir/$host_wayland_socket"
           --bind "$x11_dir" /tmp/.X11-unix
           --setenv XDG_RUNTIME_DIR "$runtime_dir"
           --setenv WAYLAND_DISPLAY "$host_wayland_socket"

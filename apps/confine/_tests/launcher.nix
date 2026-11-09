@@ -176,6 +176,20 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -q 'timeout 10 cat "$instance/info"' "$isolatedScript" \
       || fail "the bwrapinfo read is unbounded again"
 
+    # Without a security context KWin offers sandboxed clients fake input, screen capture and background clipboard reads.
+    grep -q '/bin/confine-security-context "$runtime_dir/$context_socket" confine' "$audioScript" \
+      || fail "a Wayland app starts without a security context"
+    grep -q -- '--setenv CONFINE_WAYLAND_SANDBOXED 1' "$audioScript" \
+      || fail "nested launches cannot tell they already sit in a security context"
+    grep -q 'refusing to start without one' "$audioScript" \
+      || fail "a refused security context no longer stops the launch"
+    grep -q 'zen-beta "$instance_id"' "${scriptOf { profile = [ "gui" ]; waylandAppId = "zen-beta"; }}" \
+      || fail "waylandAppId does not reach the compositor"
+    grep -q 'confine-security-context' "${scriptOf { profile = [ "gui" ]; waylandSecurityContext = false; }}" \
+      && fail "waylandSecurityContext = false still creates a context"
+    grep -q 'confine-security-context' "$plainScript" \
+      && fail "an app without Wayland creates a security context"
+
     grep -q 'probe) export CONFINE_NETWORK_SETUP_BIN=' "$tunnelScript" \
       || fail "a declared network setup cannot be selected"
     grep -qx 'unset CONFINE_NETWORK_SETUP_BIN' "$tunnelScript" \
