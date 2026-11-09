@@ -100,6 +100,12 @@ let
       && (evalWith { a = plain // { home = "host"; }; }).confine.persistentHomeDirectories == [ ]
       && (evalWith { a = plain // { persist = false; }; }).confine.persistentHomeDirectories == [ ];
 
+    libBuildsOutsideApps =
+      let
+        builders = (evalWith { }).confine.lib;
+      in
+      builders.wrap plain ? launcher && builders.seccomp { } ? drvPath;
+
     installIsRespected =
       lib.length (evalWith { a = plain // { install = false; }; }).environment.systemPackages
       < lib.length (evalWith { a = plain; }).environment.systemPackages;

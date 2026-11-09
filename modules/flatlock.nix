@@ -1,19 +1,19 @@
 { config, lib, ... }:
 
-# Kept separate from default.nix because the VM check imports the module standalone, so the module itself must not reference my.*, hm or other repo infrastructure.
 let
   cfg = config.flatlock;
 in
 {
   config = lib.mkMerge [
     {
-      hm.imports = [ ./_modules/home-manager.nix ];
+      hm.imports = [ ../apps/flatlock/_modules/home-manager.nix ];
       hm.flatlock.configRepoPath = lib.mkDefault config.my.flakePath;
       hm.flatlock.lockFileRelativePath = lib.mkDefault "hosts/${config.networking.hostName}/flatpak-user.lock";
     }
 
     (lib.mkIf cfg.enable {
       flatlock.configRepoPath = lib.mkDefault config.my.flakePath;
+      flatlock.lockFileRelativePath = lib.mkDefault "hosts/${config.networking.hostName}/flatpak.lock";
 
       # Headless hosts fail eval with a bare portal enable because portals need an implementation.
       xdg.portal.enable = lib.mkIf config.my.desktop.enable (lib.mkDefault true);

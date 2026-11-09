@@ -1,7 +1,6 @@
 {
   lib,
   installation,
-  hostname,
 }:
 
 let
@@ -222,8 +221,7 @@ in
 
   lockFileRelativePath = mkOption {
     type = types.str;
-    default =
-      if installation == "system" then "hosts/${hostname}/flatpak.lock" else "flatpak-user.lock";
+    default = if installation == "system" then "flatpak.lock" else "flatpak-user.lock";
     description = "Lock file path relative to configRepoPath.";
   };
 
@@ -248,8 +246,7 @@ in
   overridesPackage = mkOption {
     type = types.package;
     readOnly = true;
-    internal = true;
-    description = "Rendered replacement override directory.";
+    description = "Rendered replacement override directory, for integrations that enable strictOverrides.";
   };
 
   update = {

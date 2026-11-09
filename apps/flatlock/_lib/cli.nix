@@ -6,7 +6,6 @@
   ostree,
   python3,
   systemd,
-  hostname ? "unknown",
   installation ? "system",
   configRepoPath ? null,
   lockFileRelativePath ? "flatpak.lock",
@@ -30,7 +29,6 @@ let
   config = writeText "flatlock-${installation}-cli.json" (
     builtins.toJSON {
       inherit
-        hostname
         installation
         configRepoPath
         lockFileRelativePath

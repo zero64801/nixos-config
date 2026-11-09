@@ -1,6 +1,6 @@
 {
   lib,
-  callPackage,
+  wrap,
   runCommand,
   symlinkJoin,
   writeShellApplication,
@@ -16,8 +16,6 @@
 }:
 
 let
-  wrap = callPackage ../confine/_lib/wrap.nix { };
-
   empty = runCommand "confined-terminal-env" { } "mkdir -p $out/bin";
 
   # Programs outside run these later from the same folder: git its hooks and config commands, direnv the rest on cd.

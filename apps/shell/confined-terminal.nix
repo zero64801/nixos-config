@@ -26,7 +26,7 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [
-      (pkgs.callPackage ./_confined-terminal.nix { } { inherit (cfg) scratchDir tint; })
+      (pkgs.callPackage ./_confined-terminal.nix { inherit (config.confine.lib) wrap; } { inherit (cfg) scratchDir tint; })
     ];
 
     my.persistence.home.directories = [

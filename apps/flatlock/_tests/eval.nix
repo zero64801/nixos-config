@@ -14,7 +14,6 @@ let
             device = "none";
             fsType = "tmpfs";
           };
-          networking.hostName = "flatlock-eval";
           system.stateVersion = "25.11";
           xdg.portal = {
             enable = true;

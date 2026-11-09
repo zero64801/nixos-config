@@ -99,10 +99,26 @@ in
         on an impermanent system.
       '';
     };
+
+    lib = lib.mkOption {
+      type = lib.types.attrsOf lib.types.raw;
+      # No default, readOnly plus a default throws once config sets it.
+      readOnly = true;
+      description = ''
+        Builders for sandboxes that confine.apps does not cover. wrap takes the
+        attributes of an app and returns the wrapped package, whose launcher
+        runs any command in that sandbox. seccomp takes filter flags and
+        returns a BPF program for bwrap --seccomp.
+      '';
+    };
   };
 
   config = {
     confine.packages = wrapped;
+    confine.lib = {
+      inherit wrap;
+      seccomp = pkgs.callPackage ./_lib/seccomp.nix { };
+    };
 
     environment.systemPackages =
       lib.attrValues (lib.filterAttrs (name: _: cfg.apps.${name}.install) wrapped)

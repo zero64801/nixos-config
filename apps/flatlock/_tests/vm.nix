@@ -94,7 +94,6 @@ let
   flatpakref = ./fixtures/org.test.Ref.flatpakref;
 
   emptyCli = pkgs.callPackage ../_lib/cli.nix {
-    hostname = "machine";
     installation = "system";
     configRepoPath = null;
     declaredApps = [ ];
@@ -118,9 +117,7 @@ in
     };
     systemd.tmpfiles.rules = [
       "d /home/owner/cfg 0755 owner users - -"
-      "d /home/owner/cfg/hosts 0755 owner users - -"
-      "d /home/owner/cfg/hosts/machine 0755 owner users - -"
-      "f /home/owner/cfg/hosts/machine/flatpak.lock 0644 owner users - -"
+      "f /home/owner/cfg/flatpak.lock 0644 owner users - -"
     ];
 
     xdg.portal = {
@@ -426,7 +423,7 @@ in
     with subtest("versioned lock includes apps and typed runtime pins"):
         machine.succeed("flatlock lock")
         lock = json.loads(
-            machine.succeed("cat /home/owner/cfg/hosts/machine/flatpak.lock")
+            machine.succeed("cat /home/owner/cfg/flatpak.lock")
         )
         assert lock["version"] == 1, lock
         assert lock["apps"]["org.test.App"] == app_v1, lock
@@ -434,7 +431,7 @@ in
         assert lock["runtimes"][extension_ref] == extension_v1, lock
         assert lock["runtimes"][runtime_ref] == runtime_v2, lock
         assert machine.succeed(
-            "stat -c %U /home/owner/cfg/hosts/machine/flatpak.lock"
+            "stat -c %U /home/owner/cfg/flatpak.lock"
         ).strip() == "owner"
         machine.succeed("flatlock status | grep org.test.App")
 
@@ -463,13 +460,13 @@ in
 
     with subtest("missing pinned app cannot erase its lock"):
         before = machine.succeed(
-            "sha256sum /home/owner/cfg/hosts/machine/flatpak.lock"
+            "sha256sum /home/owner/cfg/flatpak.lock"
         ).split()[0]
         machine.succeed("flatpak mask --system --remove org.test.App")
         machine.succeed("flatpak uninstall --system --noninteractive org.test.App")
         machine.fail("flatlock lock")
         after = machine.succeed(
-            "sha256sum /home/owner/cfg/hosts/machine/flatpak.lock"
+            "sha256sum /home/owner/cfg/flatpak.lock"
         ).split()[0]
         assert before == after
         machine.succeed(f"FLATLOCK_MANIFEST=/root/m-pin.json {script}")
@@ -480,7 +477,7 @@ in
             "flatpak info --system --show-commit org.test.App"
         ).strip() == app_v2
         lock = json.loads(
-            machine.succeed("cat /home/owner/cfg/hosts/machine/flatpak.lock")
+            machine.succeed("cat /home/owner/cfg/flatpak.lock")
         )
         assert lock["apps"]["org.test.App"] == app_v2, lock
         assert "org.test.App" in [
@@ -533,7 +530,7 @@ in
             f"flatpak info --system --show-commit {runtime_ref}"
         ).strip() == runtime_v2
         lock = json.loads(
-            machine.succeed("cat /home/owner/cfg/hosts/machine/flatpak.lock")
+            machine.succeed("cat /home/owner/cfg/flatpak.lock")
         )
         assert lock["runtimes"][runtime_ref] == runtime_v2, lock
         masks = {

@@ -195,7 +195,7 @@ PY
   tunMark = 1;
   tunTable = 100;
   ip = lib.getExe' pkgs.iproute2 "ip";
-  strictFilter = pkgs.callPackage ../confine/_lib/seccomp.nix { } { };
+  strictFilter = config.confine.lib.seccomp { };
 
   tunSetup = pkgs.writeShellScript "sing-box-vless-tun" ''
     set -euo pipefail

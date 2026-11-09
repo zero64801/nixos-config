@@ -3,7 +3,6 @@
   lib,
   pkgs,
   installation,
-  hostname,
   model,
 }:
 
@@ -68,7 +67,7 @@ let
   };
 
   flatlock = pkgs.callPackage ../_lib/cli.nix {
-    inherit hostname installation;
+    inherit installation;
     inherit (cfg)
       bundleDir
       configRepoPath
