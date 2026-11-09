@@ -324,6 +324,11 @@ pkgs.runCommand "confine-launcher-behaviour"
       || fail "runtimeDir = shared does not back the runtime dir with the app directory"
     grep -q -- '--dir "$runtime_dir"' "$plainScript" \
       || fail "the default runtime dir is no longer private"
+    # The build sandbox's /bin/sh is a bind mount, not a link, so only the generated loop can be checked here.
+    grep -q 'for fhs_dir in /bin /usr/bin; do' "$plainScript" \
+      || fail "sandboxes no longer get the host's /bin and /usr/bin links"
+    grep -q -- '--remount-ro "$fhs_dir"' "$plainScript" \
+      || fail "the /bin and /usr/bin links became writable inside the sandbox"
 
     grep -qx 'CONFINE_HOSTVAR=host-copied' observed \
       || fail "envPassthrough did not copy the host value"

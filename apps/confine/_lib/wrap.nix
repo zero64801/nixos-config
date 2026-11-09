@@ -451,6 +451,19 @@ let
         fi
       done
 
+      # Shebangs, system() and popen() expect /bin/sh and /usr/bin/env, kept read-only like Flatpak's /usr so the app cannot swap them.
+      for fhs_dir in /bin /usr/bin; do
+        fhs_args=()
+        for fhs_link in "$fhs_dir"/*; do
+          if fhs_target=$(readlink "$fhs_link"); then
+            fhs_args+=(--symlink "$fhs_target" "$fhs_link")
+          fi
+        done
+        if [ "''${#fhs_args[@]}" -gt 0 ]; then
+          args+=(--tmpfs "$fhs_dir" "''${fhs_args[@]}" --remount-ro "$fhs_dir")
+        fi
+      done
+
       ${lib.optionalString hasNetwork ''
         # resolved answers over a unix socket, which would carry lookups around a network setup's tunnel.
         if [ -z "''${CONFINE_NETWORK_SETUP_BIN:-}" ]; then
