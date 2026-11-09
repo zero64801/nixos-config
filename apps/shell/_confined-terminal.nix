@@ -18,12 +18,8 @@
 let
   empty = runCommand "confined-terminal-env" { } "mkdir -p $out/bin";
 
-  # Programs outside run these later from the same folder: git its hooks and config commands, direnv the rest on cd.
+  # Programs outside run these later from the same folder, direnv on cd and nix when it evaluates. confine's git guard covers the repositories.
   guards = [
-    "./.git/hooks"
-    "./.git/config"
-    "./.git/modules/*/hooks"
-    "./.git/modules/*/config"
     "./.envrc"
     "./.direnv"
     "./flake.nix"
@@ -39,6 +35,7 @@ let
     home = "ephemeral";
     network = "isolated";
     workdir = "rw";
+    gitGuard.enable = true;
     binds.ro = [
       "/nix/var/nix/daemon-socket"
       "/lib64"

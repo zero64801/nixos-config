@@ -34,6 +34,7 @@ lib.mkIf config.my.apps.zen.enable {
     ];
 
     devices = [ "/dev/input/by-id/*-fido" ];
+    securityKeys = true;
 
     dbus.session = {
       own = [ "org.mozilla.zen.*" ];

@@ -4,29 +4,6 @@ let
   devHome = "/home/dx/Projects/dev/.home";
   vinegar = "/home/dx/.var/app/org.vinegarhq.Vinegar/data/vinegar";
 
-  gitGuards = lib.concatMap (
-    root:
-    lib.concatMap
-      (
-        depth:
-        map (part: "${root}/${depth}.git/${part}") [
-          "hooks"
-          "config"
-          "modules/*/hooks"
-          "modules/*/config"
-        ]
-      )
-      [
-        ""
-        "*/"
-        "*/*/"
-        "*/*/*/"
-      ]
-  ) [
-    "/home/dx/nixos"
-    "/home/dx/Projects"
-  ];
-
   workspace = {
     profile = [ "gpu" ];
     wayland = true;
@@ -75,8 +52,8 @@ let
       "${vinegar}/kombucha"
       "/home/dx/Projects/dev/.envrc"
       "/home/dx/Projects/dev/shell.nix"
-    ]
-    ++ gitGuards;
+    ];
+    gitGuard.enable = true;
 
     dbus.session = {
       talk = [ "org.freedesktop.Notifications" ];
