@@ -16,10 +16,10 @@ lib.mkIf config.my.apps.discord.enable {
     profile = [
       "gui"
       "gpu"
-      "audio"
       "tray"
       "chromium"
     ];
+    pulse = true;
 
     extraBwrapArgs =
       lib.concatMap (node: [ "--ro-bind" "/dev/null" node ]) [
@@ -32,8 +32,6 @@ lib.mkIf config.my.apps.discord.enable {
       ++ [ "--tmpfs" "/dev/nvidia-caps" ];
 
     network = "isolated";
-
-    x11 = "host";
 
     env.NIXOS_SPEECH = "True";
 

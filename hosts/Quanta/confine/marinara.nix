@@ -63,7 +63,7 @@ in
     network = "isolated";
     networkPorts = {
       toHost = [ 3000 ] ++ lib.optional proxy.enable proxy.port;
-      fromHost = [ 8000 ];
+      fromHost = [ "0.0.0.0/8000" ];
     };
 
     env.HOST = "0.0.0.0";

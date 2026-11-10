@@ -33,6 +33,7 @@ let
     name = "confined-terminal";
     appId = "app.confined.Terminal";
     home = "ephemeral";
+    linger = false;
     network = "isolated";
     workdir = "rw";
     gitGuard.enable = true;

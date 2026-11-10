@@ -80,6 +80,7 @@ in
       package = pkgs.claude-code;
       appId = "com.anthropic.ClaudeCode";
       binaries = [ "claude" ];
+      linger = false;
     };
   };
 }

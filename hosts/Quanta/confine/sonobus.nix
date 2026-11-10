@@ -14,7 +14,7 @@ in
     ];
 
     network = "isolated";
-    networkPorts.fromHost = [ port ];
+    networkPorts.fromHost = [ "0.0.0.0/${toString port}" ];
 
     x11 = "isolated";
 

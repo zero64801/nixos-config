@@ -25,10 +25,12 @@ lib.mkMerge [
       appId = "org.nixos.Rebuild";
       install = false;
       persist = false;
+      linger = false;
       network = "isolated";
       binds.ro = [
         flake
         "/nix/var/nix/daemon-socket"
+        "/nix/var/nix/db"
       ];
       binds.rw = [ "xdg-run/rebuild" ];
       env = {
@@ -48,6 +50,7 @@ lib.mkMerge [
       appId = "org.nixos.Pin";
       install = false;
       persist = false;
+      linger = false;
       network = "isolated";
       binds.rw = [ config.my.pinning.flakePath ];
       binds.ro = [ "/nix/var/nix/daemon-socket" ];

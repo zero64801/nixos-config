@@ -11,11 +11,11 @@ lib.mkIf config.my.apps.zen.enable {
     profile = [
       "gui"
       "gpu"
-      "audio"
       "mpris"
     ];
+    pulse = true;
 
-    seccomp.nesting = true;
+    seccomp.userns = true;
 
     extraBwrapArgs =
       lib.concatMap (node: [ "--ro-bind" "/dev/null" node ]) [
