@@ -45,7 +45,7 @@ in
 
     openFirewall = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = "Open TCP 3000 for a LAN-reachable llama-server.";
     };
   };
@@ -56,12 +56,5 @@ in
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [
       3000
     ];
-
-    nix.settings = lib.mkIf cfg.cuda {
-      substituters = [ "https://cache.nixos-cuda.org" ];
-      trusted-public-keys = [
-        "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
-      ];
-    };
   };
 }
