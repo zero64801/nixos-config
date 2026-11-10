@@ -68,9 +68,70 @@ pub fn unblock_in_child(set: &libc::sigset_t) -> io::Result<()> {
     cvt(unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, set, std::ptr::null_mut()) }).map(drop)
 }
 
+/// The signal this process gets when its parent ends, 0 for none.
+pub fn signal_on_parent_death(sig: i32) -> io::Result<()> {
+    cvt(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, sig, 0, 0, 0) }).map(drop)
+}
+
 /// For pre_exec: helpers die with the launcher even when it is killed outright.
 pub fn die_with_parent() -> io::Result<()> {
-    cvt(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) }).map(drop)
+    signal_on_parent_death(libc::SIGKILL)
+}
+
+pub fn parent_pid() -> u32 {
+    unsafe { libc::getppid() as u32 }
+}
+
+/// Only stdin, stdout and stderr belong in a sandbox, whatever else the caller left open would be handed over with them.
+pub fn close_inherited() -> io::Result<()> {
+    let r = unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) };
+    if r < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+pub fn process_group() -> libc::pid_t {
+    unsafe { libc::getpgrp() }
+}
+
+pub fn own_process_group() -> io::Result<()> {
+    cvt(unsafe { libc::setpgid(0, 0) }).map(drop)
+}
+
+/// Whether this process is the foreground job of its controlling terminal, which reads from and signals that group alone.
+pub fn in_terminal_foreground() -> bool {
+    let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDONLY | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return false;
+    }
+    let foreground = unsafe { libc::tcgetpgrp(fd) };
+    unsafe { libc::close(fd) };
+    foreground == process_group()
+}
+
+fn terminal_stop() -> libc::sigset_t {
+    unsafe {
+        let mut set = MaybeUninit::<libc::sigset_t>::zeroed().assume_init();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTTOU);
+        set
+    }
+}
+
+/// A terminal set to tostop stops background writers, and a blocked SIGTTOU lets the write through instead.
+pub fn block_terminal_stop() -> io::Result<()> {
+    block(&terminal_stop())
+}
+
+/// bwrap and pasta stand between the launcher and the app in the terminal's foreground job, and Ctrl+C reaches them
+/// all. Dying of it, they would take along an app that handles the interrupt itself, so they run with the terminal's
+/// interrupts blocked and nothing else, and the reaper clears the mask for the app.
+pub fn block_only_terminal_interrupts() -> io::Result<()> {
+    unsafe {
+        let mut set = MaybeUninit::<libc::sigset_t>::zeroed().assume_init();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGQUIT);
+        cvt(libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut())).map(drop)
+    }
 }
 
 /// For pre_exec: places each source descriptor at its target number without close-on-exec, going through
@@ -87,6 +148,149 @@ pub fn remap_fds(pairs: &[(RawFd, RawFd)]) -> io::Result<()> {
     Ok(())
 }
 
+/// Places a descriptor at a number a later program was told in advance, still inheritable.
+pub fn move_fd(fd: RawFd, target: RawFd) -> io::Result<()> {
+    if fd != target {
+        cvt(unsafe { libc::dup2(fd, target) })?;
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
+}
+
+pub fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    cvt(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }).map(drop)
+}
+
+/// For the app, which starts with every signal deliverable whatever the programs before it had blocked.
+pub fn unblock_all() {
+    unsafe {
+        let mut set = MaybeUninit::<libc::sigset_t>::zeroed().assume_init();
+        libc::sigemptyset(&mut set);
+        libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
+    }
+}
+
+pub fn dup_cloexec(fd: RawFd) -> io::Result<OwnedFd> {
+    let r = cvt(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) })?;
+    Ok(unsafe { OwnedFd::from_raw_fd(r) })
+}
+
+pub fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = cvt(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
+    cvt(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) }).map(drop)
+}
+
+/// Reads what is there without waiting, None once every writer is gone.
+pub fn read_available(fd: RawFd, buf: &mut [u8]) -> Option<usize> {
+    let r = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    match r {
+        0 => None,
+        n if n > 0 => Some(n as usize),
+        _ => Some(0),
+    }
+}
+
+const FD_BYTES: usize = std::mem::size_of::<RawFd>();
+
+/// Hands descriptors to the process on the other end of a unix socket, the one way past a program that closes what it inherits.
+pub fn send_fds(socket: RawFd, fds: &[RawFd; 3]) -> io::Result<()> {
+    let mut control = [0u64; 8];
+    let mut byte = 0u8;
+    let mut iov = libc::iovec { iov_base: (&mut byte as *mut u8).cast(), iov_len: 1 };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = unsafe { libc::CMSG_SPACE((fds.len() * FD_BYTES) as u32) } as _;
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&msg);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN((fds.len() * FD_BYTES) as u32) as _;
+        std::ptr::copy_nonoverlapping(fds.as_ptr().cast::<u8>(), libc::CMSG_DATA(header), fds.len() * FD_BYTES);
+    }
+    let r = unsafe { libc::sendmsg(socket, &msg, libc::MSG_NOSIGNAL) };
+    if r < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// The other side of send_fds. The descriptors arrive close-on-exec, to be placed where the next program expects them.
+pub fn recv_fds(socket: RawFd) -> io::Result<[OwnedFd; 3]> {
+    let mut control = [0u64; 8];
+    let mut byte = 0u8;
+    let mut iov = libc::iovec { iov_base: (&mut byte as *mut u8).cast(), iov_len: 1 };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = std::mem::size_of_val(&control) as _;
+    let r = loop {
+        let r = unsafe { libc::recvmsg(socket, &mut msg, libc::MSG_CMSG_CLOEXEC) };
+        if r >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            break r;
+        }
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut raw = [-1 as RawFd; 3];
+    let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+    let complete = !header.is_null()
+        && unsafe { (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS }
+        && unsafe { (*header).cmsg_len } as usize == unsafe { libc::CMSG_LEN((raw.len() * FD_BYTES) as u32) } as usize;
+    if !complete {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "no descriptors arrived"));
+    }
+    unsafe { std::ptr::copy_nonoverlapping(libc::CMSG_DATA(header), raw.as_mut_ptr().cast::<u8>(), raw.len() * FD_BYTES) };
+    Ok(raw.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// Takes the three descriptors at FIRST and up as stdin, stdout and stderr, when the launcher passed them there.
+pub fn adopt_stdio(first: RawFd) {
+    for i in 0..3 {
+        if unsafe { libc::dup2(first + i, i) } >= 0 {
+            unsafe { libc::close(first + i) };
+        }
+    }
+}
+
+/// Points stdin, stdout and stderr at /dev/null, for a process that outlives its use for them.
+pub fn release_stdio() {
+    if let Ok(null) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/null") {
+        for fd in 0..3 {
+            unsafe { libc::dup2(null.as_raw_fd(), fd) };
+        }
+    }
+}
+
+pub fn set_child_subreaper() -> io::Result<()> {
+    cvt(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }).map(drop)
+}
+
+/// Only sound while a single thread runs, which lets the child carry on as an ordinary program.
+pub fn fork() -> io::Result<libc::pid_t> {
+    cvt(unsafe { libc::fork() })
+}
+
+/// Returns the pid and raw status, or pid 0 under WNOHANG while children still run.
+pub fn waitpid(pid: libc::pid_t, flags: libc::c_int) -> io::Result<(libc::pid_t, libc::c_int)> {
+    let mut status = 0;
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status, flags) };
+        if r >= 0 {
+            return Ok((r, status));
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// As shells and bwrap report it, 128 plus the signal for a process a signal ended.
+pub fn exit_code(status: libc::c_int) -> i32 {
+    if libc::WIFSIGNALED(status) { 128 + libc::WTERMSIG(status) } else { libc::WEXITSTATUS(status) }
+}
+
 pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as RawFd; 2];
     cvt(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })?;
@@ -97,6 +301,22 @@ pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 pub fn open_inheritable(path: &OsStr, flags: libc::c_int) -> io::Result<RawFd> {
     let c = cstring(path)?;
     cvt(unsafe { libc::open(c.as_ptr(), flags) })
+}
+
+/// Removes NAME from the folder DIR below ROOT. The kernel refuses every link on the way, so nothing outside ROOT can be reached.
+pub fn unlink_beneath(root: &Path, dir: &Path, name: &OsStr) -> io::Result<()> {
+    let root = std::fs::File::open(root)?;
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS;
+    let dir = cstring(dir.as_os_str())?;
+    let r = unsafe { libc::syscall(libc::SYS_openat2, root.as_raw_fd(), dir.as_ptr(), &how as *const libc::open_how, std::mem::size_of::<libc::open_how>()) };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let dir = unsafe { OwnedFd::from_raw_fd(r as RawFd) };
+    let name = cstring(name)?;
+    cvt(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) }).map(drop)
 }
 
 pub fn mkfifo(path: &Path) -> io::Result<()> {
@@ -171,19 +391,19 @@ pub fn exec(program: &OsStr, args: &[OsString]) -> io::Error {
 /// Joins a running sandbox's filter, which confine enter applies to whatever it runs inside.
 pub fn seccomp_exec(args: &[OsString]) -> i32 {
     if args.len() < 2 {
-        eprintln!("usage: confine-launch seccomp-exec FILTER COMMAND [ARGS...]");
+        warn!("usage: confine-launch seccomp-exec FILTER COMMAND [ARGS...]");
         return 2;
     }
     let bytes = match std::fs::read(&args[0]) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("confine: {}: {e}", Path::new(&args[0]).display());
+            warn!("confine: {}: {e}", Path::new(&args[0]).display());
             return 1;
         }
     };
     let insn = std::mem::size_of::<libc::sock_filter>();
     if bytes.is_empty() || bytes.len() % insn != 0 || bytes.len() / insn > libc::BPF_MAXINSNS as usize {
-        eprintln!("confine: {} is not a BPF program", Path::new(&args[0]).display());
+        warn!("confine: {} is not a BPF program", Path::new(&args[0]).display());
         return 1;
     }
     let mut filter: Vec<libc::sock_filter> = Vec::with_capacity(bytes.len() / insn);
@@ -200,11 +420,11 @@ pub fn seccomp_exec(args: &[OsString]) -> i32 {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0
             || libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &prog as *const _) < 0
         {
-            eprintln!("confine: loading the filter: {}", io::Error::last_os_error());
+            warn!("confine: loading the filter: {}", io::Error::last_os_error());
             return 1;
         }
     }
     let e = exec(&args[1], &args[2..]);
-    eprintln!("confine: {}: {e}", Path::new(&args[1]).display());
+    warn!("confine: {}: {e}", Path::new(&args[1]).display());
     127
 }

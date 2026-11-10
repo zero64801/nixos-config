@@ -159,7 +159,11 @@ pkgs.runCommand "confine-launcher-behaviour"
         3000
         2081
       ];
-      networkPorts.fromHost = [ "0.0.0.0/8000" ];
+      networkPorts.fromHost = [
+        "0.0.0.0/8000"
+        9000
+        "9001-9002"
+      ];
     };
     tunnelLauncher = launcherOf {
       network = "isolated";
@@ -177,6 +181,7 @@ pkgs.runCommand "confine-launcher-behaviour"
       waylandSecurityContext = false;
     };
     nestingLauncher = launcherOf { seccomp.nesting = true; };
+    usernsLauncher = launcherOf { seccomp.userns = true; };
     sharedLauncher = launcherOf {
       appId = "com.test.Shared";
       runtimeDir = "shared";
@@ -245,6 +250,23 @@ pkgs.runCommand "confine-launcher-behaviour"
       appId = "com.test.Limited";
       resources.MemoryMax = "1G";
     };
+    brokenApp = shell {
+      appId = "com.test.Broken";
+      extraBwrapArgs = [
+        "--ro-bind"
+        "/nonexistent-confine-path"
+        "/mnt"
+      ];
+    };
+    tidyApp = shell {
+      appId = "com.test.Tidy";
+      linger = false;
+    };
+    onlineApp = shell {
+      appId = "com.test.Online";
+      portals = true;
+      network = "host";
+    };
   }
   ''
     fail() { echo "confine: $1" >&2; exit 1; }
@@ -274,6 +296,8 @@ pkgs.runCommand "confine-launcher-behaviour"
     has plain.json bwrap --disable-userns || fail "sandboxes without nesting lost the kernel namespace lock"
     plan "$nestingLauncher" > nesting.json
     has nesting.json bwrap --disable-userns && fail "nesting = true still disables user namespaces"
+    plan "$usernsLauncher" > userns.json
+    has userns.json bwrap --disable-userns && fail "seccomp.userns = true still disables user namespaces"
     has plain.json bwrap --dir "$rt" --chmod 0700 "$rt" || fail "the default runtime dir is no longer private"
     # A server's socket is only shareable if the directory it writes to is host-backed, bind(2) refuses to create one at an existing name.
     plan "$sharedLauncher" > shared.json
@@ -323,7 +347,11 @@ pkgs.runCommand "confine-launcher-behaviour"
     grep -q /run/systemd/resolve tunnel-setup.json && fail "the resolved socket is bound around the network setup"
 
     plan "$isolatedLauncher" > isolated.json
-    has isolated.json pasta -t 0.0.0.0/8000 -u 0.0.0.0/8000 || fail "a string networkPorts entry is not passed to pasta as given"
+    has isolated.json pasta -t 0.0.0.0/8000 -u 0.0.0.0/8000 || fail "a networkPorts entry with an address is not passed to pasta as given"
+    # pasta's own default for a port without an address is every address, which would put it on the network.
+    has isolated.json pasta -t 127.0.0.1/9000 -u 127.0.0.1/9000 || fail "a bare port from the host does not listen on loopback alone"
+    has isolated.json pasta -t 127.0.0.1/9001-9002 -u 127.0.0.1/9001-9002 || fail "a port range from the host does not listen on loopback alone"
+    has tunnel.json pasta -t none -u none || fail "an app without ports from the host does not close them"
     has isolated.json pasta -T 3000,2081 -U 3000,2081 || fail "ports to the host are not passed to pasta"
     has isolated.json bwrap --share-net || fail "the isolated sandbox does not stay in pasta's namespace"
 
@@ -341,25 +369,26 @@ pkgs.runCommand "confine-launcher-behaviour"
 
     # pasta's far side runs the network setup before it opens the filter and info descriptors, so nothing the setup
     # leaves running holds them.
-    mkfifo inner-args inner-info
+    mkfifo inner-args inner-info inner-status
     printf '#!%s\n%s/ls -l /proc/self/fd/ > %s/setup-fds\n' ${pkgs.bash}/bin/bash ${pkgs.coreutils}/bin "$PWD" > setup
-    printf '#!%s\nprintf "%%s\\n" "$@" > %s/bwrap-args\n%s/readlink /proc/self/fd/$2 /proc/self/fd/$4 > %s/bwrap-fds\n' \
+    printf '#!%s\nprintf "%%s\\n" "$@" > %s/bwrap-args\n%s/readlink /proc/self/fd/$2 /proc/self/fd/$4 /proc/self/fd/12 > %s/bwrap-fds\n' \
       ${pkgs.bash}/bin/bash "$PWD" ${pkgs.coreutils}/bin "$PWD" > fake-bwrap
     chmod +x setup fake-bwrap
     printf 'filter' > filter.bpf
     cat inner-info > /dev/null &
-    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/fake-bwrap" "$PWD/inner-args" &
+    cat inner-status > /dev/null &
+    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" &
     inner=$!
     printf -- '--ro-bind\0/a\0/b\0' > inner-args
     wait "$inner" || fail "the inner step failed"
-    grep -q 'filter.bpf\|inner-info' setup-fds && fail "the network setup ran with a sandbox descriptor open: $(cat setup-fds)"
+    grep -q 'filter.bpf\|inner-info\|inner-status' setup-fds && fail "the network setup ran with a sandbox descriptor open: $(cat setup-fds)"
     [ "$(sed -n '1p;3p;5,7p' bwrap-args | tr '\n' ' ')" = "--seccomp --info-fd --ro-bind /a /b " ] \
       || fail "the inner step passed bwrap the wrong arguments: $(tr '\n' ' ' < bwrap-args)"
-    [ "$(tr '\n' ' ' < bwrap-fds)" = "$PWD/filter.bpf $PWD/inner-info " ] \
+    [ "$(tr '\n' ' ' < bwrap-fds)" = "$PWD/filter.bpf $PWD/inner-info $PWD/inner-status " ] \
       || fail "the inner step's descriptors point elsewhere: $(cat bwrap-fds)"
     rm bwrap-args
     printf '#!%s\nexit 1\n' ${pkgs.bash}/bin/bash > setup
-    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/fake-bwrap" "$PWD/inner-args" &
+    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" &
     inner=$!
     printf -- '--ro-bind\0/a\0/b\0' > inner-args
     wait "$inner" && fail "a failed network setup did not stop the sandbox"
@@ -537,6 +566,121 @@ pkgs.runCommand "confine-launcher-behaviour"
     wait "$launcher" || status=$?
     [ "$status" = 143 ] || fail "a launcher stopped with SIGTERM does not report it: $status"
 
+    # An app may start the real program in the background and exit, which Flatpak keeps running.
+    lingered="$HOME/.local/share/confine/com.test.Shell/lingered"
+    status=0
+    "$accountsApp/bin/bash" -c "{ $cu/sleep 2; $cu/readlink /proc/1/fd/2 > \"\$HOME/lingered\"; } < /dev/null > /dev/null 2>&1 & exit 3" 2> linger-err || status=$?
+    [ "$status" = 3 ] || fail "an app that left a process running lost its own status: $status"
+    [ -e "$lingered" ] && fail "the launch waited for the process the app left running"
+    for _ in $(seq 100); do
+      [ -e "$lingered" ] && break
+      $cu/sleep 0.1
+    done
+    [ -e "$lingered" ] || fail "a process the app left running died with the app"
+    # What runs on could otherwise reopen the caller's terminal through the sandbox's first process.
+    [ "$(cat "$lingered")" = /dev/null ] || fail "the sandbox's first process still holds the caller's output: $(cat "$lingered")"
+    for _ in $(seq 50); do
+      [ -z "$(find "$XDG_RUNTIME_DIR/confine" -mindepth 1 -maxdepth 1 -name 'com.test.Shell.*' 2>/dev/null)" ] && break
+      $cu/sleep 0.1
+    done
+    [ -z "$(find "$XDG_RUNTIME_DIR/confine" -mindepth 1 -maxdepth 1 -name 'com.test.Shell.*' 2>/dev/null)" ] \
+      || fail "the sandbox was not cleaned up after its last process ended"
+
+    instances() {
+      find "$XDG_RUNTIME_DIR/confine" -mindepth 1 -maxdepth 1 -name "$1.*" 2>/dev/null
+    }
+    wait_cleaned() {
+      for _ in $(seq 100); do
+        [ -z "$(instances "$1")" ] && return 0
+        $cu/sleep 0.1
+      done
+      return 1
+    }
+
+    # The launcher's helpers write to a pipe of its own, so whoever reads the launch's output waits for the app's processes alone.
+    SECONDS=0
+    captured=$("$accountsApp/bin/bash" -c "$cu/sleep 300 < /dev/null > /dev/null 2>&1 & echo early" 2>&1)
+    [ "$captured" = early ] || fail "the output of an app that left a process running is wrong: $captured"
+    [ "$SECONDS" -lt 20 ] || fail "reading the launch's output waited for the process the app left running"
+    kill -TERM "$(sed -n 's/^launcher_pid=//p' "$XDG_RUNTIME_DIR"/confine/com.test.Shell.*/state)"
+    wait_cleaned com.test.Shell || fail "the sandbox was not cleaned up after its launcher was stopped"
+    [ "$(echo piped | "$accountsApp/bin/bash" -c "$cu/cat")" = piped ] || fail "the app does not read the caller's stdin"
+    # What bwrap has to say still reaches the caller.
+    "$brokenApp/bin/bash" -c true 2> broken-err && fail "a sandbox bwrap could not build started anyway"
+    grep -q nonexistent-confine-path broken-err || fail "bwrap's own message was lost: $(cat broken-err)"
+
+    # linger = false ends the sandbox with its app, for tools on a terminal that a process left behind could read from.
+    tidied="$HOME/.local/share/confine/com.test.Tidy/lingered"
+    status=0
+    "$tidyApp/bin/bash" -c "{ $cu/sleep 1; $cu/touch \"\$HOME/lingered\"; } < /dev/null > /dev/null 2>&1 & exit 3" || status=$?
+    [ "$status" = 3 ] || fail "an app with linger = false lost its status: $status"
+    [ -z "$(instances com.test.Tidy)" ] || fail "linger = false returned before the sandbox was cleaned up"
+    $cu/sleep 2
+    [ -e "$tidied" ] && fail "linger = false let a process outlive the app"
+
+    # Killed outright the launcher passes no signal on, and its sandbox must not run on without it.
+    "$accountsApp/bin/bash" -c "$cu/sleep 300" &
+    launcher=$!
+    for _ in $(seq 100); do
+      grep -qs '^pid=' "$XDG_RUNTIME_DIR"/confine/com.test.Shell.*/state && break
+      $cu/sleep 0.1
+    done
+    kill -KILL "$launcher"
+    wait "$launcher" 2>/dev/null || true
+    wait_cleaned com.test.Shell || fail "killing the launcher outright left its sandbox running"
+
+    # Whatever the caller left open besides stdin, stdout and stderr stays outside.
+    "$accountsApp/bin/bash" -c '[ -e /proc/self/fd/9 ]' 9< "$HOME/.config/user-dirs.dirs" \
+      && fail "a descriptor the caller left open reached the sandbox"
+
+    # A message to a stderr nobody reads any more must not abort the launcher.
+    mkfifo dead-stderr
+    : < dead-stderr &
+    status=0
+    "$limitedApp/bin/bash" -c true 2> dead-stderr || status=$?
+    [ "$status" = 1 ] || fail "the launcher did not survive a closed stderr: $status"
+
+    # The audit only reports a .git link planted inside, a removal through it would land wherever it points.
+    mkdir -p "$TMPDIR/outside-repo" "$HOME/data/planted"
+    touch "$TMPDIR/outside-repo/commondir"
+    "$gitApp/bin/bash" -c "$cu/ln -s '$TMPDIR/outside-repo' '$HOME/data/planted/.git'" 2> planted-err \
+      || fail "the git sandbox did not run: $(cat planted-err)"
+    [ -e "$TMPDIR/outside-repo/commondir" ] || fail "the audit removed a file through a planted .git link"
+    grep -q "$HOME/data/planted/.git (a link)" planted-err || fail "a planted .git link was not reported: $(cat planted-err)"
+    rm "$HOME/data/planted/.git"
+
+    # kill 0 inside reaches the launcher's group, and the process that cleans up and audits must be out of its way,
+    # first without a terminal, where the launcher has a group of its own, then as a terminal's foreground job.
+    planted="$HOME/data/repo/.git/commondir"
+    plant="echo /elsewhere > '$planted'; kill -KILL 0"
+    status=0
+    ( "$gitApp/bin/bash" -c "$plant"; exit "$?" ) 2> /dev/null || status=$?
+    [ "$status" = 137 ] || fail "a sandbox that killed its process group ended with $status"
+    for _ in $(seq 50); do
+      [ -e "$planted" ] || break
+      $cu/sleep 0.1
+    done
+    [ -e "$planted" ] && fail "killing the process group from inside skipped the git audit"
+    wait_cleaned com.test.Git || fail "killing the process group from inside skipped the cleanup"
+    ${pkgs.util-linux}/bin/script -qec "$gitApp/bin/bash -c \"[ -t 0 ] && $cu/touch '$HOME/data/on-terminal'; $plant\"" /dev/null > /dev/null 2>&1 || true
+    [ -e "$HOME/data/on-terminal" ] || fail "the terminal job did not run on a terminal"
+    for _ in $(seq 50); do
+      [ -e "$planted" ] || break
+      $cu/sleep 0.1
+    done
+    [ -e "$planted" ] && fail "killing a terminal job's process group from inside skipped the git audit"
+    wait_cleaned com.test.Git || fail "killing a terminal job's process group from inside skipped the cleanup"
+
+    # Ctrl+C reaches every process of the terminal's job, bwrap included, and is the app's to answer.
+    interrupt() {
+      (sleep 1; printf '\003'; sleep 4) | ${pkgs.util-linux}/bin/script -qec "$1" /dev/null 2>&1 | tr -d '\r'
+    }
+    interrupt "$accountsApp/bin/bash -c 'trap \"echo got-int\" INT; $cu/sleep 2; $cu/sleep 1; echo survived'" > interrupt-handled
+    grep -q got-int interrupt-handled || fail "Ctrl+C did not reach the app: $(cat interrupt-handled)"
+    grep -q survived interrupt-handled || fail "Ctrl+C ended a sandbox whose app handles it: $(cat interrupt-handled)"
+    interrupt "$accountsApp/bin/bash -c '$cu/sleep 30'; echo status=\$?" > interrupt-default
+    grep -q 'status=130' interrupt-default || fail "an app Ctrl+C ended does not report it: $(cat interrupt-default)"
+
     # Files handed over between @@ markers lose the markers, and one the sandbox already sees passes as it is.
     mkdir -p "$HOME/visible" "$TMPDIR/hidden"
     touch "$HOME/visible/seen" "$TMPDIR/hidden/unseen"
@@ -548,6 +692,12 @@ pkgs.runCommand "confine-launcher-behaviour"
     "$forwardApp/bin/bash" -c 'printf "%s\n" "$@"' _ @@ "$TMPDIR/hidden/unseen" @@ > forwarded 2> forward-err
     [ "$(cat forwarded)" = "$TMPDIR/hidden/unseen" ] || fail "an unforwardable file did not pass unchanged: $(cat forwarded)"
     grep -q 'could not hand .* to the document portal' forward-err || fail "a failed forward is not reported"
+
+    # The portal takes an app without the network share for offline.
+    "$onlineApp/bin/bash" -c "$cu/cat /.flatpak-info" > online-info 2> /dev/null || fail "the online sandbox did not run"
+    grep -qx 'shared=network;' online-info || fail "an app with network access does not tell the portal: $(cat online-info)"
+    "$forwardApp/bin/bash" -c "$cu/cat /.flatpak-info" > offline-info 2> /dev/null
+    grep -q '^shared=' offline-info && fail "an app without network access claims one to the portal"
 
     # Limits that cannot be applied must stop the launch rather than be dropped, and the build has no user manager.
     "$limitedApp/bin/bash" -c true 2> limited-err && fail "an app with resource limits started without its scope"

@@ -50,6 +50,7 @@ let
       depth = 4;
     };
     scope = true;
+    linger = true;
     resources = { };
     dbus = {
       filter = true;
@@ -76,6 +77,7 @@ let
     seccomp = {
       enable = true;
       nesting = false;
+      userns = false;
       multiarch = false;
       devel = false;
       bluetooth = false;
@@ -266,9 +268,20 @@ let
     else
       throw "confine: networkPorts entries must be integers or pasta port specs";
 
+  # A port without an address listens on the host's loopback alone, pasta's own default is every address.
+  fromHostSpec =
+    p:
+    if lib.isInt p then
+      "127.0.0.1/${toString p}"
+    else if lib.isString p then
+      (if lib.hasInfix "/" p then p else "127.0.0.1/${p}")
+    else
+      throw "confine: networkPorts entries must be integers or pasta port specs";
+
   filter = mkFilter {
     inherit (cfg.seccomp)
       nesting
+      userns
       multiarch
       devel
       bluetooth
@@ -320,7 +333,7 @@ let
     # In isolated mode this keeps pasta's namespace rather than the host's.
     ++ lib.optional hasNetwork "--share-net"
     # The kernel half of the namespace lock, so a gap in the seccomp half cannot give the app a mount table of its own, the pairing Flatpak uses.
-    ++ lib.optionals (!cfg.seccomp.nesting) [
+    ++ lib.optionals (!cfg.seccomp.nesting && !cfg.seccomp.userns) [
       "--unshare-user"
       "--disable-userns"
     ]
@@ -394,6 +407,7 @@ let
         bwrap = "${bubblewrap}/bin/bwrap";
         pasta = if isolatedNetwork then "${passt}/bin/pasta" else null;
         dbusProxy = if useProxy then "${xdg-dbus-proxy}/bin/xdg-dbus-proxy" else null;
+        dbusProxyFilter = if useProxy then "${mkFilter { }}" else null;
         satellite = if isolatedX11 then "${xwayland-satellite}/bin/xwayland-satellite" else null;
         waylandProxy = if useWaylandProxy then "${wayland-proxy-virtwl}/bin/wayland-proxy-virtwl" else null;
       };
@@ -401,20 +415,18 @@ let
       filter = if cfg.seccomp.enable then "${filter}" else null;
       network = networkMode;
       # Forwards default to "auto", exposing every loopback service, so they start closed. --no-map-gw closes the gateway route.
+      # The launcher puts those from the host in front, since only one running instance of an app can hold them.
       pastaArgs = [
         "--config-net"
         "--no-map-gw"
         "--quiet"
-        "-t"
-        (portSpec cfg.networkPorts.fromHost)
-        "-u"
-        (portSpec cfg.networkPorts.fromHost)
         "-T"
         (portSpec cfg.networkPorts.toHost)
         "-U"
         (portSpec cfg.networkPorts.toHost)
       ]
       ++ cfg.extraPastaArgs;
+      fromHost = map fromHostSpec cfg.networkPorts.fromHost;
       networkSetups = lib.mapAttrs (_: s: "${s}") cfg.networkSetups;
       inherit (cfg)
         wayland
@@ -431,6 +443,7 @@ let
         workdir
         envPassthrough
         scope
+        linger
         extraBwrapArgs
         ;
       waylandProxy = useWaylandProxy;

@@ -14,6 +14,7 @@ pub struct Config {
     pub filter: Option<String>,
     pub network: Network,
     pub pasta_args: Vec<String>,
+    pub from_host: Vec<String>,
     pub network_setups: BTreeMap<String, String>,
     pub wayland: bool,
     pub wayland_proxy: bool,
@@ -43,6 +44,7 @@ pub struct Config {
     pub masked_files: Vec<String>,
     pub masked_dirs: Vec<String>,
     pub scope: bool,
+    pub linger: bool,
     pub resources: Vec<(String, String)>,
     pub extra_bwrap_args: Vec<String>,
 }
@@ -53,6 +55,7 @@ pub struct Tools {
     pub bwrap: String,
     pub pasta: Option<String>,
     pub dbus_proxy: Option<String>,
+    pub dbus_proxy_filter: Option<String>,
     pub satellite: Option<String>,
     pub wayland_proxy: Option<String>,
 }

@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsFd;
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{Fd, OwnedValue, Value};
@@ -146,6 +148,14 @@ const DOCUMENTS: &str = "org.freedesktop.portal.Documents";
 const DOCUMENTS_PATH: &str = "/org/freedesktop/portal/documents";
 const ADD_REUSE_EXISTING: u32 = 1 << 0;
 const ADD_DIRECTORY: u32 = 1 << 3;
+
+/// Where the document portal's filesystem is mounted, None without a document portal. The call starts the portal.
+pub fn documents_mount_point(conn: &Connection) -> Option<PathBuf> {
+    let reply = conn.call_method(Some(DOCUMENTS), DOCUMENTS_PATH, Some(DOCUMENTS), "GetMountPoint", &()).ok()?;
+    let mut path: Vec<u8> = reply.body().deserialize().ok()?;
+    path.retain(|byte| *byte != 0);
+    Some(PathBuf::from(OsString::from_vec(path)))
+}
 
 /// Exports one file or folder for the app with read and write access and returns the document id, as flatpak run --file-forwarding does.
 pub fn add_document(conn: &Connection, app_id: &str, path: &Path) -> Result<String, String> {

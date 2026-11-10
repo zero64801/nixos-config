@@ -46,9 +46,13 @@ let
 
     profileScalarsApply = withProfiles.wayland && withProfiles.portals;
 
-    nestingReachesFilter =
-      withProfiles.seccomp.nesting
-      && filterName { profile = [ "chromium" ]; } == "confine-filter-allow-nesting.bpf";
+    # A browser's own sandbox needs user namespaces and none of the mount calls a nested bubblewrap does.
+    usernsReachesFilter =
+      withProfiles.seccomp.userns
+      && !withProfiles.seccomp.nesting
+      && filterName { profile = [ "chromium" ]; } == "confine-filter-allow-userns.bpf";
+
+    nestingReachesFilter = filterName { seccomp.nesting = true; } == "confine-filter-allow-nesting.bpf";
 
     steamProfileIsMultiarch =
       (perms { profile = [ "steam" ]; }).seccomp.multiarch

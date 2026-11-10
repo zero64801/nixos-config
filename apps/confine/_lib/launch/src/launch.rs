@@ -11,9 +11,10 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 type Res<T> = Result<T, String>;
@@ -84,6 +85,7 @@ struct Pending {
     wayland_proxy: Option<(OsString, OsString)>,
     satellite: Option<(Vec<OsString>, PathBuf)>,
     dbus_proxy: Option<Vec<OsString>>,
+    dbus_upstreams: Vec<OsString>,
     wants_a11y: bool,
     a11y_at: Option<usize>,
 }
@@ -98,9 +100,15 @@ struct Scope {
 #[derive(Default)]
 struct SlowHelpers {
     proxy_ready: Option<OwnedFd>,
-    pasta: Option<(Child, PathBuf)>,
+    pasta: Option<(Child, PathBuf, Option<fs::File>)>,
     pids: Vec<u32>,
 }
+
+/// Where the reaper finds the descriptor it reports the app's end on, fixed since pasta's far side opens it.
+const STATUS_FD: i32 = 12;
+
+/// Where the reaper finds the caller's stdin, stdout and stderr, which bwrap and pasta must not hold themselves.
+pub const STDIO_FD: i32 = 13;
 
 struct Launch<'a> {
     cfg: &'a Config,
@@ -126,6 +134,11 @@ struct Launch<'a> {
     bus: dbus::Bus,
     setup: Option<String>,
     dry: bool,
+    waiter: Option<fs::File>,
+    caller_group: Option<libc::pid_t>,
+    stdio: Option<[OwnedFd; 3]>,
+    relay: Option<(OwnedFd, OwnedFd)>,
+    stdio_socket: Option<UnixListener>,
 }
 
 impl<'a> Launch<'a> {
@@ -141,6 +154,11 @@ impl<'a> Launch<'a> {
 
     fn instance_path(&self, name: &str) -> PathBuf {
         self.instance.join(name)
+    }
+
+    /// The proxy's sockets sit in a folder of their own, the one part of the instance its sandbox can write to.
+    fn proxy_socket(&self, name: &str) -> PathBuf {
+        self.instance.join("bus").join(name)
     }
 
     /// Flatpak's names for the user folders, resolved through user-dirs.dirs, which is parsed rather than sourced since it is user data.
@@ -181,7 +199,7 @@ impl<'a> Launch<'a> {
         }
         // A disabled user folder points at the home itself, which Flatpak leaves out too.
         if value == self.home {
-            eprintln!("confine: {name} is the whole home, left out");
+            warn!("confine: {name} is the whole home, left out");
             return None;
         }
         Some(join(value))
@@ -337,10 +355,15 @@ impl<'a> Launch<'a> {
         let mut flagged = Vec::new();
         for root in self.rw_roots.clone() {
             for git_path in find_git(&root, self.cfg.git_guard.depth) {
+                // Git follows a linked .git wherever it points, and so would a removal through it, so one is only reported.
+                if is_symlink(&git_path) {
+                    flagged.push(format!("{} (a link)", git_path.display()));
+                    continue;
+                }
                 let commondir = git_path.join("commondir");
-                if git_path.is_dir() && commondir.exists() && !self.git_guarded.contains(&commondir) {
-                    let _ = fs::remove_file(&commondir);
-                    flagged.push(format!("{} (removed)", commondir.display()));
+                if git_path.is_dir() && exists_or_link(&commondir) && !self.git_guarded.contains(&commondir) {
+                    let removed = git_path.strip_prefix(&root).is_ok_and(|dir| sys::unlink_beneath(&root, dir, OsStr::new("commondir")).is_ok());
+                    flagged.push(format!("{} ({})", commondir.display(), if removed { "removed" } else { "could not be removed" }));
                 }
                 if !self.git_guarded.contains(&git_path) && git_is_risky(&git_path) {
                     flagged.push(git_path.display().to_string());
@@ -351,10 +374,11 @@ impl<'a> Launch<'a> {
             return;
         }
         let summary = format!("Repositories changed inside {} could run code through git outside it: {}", self.cfg.name, flagged.join(" "));
-        eprintln!("confine: {summary}");
+        // The notification first, it still arrives when the terminal that started the app is long gone.
         if let Some(conn) = self.bus.get() {
             dbus::notify(conn, "Check these repositories before using git on them", &summary);
         }
+        warn!("confine: {summary}");
     }
 
     fn add_devices(&mut self) {
@@ -366,7 +390,7 @@ impl<'a> Launch<'a> {
                 // A link such as /dev/input/by-id/*-fido is bound at its target, the path programs find through sysfs.
                 let Ok(dev) = fs::canonicalize(&m) else { continue };
                 if !self.cfg.security_keys && is_security_key(&dev) {
-                    eprintln!("confine: left out {}, a security key, which needs securityKeys = true", dev.display());
+                    warn!("confine: left out {}, a security key, which needs securityKeys = true", dev.display());
                     continue;
                 }
                 self.push3("--dev-bind", &dev, &dev);
@@ -587,7 +611,7 @@ impl<'a> Launch<'a> {
                     let socket = rt.join(&name);
                     self.removals.push(socket.clone());
                     let hold = wayland::create_context(&socket, &cfg.context_app_id, &self.id.to_string())
-                        .map_err(|e| format!("the compositor did not accept a Wayland security context, refusing to start without one: {e}"))?;
+                        .map_err(|e| format!("the compositor gave no Wayland security context, refusing to start without one, which only waylandSecurityContext = false allows: {e}"))?;
                     self.holds.push(hold);
                 }
                 context_socket = name.into();
@@ -685,10 +709,10 @@ impl<'a> Launch<'a> {
         }
 
         if cfg.dbus.filter {
-            self.push3("--ro-bind", self.instance_path("session-bus"), rt.join("bus"));
+            self.push3("--ro-bind", self.proxy_socket("session"), rt.join("bus"));
             self.push3("--setenv", "DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/bus", rt.display()));
             if cfg.dbus.system_args.is_some() {
-                self.push3("--ro-bind", self.instance_path("system-bus"), "/run/dbus/system_bus_socket");
+                self.push3("--ro-bind", self.proxy_socket("system"), "/run/dbus/system_bus_socket");
             }
             // The proxy only makes the accessibility socket once it runs, so its binds go in here after it started.
             if self.pending.wants_a11y {
@@ -700,11 +724,15 @@ impl<'a> Launch<'a> {
         }
 
         if cfg.portals {
-            // Only this app's slice, the top level doc folder holds every app's grants.
-            let doc = rt.join("doc/by-app").join(&cfg.app_id);
-            let _ = fs::create_dir_all(&doc);
             self.push3("--ro-bind", self.instance_path("flatpak-info"), "/.flatpak-info");
-            self.push3("--bind-try", doc, rt.join("doc"));
+            // Only this app's slice, the top level doc folder holds every app's grants. The portal is asked where it is
+            // mounted, which starts it as Flatpak's launch does: a folder made here ahead of the portal would end up
+            // under its mount, and the sandbox would keep that empty folder instead of the files picked for it.
+            if !self.dry {
+                if let Some(mount) = self.bus.get().and_then(dbus::documents_mount_point) {
+                    self.push3("--bind-try", mount.join("by-app").join(&cfg.app_id), rt.join("doc"));
+                }
+            }
         }
 
         if cfg.network == Network::Isolated {
@@ -717,8 +745,34 @@ impl<'a> Launch<'a> {
         Ok(())
     }
 
+    /// The caller's stdin, stdout and stderr go to the sandbox alone. Everything outside it writes to a pipe this process
+    /// passes on instead, or whoever reads the launch's output would wait for the helpers long after the launch returned.
+    fn detach_stdio(&self, c: &mut Command) {
+        let Some((_, relay)) = &self.relay else { return };
+        let output = || relay.try_clone().map(Stdio::from).unwrap_or_else(|_| Stdio::inherit());
+        c.stdin(Stdio::null()).stdout(output()).stderr(output());
+    }
+
+    /// Onto this process's stderr, which is the caller's until the launch has returned.
+    fn drain_relay(&self) {
+        let Some((relay, _)) = &self.relay else { return };
+        let mut buf = [0u8; 4096];
+        while let Some(n) = sys::read_available(relay.as_raw_fd(), &mut buf).filter(|n| *n > 0) {
+            let _ = std::io::stderr().write_all(&buf[..n]);
+        }
+    }
+
+    /// pasta closes what it inherits, so its far side asks for the caller's stdin, stdout and stderr here once the network setup is done.
+    fn pass_stdio(&mut self) {
+        let (Some(listener), Some(stdio)) = (&self.stdio_socket, &self.stdio) else { return };
+        let Ok((conn, _)) = listener.accept() else { return };
+        let _ = sys::send_fds(conn.as_raw_fd(), &[stdio[0].as_raw_fd(), stdio[1].as_raw_fd(), stdio[2].as_raw_fd()]);
+        self.stdio_socket = None;
+    }
+
     fn command(&self, program: &str) -> Command {
         let mut c = Command::new(program);
+        self.detach_stdio(&mut c);
         let mask = sys::handled_signals();
         unsafe {
             c.pre_exec(move || {
@@ -726,6 +780,17 @@ impl<'a> Launch<'a> {
                 sys::die_with_parent()
             });
         }
+        c
+    }
+
+    /// bwrap and pasta carry the sandbox, which stays in the caller's job and so keeps its terminal, while this process and its helpers sit in a group that kill(0) from inside cannot reach.
+    fn sandbox_command(&self, program: &str) -> Command {
+        let mut c = Command::new(program);
+        self.detach_stdio(&mut c);
+        if let Some(group) = self.caller_group {
+            c.process_group(group);
+        }
+        unsafe { c.pre_exec(sys::block_only_terminal_interrupts) };
         c
     }
 
@@ -746,11 +811,14 @@ impl<'a> Launch<'a> {
             return;
         }
         let session_bus = env_nonempty("DBUS_SESSION_BUS_ADDRESS").unwrap_or_else(|| format!("unix:path={}/bus", self.rt.display()).into());
-        let mut proxy: Vec<OsString> = vec!["--fd=3".into(), session_bus, self.instance_path("session-bus").into()];
+        let mut proxy: Vec<OsString> = vec!["--fd=3".into(), session_bus.clone(), self.proxy_socket("session").into()];
         proxy.extend(cfg.dbus.session_args.iter().map(OsString::from));
+        self.pending.dbus_upstreams.push(session_bus);
         if let Some(system) = &cfg.dbus.system_args {
-            proxy.extend(["unix:path=/run/dbus/system_bus_socket".into(), self.instance_path("system-bus").into()]);
+            let system_bus: OsString = "unix:path=/run/dbus/system_bus_socket".into();
+            proxy.extend([system_bus.clone(), self.proxy_socket("system").into()]);
             proxy.extend(system.iter().map(OsString::from));
+            self.pending.dbus_upstreams.push(system_bus);
         }
         if let Some(a11y) = &cfg.dbus.a11y_args {
             let address = match env_nonempty("AT_SPI_BUS_ADDRESS") {
@@ -759,38 +827,62 @@ impl<'a> Launch<'a> {
                 None => None,
             };
             if let Some(address) = address {
-                proxy.extend([address, self.instance_path("a11y-bus").into()]);
+                proxy.extend([address.clone(), self.proxy_socket("a11y").into()]);
                 proxy.extend(a11y.iter().map(OsString::from));
+                self.pending.dbus_upstreams.push(address);
                 self.pending.wants_a11y = true;
             }
         }
         self.pending.dbus_proxy = Some(proxy);
     }
 
+    /// The proxy parses whatever the app sends and holds the unfiltered buses, so it runs in a sandbox of its own that
+    /// sees the store, the buses it relays and its own sockets, under the strict filter. The portal inspects the bus
+    /// peer, which is the proxy, so the forged /.flatpak-info sits in this namespace too.
     fn spawn_dbus_proxy(&mut self) -> Res<Option<(OwnedFd, u32)>> {
         let cfg = self.cfg;
         let Some(args) = self.pending.dbus_proxy.clone() else { return Ok(None) };
         let (ready_read, ready_write) = sys::pipe().map_err(|e| e.to_string())?;
         let tool = cfg.tools.dbus_proxy.clone().ok_or("no xdg-dbus-proxy in the config")?;
-        let mut c = if cfg.portals {
-            // The portal inspects the bus peer, the proxy, so the forged /.flatpak-info must sit in the proxy's own namespace.
-            let mut c = Command::new(&cfg.tools.bwrap);
-            c.args(["--die-with-parent", "--clearenv", "--new-session", "--proc", "/proc", "--dev", "/dev", "--ro-bind", "/nix/store", "/nix/store", "--ro-bind", "/etc", "/etc", "--bind"]);
-            c.arg(&self.rt).arg(&self.rt);
-            c.args(["--ro-bind-try", "/run/dbus", "/run/dbus", "--ro-bind"]);
-            c.arg(self.instance_path("flatpak-info")).arg("/.flatpak-info").arg("--").arg(&tool);
-            c
-        } else {
-            Command::new(&tool)
+        let sockets = self.instance_path("bus");
+        fs::DirBuilder::new().mode(0o700).create(&sockets).map_err(|e| format!("{}: {e}", sockets.display()))?;
+        let mut c = Command::new(&cfg.tools.bwrap);
+        c.args(["--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup-try", "--disable-userns", "--new-session", "--as-pid-1"]);
+        c.args(["--die-with-parent", "--clearenv", "--ro-bind", "/nix/store", "/nix/store"]);
+        // A bus on a socket file needs no network, any other kind of address may.
+        let mut files_only = true;
+        for address in &self.pending.dbus_upstreams {
+            match bus_socket(address) {
+                Some(socket) => {
+                    c.arg("--ro-bind-try").arg(&socket).arg(&socket);
+                }
+                None => files_only = false,
+            }
+        }
+        if files_only {
+            c.arg("--unshare-net");
+        }
+        c.arg("--bind").arg(&sockets).arg(&sockets);
+        if cfg.portals {
+            c.arg("--ro-bind").arg(self.instance_path("flatpak-info")).arg("/.flatpak-info");
+        }
+        let filter = match &cfg.tools.dbus_proxy_filter {
+            Some(f) => Some(fs::File::open(f).map_err(|e| format!("{f}: {e}"))?),
+            None => None,
         };
-        c.args(&args);
-        let write_fd = ready_write.as_raw_fd();
+        let mut pairs = vec![(ready_write.as_raw_fd(), 3)];
+        if let Some(f) = &filter {
+            c.args(["--seccomp", "4"]);
+            pairs.push((f.as_raw_fd(), 4));
+        }
+        c.arg("--").arg(&tool).args(&args);
+        self.detach_stdio(&mut c);
         let mask = sys::handled_signals();
         unsafe {
             c.pre_exec(move || {
                 sys::unblock_in_child(&mask)?;
                 sys::die_with_parent()?;
-                sys::remap_fds(&[(write_fd, 3)])
+                sys::remap_fds(&pairs)
             });
         }
         let child = c.spawn().map_err(|e| format!("xdg-dbus-proxy: {e}"))?;
@@ -805,12 +897,12 @@ impl<'a> Launch<'a> {
         let ok = sys::poll_readable(&[ready.as_raw_fd()], 10_000).map(|r| r[0]).unwrap_or(false);
         let mut byte = [0u8; 1];
         let got = ok && unsafe { libc::read(ready.as_raw_fd(), byte.as_mut_ptr().cast(), 1) } == 1;
-        if !got || !is_socket(&self.instance_path("session-bus")) {
+        if !got || !is_socket(&self.proxy_socket("session")) {
             fail!("the D-Bus proxy never came up");
         }
         self.holds.push(ready);
         if let Some(at) = self.pending.a11y_at.take() {
-            let socket = self.instance_path("a11y-bus");
+            let socket = self.proxy_socket("a11y");
             if is_socket(&socket) {
                 let extra: Vec<OsString> = vec![
                     "--ro-bind".into(),
@@ -826,37 +918,72 @@ impl<'a> Launch<'a> {
         Ok(())
     }
 
-    fn prepare_pasta(&mut self) {
+    fn prepare_pasta(&mut self) -> Res<()> {
         let cfg = self.cfg;
         if cfg.network != Network::Isolated {
-            return;
+            return Ok(());
         }
-        self.pasta_args = cfg.pasta_args.iter().map(OsString::from).collect();
+        // A host port has one listener, so the first running instance of an app holds its ports and a later one starts
+        // without them rather than not at all, as when a running editor is handed another file.
+        if !cfg.from_host.is_empty() && (self.dry || self.claim_ports()?) {
+            for spec in &cfg.from_host {
+                self.pasta_args.extend(["-t".into(), spec.into(), "-u".into(), spec.into()]);
+            }
+        } else {
+            self.pasta_args.extend(["-t", "none", "-u", "none"].map(OsString::from));
+        }
+        self.pasta_args.extend(cfg.pasta_args.iter().map(OsString::from));
         if let Some(i) = default_route_v4() {
             self.pasta_args.extend(["--outbound-if4".into(), i]);
         }
         if let Some(i) = default_route_v6() {
             self.pasta_args.extend(["--outbound-if6".into(), i]);
         }
+        Ok(())
+    }
+
+    /// A lock the kernel drops with this process however it ends, on a file the sandbox cannot reach.
+    fn claim_ports(&mut self) -> Res<bool> {
+        let path = self.rt.join("confine").join(format!(".{}.ports", self.cfg.app_id));
+        let file = fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Ok(false);
+        }
+        self.holds.push(file.into());
+        Ok(true)
     }
 
     /// pasta sets its namespace up while the command line is built, and its far side waits for the arguments on a FIFO.
-    /// pasta closes inherited descriptors, so the filter and info descriptors open on that side, after any network setup.
-    fn spawn_pasta(&mut self) -> Res<(Child, PathBuf)> {
+    /// pasta closes inherited descriptors, so the filter, info and status descriptors open on that side, after any network setup.
+    fn spawn_pasta(&mut self) -> Res<(Child, PathBuf, Option<fs::File>)> {
         let cfg = self.cfg;
         let args_fifo = self.instance_path("args");
         let info_fifo = self.instance_path("info");
-        sys::mkfifo(&args_fifo).map_err(|e| e.to_string())?;
-        sys::mkfifo(&info_fifo).map_err(|e| e.to_string())?;
+        for fifo in [&args_fifo, &info_fifo] {
+            sys::mkfifo(fifo).map_err(|e| e.to_string())?;
+        }
+        let (status, status_fifo) = if cfg.linger {
+            let fifo = self.instance_path("status");
+            sys::mkfifo(&fifo).map_err(|e| e.to_string())?;
+            // Open before the far side's writer, so its open does not wait and no end of file comes before it.
+            let status = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&fifo).map_err(|e| e.to_string())?;
+            (Some(status), fifo.into_os_string())
+        } else {
+            (None, OsString::new())
+        };
+        let stdio_socket = self.instance_path("stdio");
+        self.stdio_socket = Some(UnixListener::bind(&stdio_socket).map_err(|e| format!("{}: {e}", stdio_socket.display()))?);
         let me = env::current_exe().map_err(|e| e.to_string())?;
-        let mut c = self.command(cfg.tools.pasta.as_deref().ok_or("no pasta in the config")?);
+        let mut c = self.sandbox_command(cfg.tools.pasta.as_deref().ok_or("no pasta in the config")?);
+        unsafe { c.pre_exec(sys::die_with_parent) };
         c.args(&self.pasta_args).arg("--").arg(me).arg("--inner");
-        c.arg(self.setup.as_deref().unwrap_or("")).arg(cfg.filter.as_deref().unwrap_or("")).arg(&info_fifo).arg(&cfg.tools.bwrap).arg(&args_fifo);
+        c.arg(self.setup.as_deref().unwrap_or("")).arg(cfg.filter.as_deref().unwrap_or("")).arg(&info_fifo).arg(&status_fifo);
+        c.arg(&cfg.tools.bwrap).arg(&args_fifo).arg(&stdio_socket);
         if self.setup.is_some() {
             c.env("CONFINE_INSTANCE", &self.instance);
         }
         let child = c.spawn().map_err(|e| format!("pasta: {e}"))?;
-        Ok((child, args_fifo))
+        Ok((child, args_fifo, status))
     }
 
     fn spawn_slow_helpers(&mut self) -> Res<SlowHelpers> {
@@ -866,9 +993,9 @@ impl<'a> Launch<'a> {
             h.pids.push(pid);
         }
         if self.cfg.network == Network::Isolated {
-            let (child, fifo) = self.spawn_pasta()?;
+            let (child, fifo, status) = self.spawn_pasta()?;
             h.pids.push(child.id());
-            h.pasta = Some((child, fifo));
+            h.pasta = Some((child, fifo, status));
         }
         Ok(h)
     }
@@ -889,7 +1016,7 @@ impl<'a> Launch<'a> {
         match joined {
             Ok(()) => Ok(()),
             Err(e) if self.cfg.resources.is_empty() => {
-                eprintln!("confine: running outside the scope {}: {e}", scope.unit);
+                warn!("confine: running outside the scope {}: {e}", scope.unit);
                 Ok(())
             }
             Err(e) => fail!("refusing to start outside the scope {}, which carries the resource limits: {e}", scope.unit),
@@ -966,7 +1093,7 @@ impl<'a> Launch<'a> {
         let doc = match self.bus.get().ok_or_else(|| "no session bus".to_string()).and_then(|c| dbus::add_document(c, &app_id, &path)) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("confine: could not hand {} to the document portal: {e}", path.display());
+                warn!("confine: could not hand {} to the document portal: {e}", path.display());
                 return arg;
             }
         };
@@ -981,6 +1108,7 @@ impl<'a> Launch<'a> {
     }
 
     fn cleanup(&mut self) {
+        self.drain_relay();
         for h in &mut self.helpers {
             sys::kill(h.id(), libc::SIGTERM);
         }
@@ -995,6 +1123,15 @@ impl<'a> Launch<'a> {
             let _ = fs::remove_file(r);
         }
     }
+}
+
+/// The socket file behind a bus address, for the plain kind every desktop uses.
+fn bus_socket(address: &OsStr) -> Option<PathBuf> {
+    let address = address.to_str()?;
+    if address.contains([';', '%']) {
+        return None;
+    }
+    address.strip_prefix("unix:")?.split(',').find_map(|pair| pair.strip_prefix("path=")).map(PathBuf::from)
 }
 
 fn sorted_children(dir: &Path) -> Vec<PathBuf> {
@@ -1141,6 +1278,11 @@ fn descendants(roots: &[u32]) -> Vec<u32> {
     seen.into_iter().collect()
 }
 
+fn is_zombie(pid: u32) -> bool {
+    // The state follows the command name, which may itself hold parentheses.
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')))
+}
+
 /// Helpers started before systemd moved this process are still in its old cgroup, with whatever they forked since.
 /// Each round moves in every one found outside and reads the tree again, since one could fork between the read and its
 /// move, until none is left. Whatever forks after its parent moved is born in the scope.
@@ -1148,8 +1290,10 @@ fn adopt(conn: &zbus::blocking::Connection, unit: &str, roots: &[u32]) -> Res<()
     let needle = format!("/{unit}");
     let mut error = String::from("its helpers kept forking");
     for _ in 0..8 {
+        // A helper that already ended keeps its old cgroup until it is reaped and cannot be moved, its failure shows up where it is needed.
         let outside: Vec<u32> = descendants(roots)
             .into_iter()
+            .filter(|p| !is_zombie(*p))
             .filter(|p| fs::read_to_string(format!("/proc/{p}/cgroup")).is_ok_and(|c| c.lines().any(|l| l.starts_with("0::") && !l.ends_with(&needle))))
             .collect();
         if outside.is_empty() {
@@ -1218,7 +1362,7 @@ fn record_instance(info: Info, launch_pid: u32, state: PathBuf, flatpak_dir: Opt
         std::thread::sleep(Duration::from_millis(25));
     }
     let Some(pid) = found else {
-        eprintln!("confine: could not find the sandbox's pid");
+        warn!("confine: could not find the sandbox's pid");
         return;
     };
     if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&state) {
@@ -1257,13 +1401,14 @@ pub fn run(argv: &[OsString]) -> i32 {
     match launch(argv) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("confine: {e}");
+            warn!("confine: {e}");
             1
         }
     }
 }
 
 fn launch(argv: &[OsString]) -> Res<i32> {
+    sys::close_inherited().map_err(|e| format!("closing the descriptors the caller left open: {e}"))?;
     let script_path = argv[0].clone();
     let script = read_script(&script_path)?;
     let mut rest: Vec<OsString> = argv[1..].to_vec();
@@ -1284,6 +1429,47 @@ fn launch(argv: &[OsString]) -> Res<i32> {
     let mask = sys::handled_signals();
     sys::block(&mask).map_err(|e| e.to_string())?;
 
+    // The sandbox shares its process group with whoever is in it at the start, and kill(0) inside reaches them all.
+    // The foreground job of a terminal has to stay where the terminal reads and signals, anything else takes a group of its own, as Flatpak does.
+    if !dry && !sys::in_terminal_foreground() {
+        let _ = sys::own_process_group();
+    }
+
+    // The helpers die with the process that started them, so a child runs the sandbox to its end while this one returns once the app's main process ends, as `flatpak run` does.
+    // No thread runs yet, which makes the fork safe.
+    let (waiter, caller_group) = if dry {
+        (None, None)
+    } else {
+        let (result_read, result_write) = sys::pipe().map_err(|e| e.to_string())?;
+        let (caller, group) = (sys::pid(), sys::process_group());
+        match sys::fork().map_err(|e| format!("fork: {e}"))? {
+            0 => {
+                drop(result_read);
+                // Killed outright, the caller's side passes no signal on, so until the app's status is handed over its end arrives here as SIGTERM.
+                sys::signal_on_parent_death(libc::SIGTERM).map_err(|e| e.to_string())?;
+                if sys::parent_pid() != caller {
+                    return Ok(128 + libc::SIGTERM);
+                }
+                // This process cleans up and audits, so it leaves the group the sandbox can signal.
+                sys::own_process_group().and_then(|()| sys::block_terminal_stop()).map_err(|e| e.to_string())?;
+                (Some(fs::File::from(result_write)), Some(group))
+            }
+            pid => {
+                drop(result_write);
+                return wait_for_supervisor(pid, result_read, &mask);
+            }
+        }
+    };
+
+    let (stdio, relay) = if dry {
+        (None, None)
+    } else {
+        let keep = |fd| sys::dup_cloexec(fd).map_err(|e| e.to_string());
+        let (read, write) = sys::pipe().map_err(|e| e.to_string())?;
+        sys::set_nonblocking(read.as_raw_fd()).map_err(|e| e.to_string())?;
+        (Some([keep(0)?, keep(1)?, keep(2)?]), Some((read, write)))
+    };
+
     let mut bus = dbus::Bus::default();
     // A scope of its own lets the whole app be listed, stopped and limited as one unit, as Flatpak's app-flatpak-*.scope
     // does. Flatpak runs on without one, and so does confine unless the scope carries resource limits.
@@ -1302,7 +1488,7 @@ fn launch(argv: &[OsString]) -> Res<i32> {
             Err(e) if !cfg.resources.is_empty() => fail!("refusing to start without the scope that carries the resource limits: {e}"),
             // A nested launch sees no user manager through its parent's proxy and stays in its parent's scope.
             Err(dbus::ScopeError::Unreachable) => {}
-            Err(e) => eprintln!("confine: running without a scope: {e}"),
+            Err(e) => warn!("confine: running without a scope: {e}"),
         }
     }
 
@@ -1366,10 +1552,46 @@ fn launch(argv: &[OsString]) -> Res<i32> {
         bus,
         setup,
         dry,
+        waiter,
+        caller_group,
+        stdio,
+        relay,
+        stdio_socket: None,
     };
     let result = l.body(scope, target, rest, &mask);
     l.cleanup();
     result
+}
+
+/// The caller's side passes SIGTERM and SIGHUP on as the launcher always did, outlives SIGINT and SIGQUIT, and ends with the app's status once the sandbox's process hands it over or ends.
+fn wait_for_supervisor(pid: libc::pid_t, result: OwnedFd, mask: &libc::sigset_t) -> Res<i32> {
+    let result = fs::File::from(result);
+    let sigfd = sys::signalfd(mask).map_err(|e| e.to_string())?;
+    let mut stopped_by = None;
+    loop {
+        let ready = sys::poll_readable(&[result.as_raw_fd(), sigfd.as_raw_fd()], -1).map_err(|e| e.to_string())?;
+        if ready[1] {
+            if let Some(sig) = sys::read_signal(&sigfd) {
+                if sig == libc::SIGTERM || sig == libc::SIGHUP {
+                    sys::kill(pid as u32, sig);
+                    stopped_by.get_or_insert(sig);
+                }
+            }
+        }
+        if ready[0] {
+            let mut byte = [0u8; 1];
+            match (&result).read(&mut byte) {
+                Ok(1) if stopped_by.is_none() => return Ok(byte[0].into()),
+                Ok(1) => {}
+                _ => break,
+            }
+        }
+    }
+    let (_, status) = sys::waitpid(pid, 0).map_err(|e| e.to_string())?;
+    Ok(match stopped_by {
+        Some(sig) => 128 + sig,
+        None => sys::exit_code(status),
+    })
 }
 
 impl<'a> Launch<'a> {
@@ -1387,8 +1609,10 @@ impl<'a> Launch<'a> {
         );
         fs::write(self.instance_path("state"), state).map_err(|e| e.to_string())?;
         if cfg.portals {
+            // The portal reads the network share from here and reports an app without it as offline.
+            let context = if cfg.network == Network::None { "" } else { "\n[Context]\nshared=network;\n" };
             let info = format!(
-                "[Application]\nname={}\n\n[Instance]\ninstance-id={}\nsession-bus-proxy={}\nsystem-bus-proxy={}\n",
+                "[Application]\nname={}\n\n[Instance]\ninstance-id={}\nsession-bus-proxy={}\nsystem-bus-proxy={}\n{context}",
                 cfg.app_id,
                 self.id,
                 cfg.dbus.filter,
@@ -1399,7 +1623,7 @@ impl<'a> Launch<'a> {
 
         self.visible.push(self.rt.join("doc"));
         self.prepare_dbus_proxy();
-        self.prepare_pasta();
+        self.prepare_pasta()?;
 
         // The D-Bus proxy and pasta take a few milliseconds to come up, as does systemd to move this process into the
         // scope, so they start at once and the command line is built meanwhile. They join the scope once this process
@@ -1427,7 +1651,7 @@ impl<'a> Launch<'a> {
             if let Some(p) = &self.pending.dbus_proxy {
                 plan["dbusProxy"] = to_json(p);
             }
-            println!("{plan}");
+            let _ = writeln!(std::io::stdout(), "{plan}");
             return Ok(0);
         }
 
@@ -1436,36 +1660,35 @@ impl<'a> Launch<'a> {
             self.finish_dbus_proxy(ready)?;
         }
 
+        // With the reaper as pid 1 instead of bwrap's own init, bwrap waits for the last process rather than the first.
         let mut bwrap_args = self.args.clone();
-        bwrap_args.push("--".into());
-        bwrap_args.push(target);
+        bwrap_args.extend(["--as-pid-1".into(), "--".into()]);
+        bwrap_args.push(env::current_exe().map_err(|e| e.to_string())?.into());
+        bwrap_args.extend(["--reap".into(), if cfg.linger { STATUS_FD.to_string().into() } else { "-".into() }, target]);
         bwrap_args.extend(rest);
 
-        let (mut child, info) = if let Some((child, args_fifo)) = slow.pasta.take() {
-            (child, Info::Fifo(self.instance_path("info"), args_fifo, bwrap_args))
+        let (mut child, info, status) = if let Some((child, args_fifo, status)) = slow.pasta.take() {
+            (child, Info::Fifo(self.instance_path("info"), args_fifo, bwrap_args), status)
         } else {
             let (info_read, info_write) = sys::pipe().map_err(|e| e.to_string())?;
+            let status = if cfg.linger { Some(sys::pipe().map_err(|e| e.to_string())?) } else { None };
             let filter_fd = match &cfg.filter {
                 Some(f) => Some(fs::File::open(f).map_err(|e| format!("{f}: {e}"))?),
                 None => None,
             };
-            let mut c = self.command(&cfg.tools.bwrap);
+            let mut c = self.sandbox_command(&cfg.tools.bwrap);
             let mut pairs = vec![(info_write.as_raw_fd(), 11)];
+            pairs.extend(status.as_ref().map(|(_, write)| (write.as_raw_fd(), STATUS_FD)));
+            pairs.extend(self.stdio.iter().flatten().zip(STDIO_FD..).map(|(fd, at)| (fd.as_raw_fd(), at)));
             if let Some(f) = &filter_fd {
                 c.args(["--seccomp", "10"]);
                 pairs.push((f.as_raw_fd(), 10));
             }
             c.args(["--info-fd", "11"]).args(&bwrap_args);
-            let mask = *mask;
-            unsafe {
-                c.pre_exec(move || {
-                    sys::unblock_in_child(&mask)?;
-                    sys::remap_fds(&pairs)
-                });
-            }
+            unsafe { c.pre_exec(move || sys::remap_fds(&pairs)) };
             let child = c.spawn().map_err(|e| format!("bwrap: {e}"))?;
             drop(info_write);
-            (child, Info::Pipe(info_read))
+            (child, Info::Pipe(info_read), status.map(|(read, _)| fs::File::from(read)))
         };
 
         let info = match info {
@@ -1485,24 +1708,55 @@ impl<'a> Launch<'a> {
         let fdir = self.flatpak_dir.clone();
         std::thread::spawn(move || record_instance(info, launch_pid, state, fdir));
 
-        self.wait(child, mask)
+        self.wait(child, status, mask)
     }
 
     /// SIGINT and SIGQUIT come from the terminal, which sends them to the app too, so the launcher only outlives them.
     /// SIGTERM and SIGHUP go to the launcher alone and are passed on, and the launcher then ends as the signal would
     /// have ended it, since pasta, the child for an isolated network, exits cleanly on SIGTERM.
-    fn wait(&mut self, mut child: Child, mask: &libc::sigset_t) -> Res<i32> {
+    /// A status byte from the reaper means the app ended while others run on, which the caller hears of at once.
+    fn wait(&mut self, mut child: Child, mut status: Option<fs::File>, mask: &libc::sigset_t) -> Res<i32> {
         let pidfd = sys::pidfd_open(child.id()).map_err(|e| e.to_string())?;
         let sigfd = sys::signalfd(mask).map_err(|e| e.to_string())?;
         let mut stopped_by = None;
         loop {
-            let ready = sys::poll_readable(&[pidfd.as_raw_fd(), sigfd.as_raw_fd()], -1).map_err(|e| e.to_string())?;
+            let mut fds = vec![pidfd.as_raw_fd(), sigfd.as_raw_fd()];
+            let mut watch = |fd: Option<i32>| {
+                fds.extend(fd);
+                fd.map(|_| fds.len() - 1)
+            };
+            let relay_at = watch(self.relay.as_ref().map(|(read, _)| read.as_raw_fd()));
+            let status_at = watch(status.as_ref().map(|s| s.as_raw_fd()));
+            let socket_at = watch(self.stdio_socket.as_ref().map(|s| s.as_raw_fd()));
+            let ready = sys::poll_readable(&fds, -1).map_err(|e| e.to_string())?;
+            let is_ready = |at: Option<usize>| at.is_some_and(|i| ready[i]);
             if ready[1] {
                 if let Some(sig) = sys::read_signal(&sigfd) {
                     if sig == libc::SIGTERM || sig == libc::SIGHUP {
                         sys::kill(child.id(), sig);
                         stopped_by.get_or_insert(sig);
                     }
+                }
+            }
+            if is_ready(relay_at) {
+                self.drain_relay();
+            }
+            if is_ready(socket_at) {
+                self.pass_stdio();
+            }
+            if is_ready(status_at) {
+                let mut byte = [0u8; 1];
+                if status.take().is_some_and(|s| (&s).read(&mut byte).ok() == Some(1)) {
+                    self.drain_relay();
+                    if let Some(mut waiter) = self.waiter.take() {
+                        // The caller's side ends on its own from here, and what the app left running outlives it.
+                        let _ = sys::signal_on_parent_death(0);
+                        let _ = waiter.write_all(&byte);
+                    }
+                    // Nothing outside the sandbox may hold the caller's output open past the launch.
+                    self.stdio = None;
+                    self.stdio_socket = None;
+                    sys::release_stdio();
                 }
             }
             if ready[0] {
@@ -1517,22 +1771,27 @@ impl<'a> Launch<'a> {
     }
 }
 
-/// Runs on pasta's far side: Usage: confine-launch --inner SETUP FILTER INFO BWRAP ARGS_FIFO
+/// Runs on pasta's far side: Usage: confine-launch --inner SETUP FILTER INFO STATUS BWRAP ARGS_FIFO STDIO_SOCKET
 pub fn inner(args: &[OsString]) -> i32 {
-    if args.len() != 5 {
-        eprintln!("confine: bad --inner call");
+    if args.len() != 7 {
+        warn!("confine: bad --inner call");
         return 2;
     }
-    let (setup, filter, info, bwrap, args_fifo) = (&args[0], &args[1], &args[2], &args[3], &args[4]);
+    let (setup, filter, info, status, bwrap, args_fifo, stdio) = (&args[0], &args[1], &args[2], &args[3], &args[4], &args[5], &args[6]);
+    // pasta blocks SIGUSR1 for its own start and leaves it so for what it runs.
+    if let Err(e) = sys::block_only_terminal_interrupts() {
+        warn!("confine: {e}");
+        return 1;
+    }
     // A launcher that fails before sending the arguments takes pasta with it, and this then goes too instead of waiting.
     if let Err(e) = sys::die_with_parent() {
-        eprintln!("confine: {e}");
+        warn!("confine: {e}");
         return 1;
     }
     // The arguments arrive once the launcher moved this process into the app's scope, so the setup below runs in it too.
     let mut raw = Vec::new();
     if let Err(e) = fs::File::open(args_fifo).and_then(|mut f| f.read_to_end(&mut raw)) {
-        eprintln!("confine: {}: {e}", Path::new(args_fifo).display());
+        warn!("confine: {}: {e}", Path::new(args_fifo).display());
         return 1;
     }
     if raw.is_empty() {
@@ -1544,12 +1803,29 @@ pub fn inner(args: &[OsString]) -> i32 {
             _ => return 1,
         }
     }
+    // pasta closed what it inherited, so the caller's stdin, stdout and stderr come over a socket and wait where the reaper takes them from.
+    if !stdio.is_empty() {
+        let placed = UnixStream::connect(stdio)
+            .and_then(|socket| sys::recv_fds(socket.as_raw_fd()))
+            .and_then(|fds| sys::remap_fds(&[(fds[0].as_raw_fd(), STDIO_FD), (fds[1].as_raw_fd(), STDIO_FD + 1), (fds[2].as_raw_fd(), STDIO_FD + 2)]));
+        if let Err(e) = placed {
+            warn!("confine: {}: {e}", Path::new(stdio).display());
+            return 1;
+        }
+    }
+    // Before the descriptors opened below, so none of them can take its number. None for a sandbox that ends with its app.
+    if !status.is_empty() {
+        if let Err(e) = sys::open_inheritable(status, libc::O_WRONLY).and_then(|fd| sys::move_fd(fd, STATUS_FD)) {
+            warn!("confine: {}: {e}", Path::new(status).display());
+            return 1;
+        }
+    }
     let mut final_args: Vec<OsString> = Vec::new();
     if !filter.is_empty() {
         match sys::open_inheritable(filter, libc::O_RDONLY) {
             Ok(fd) => final_args.extend(["--seccomp".into(), fd.to_string().into()]),
             Err(e) => {
-                eprintln!("confine: {}: {e}", Path::new(filter).display());
+                warn!("confine: {}: {e}", Path::new(filter).display());
                 return 1;
             }
         }
@@ -1557,13 +1833,13 @@ pub fn inner(args: &[OsString]) -> i32 {
     match sys::open_inheritable(info, libc::O_WRONLY) {
         Ok(fd) => final_args.extend(["--info-fd".into(), fd.to_string().into()]),
         Err(e) => {
-            eprintln!("confine: {}: {e}", Path::new(info).display());
+            warn!("confine: {}: {e}", Path::new(info).display());
             return 1;
         }
     }
     final_args.extend(raw.strip_suffix(&[0]).unwrap_or(&raw).split(|b| *b == 0).map(|a| OsStr::from_bytes(a).to_os_string()));
     let e = sys::exec(bwrap, &final_args);
-    eprintln!("confine: {}: {e}", Path::new(bwrap).display());
+    warn!("confine: {}: {e}", Path::new(bwrap).display());
     127
 }
 
@@ -1619,6 +1895,15 @@ mod tests {
             assert!(encoded.iter().all(|b| b.is_ascii_alphanumeric() || b"/._~-%".contains(b)));
             assert_eq!(percent_decode(&encoded), path);
         }
+    }
+
+    #[test]
+    fn bus_addresses_give_up_their_socket_file() {
+        assert_eq!(bus_socket(OsStr::new("unix:path=/run/user/1000/bus")), Some(PathBuf::from("/run/user/1000/bus")));
+        assert_eq!(bus_socket(OsStr::new("unix:path=/run/user/1000/at-spi/bus_0,guid=abc")), Some(PathBuf::from("/run/user/1000/at-spi/bus_0")));
+        assert_eq!(bus_socket(OsStr::new("unix:abstract=/tmp/dbus-x")), None);
+        assert_eq!(bus_socket(OsStr::new("tcp:host=localhost,port=1")), None);
+        assert_eq!(bus_socket(OsStr::new("unix:path=/a;unix:path=/b")), None);
     }
 
     #[test]

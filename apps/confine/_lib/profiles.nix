@@ -57,7 +57,7 @@
 
   # No org.freedesktop.secrets: the Secret Service hands every app's secrets to any client, so an app keeps its own key or uses the Secret portal, as Flatpak expects.
   chromium = {
-    seccomp.nesting = true;
+    seccomp.userns = true;
     dbus.session.talk = [ "org.freedesktop.ScreenSaver" ];
   };
 

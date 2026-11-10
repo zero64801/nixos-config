@@ -50,7 +50,7 @@ let
       };
 
       silenceWarnings = lib.mkOption {
-        type = lib.types.listOf (lib.types.enum [ "home" "seccomp" "network" "wayland" ]);
+        type = lib.types.listOf (lib.types.enum [ "home" "seccomp" "network" "wayland" "pipewire" ]);
         default = [ ];
         example = [ "network" ];
         description = "Build warnings this app accepts on purpose, so rebuilds stop printing them.";
@@ -199,6 +199,8 @@ in
           "network = \"host\" also exposes host abstract sockets, including the real X server."
         ++ warn "wayland" ((p.wayland || p.x11 == "isolated") && !p.waylandSecurityContext)
           "without a Wayland security context the compositor offers fake input, screen capture and background clipboard reads."
+        ++ warn "pipewire" (p.pipewire && !p.portals)
+          "pipewire without portals leaves PipeWire unable to tell the app is sandboxed, so it may rewire the whole graph. pulse = true alone covers plain audio."
       ) cfg.apps
     );
   };

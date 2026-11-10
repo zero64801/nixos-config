@@ -129,7 +129,7 @@ writeShellApplication {
         "Session bus    \(if $p.dbus.filter then "filtered" else "UNFILTERED" end), talks to \($p.dbus.session.talk | list), owns \($p.dbus.session.own | list)",
         "System bus     talks to \($p.dbus.system.talk | list)",
         "Accessibility  \($p.a11y | yn)",
-        "Seccomp        " + (if $p.seccomp.enable then "on" + ([ "nesting", "devel", "multiarch", "bluetooth", "can", "ioUring" ] | map(select($p.seccomp[.])) | if . == [] then "" else ", allows " + join(", ") end) else "OFF" end),
+        "Seccomp        " + (if $p.seccomp.enable then "on" + ([ "nesting", "userns", "devel", "multiarch", "bluetooth", "can", "ioUring" ] | map(select($p.seccomp[.])) | if . == [] then "" else ", allows " + join(", ") end) else "OFF" end),
         "Scope          \($p.scope | yn)" + (if ($p.resources // {}) == {} then "" else ", " + ($p.resources | to_entries | map("\(.key)=\(.value)") | join(" ")) end),
         "Environment    sets \($p.env | keys | list), passes \($p.envPassthrough | list)"
       ' "$index"
@@ -161,7 +161,7 @@ writeShellApplication {
     }
 
     cmd_enter() {
-      local dirs dir pid filter env_pid inner envs=()
+      local dirs dir pid filter inner envs=()
       [ "$#" -ge 1 ] || usage
       mapfile -t dirs < <(matching_instances "$1")
       shift
@@ -172,10 +172,7 @@ writeShellApplication {
       filter=$(state_get "$dir/state" filter)
       [ -n "$pid" ] && [ -d "/proc/$pid" ] || die "the sandbox has no recorded pid yet"
 
-      # bwrap's init still holds the launcher's environment, the app below it has the sandbox's.
-      env_pid=$(cut -d' ' -f1 "/proc/$pid/task/$pid/children" 2>/dev/null) || env_pid=""
-      [ -n "$env_pid" ] || env_pid=$pid
-      mapfile -d "" envs < "/proc/$env_pid/environ"
+      mapfile -d "" envs < "/proc/$pid/environ"
 
       [ "$#" -gt 0 ] || set -- sh
       inner=(${coreutils}/bin/env -i "''${envs[@]}" "$@")

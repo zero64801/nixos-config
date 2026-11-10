@@ -113,7 +113,7 @@ writeShellApplication {
       case "$s" in
         wayland) add_profile gui ;;
         x11|fallback-x11) wants_x11=true ;;
-        pulseaudio) add_profile audio ;;
+        pulseaudio) scalars+=("pulse = true;") ;;
         session-bus) notes+=("sockets=session-bus asks for the unfiltered session bus; the names below are filtered instead") ;;
         system-bus) notes+=("sockets=system-bus asks for the unfiltered system bus; name what it needs under dbus.system.talk") ;;
         ssh-auth) notes+=("sockets=ssh-auth would hand over the SSH agent; left out deliberately") ;;

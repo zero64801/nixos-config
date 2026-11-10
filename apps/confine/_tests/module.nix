@@ -95,6 +95,22 @@ let
       warnings { a = plain // { network = "host"; }; }
     );
 
+    # PipeWire tells a sandboxed client by the Flatpak identity that portals forge, and gives any other the whole graph.
+    pipewireWithoutPortalsWarns =
+      anyMatching "pipewire without portals" (warnings { a = plain // { pipewire = true; }; })
+      && warnings {
+        a = plain // {
+          pipewire = true;
+          portals = true;
+        };
+      } == [ ]
+      && warnings {
+        a = plain // {
+          pipewire = true;
+          silenceWarnings = [ "pipewire" ];
+        };
+      } == [ ];
+
     persistentDirectoriesCoverPrivateHomesOnly =
       (evalWith { a = plain; }).confine.persistentHomeDirectories == [ ".local/share/confine/com.vendor.App" ]
       && (evalWith { a = plain // { home = "host"; }; }).confine.persistentHomeDirectories == [ ]

@@ -20,6 +20,7 @@
         launcher = import ./_tests/launcher.nix { inherit pkgs; };
         seccomp = import ./_tests/seccomp.nix { inherit pkgs; };
         seccomp-drift = import ./_tests/seccomp-drift.nix { inherit pkgs; };
+        vm = import ./_tests/vm.nix { inherit pkgs; };
       };
     };
 }
