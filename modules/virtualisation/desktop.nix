@@ -172,8 +172,6 @@ in
         // lib.mapAttrs (name: src:
           pkgs.writeShellScript "libvirt-hook-${name}" (builtins.readFile src)
         ) cfg.hooks;
-      virtualisation.spiceUSBRedirection.enable = true;
-      environment.systemPackages = [ pkgs.spice-gtk ];
 
       systemd.services.libvirtd-config.restartTriggers =
         [ hugepagesHook ] ++ lib.attrValues cfg.hooks;
