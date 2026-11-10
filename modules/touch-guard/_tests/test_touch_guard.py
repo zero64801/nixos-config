@@ -16,7 +16,7 @@ import _daemon as d
 import _notifier as n
 import _pam as p
 
-# Read from a YubiKey 5's FIDO interface and from its keyboard (OTP) interface on Quanta.
+# Read from a YubiKey 5's FIDO interface and from its keyboard (OTP) interface.
 YUBIKEY_FIDO = bytes.fromhex("06d0f10901a1010920150026ff007508954081020921150026ff00750895409102c0")
 YUBIKEY_OTP_KEYBOARD = bytes.fromhex("05010906a101050719e029e7150025017501950881029501750881019505750105081901290591029501750391019506750815002565050719002965")
 NOTIFIER = ["/nix/store/x-python/bin/python3", "-I", "/nix/store/x-notifier.py", "--busctl", "/nix/store/x-systemd/bin/busctl"]
@@ -46,8 +46,8 @@ class Proc:
                           f"{self.OTHER_FS} 1 999:999 / /fuse rw - fuse fuse rw\n")
         self.add(1, 0, ["systemd"], "/nix/store/x-systemd/lib/systemd/systemd", uid=0)
 
-    def add(self, pid, ppid, cmdline, exe, uid=1000, euid=None, cwd="/home/dx", stdin="/dev/pts/0", fds=None,
-            environ=("HOME=/home/dx",), tracer=0, ns=("mnt:[1]", "user:[2]"), start=100):
+    def add(self, pid, ppid, cmdline, exe, uid=1000, euid=None, cwd="/home/alice", stdin="/dev/pts/0", fds=None,
+            environ=("HOME=/home/alice",), tracer=0, ns=("mnt:[1]", "user:[2]"), start=100):
         """fds maps fd numbers to (link target, mount id, inode) as the kernel would report them."""
         base = os.path.join(self.root, str(pid))
         os.makedirs(os.path.join(base, "fd"))
@@ -146,23 +146,23 @@ class Waits(unittest.TestCase):
 
 class Sudo(unittest.TestCase):
     def test_options(self):
-        self.assertEqual(d.describe_sudo(["sudo", "-Eu", "dx", "--", "id"]), ("sudo (runs as dx)", ["id"]))
-        self.assertEqual(d.describe_sudo(["sudo", "--user=dx", "id", "-u"]), ("sudo (runs as dx)", ["id -u"]))
+        self.assertEqual(d.describe_sudo(["sudo", "-Eu", "alice", "--", "id"]), ("sudo (runs as alice)", ["id"]))
+        self.assertEqual(d.describe_sudo(["sudo", "--user=alice", "id", "-u"]), ("sudo (runs as alice)", ["id -u"]))
         self.assertEqual(d.describe_sudo(["sudo", "-i"])[1], ["opens a root shell"])
         self.assertEqual(d.describe_sudo(["sudo", "-e", "/etc/hosts"])[1], ["edit as root: /etc/hosts"])
         self.assertTrue(d.describe_sudo(["sudo", "-v"])[1][0].startswith("sudo -v: checks your login"))
 
     def test_env_values_and_store_hashes_are_left_out(self):
-        system = "/nix/store/" + "a" * 32 + "-nixos-system-Quanta-26.11/bin/switch-to-configuration"
-        _, lines = d.describe_sudo(["sudo", "env", "USER=dx", "PATH=/nix/store/x/bin:/run/wrappers/bin", system, "test"])
-        self.assertEqual(lines, ["NixOS rebuild: switch-to-configuration test (nixos-system-Quanta-26.11)",
-                                 "/nix/store/…-nixos-system-Quanta-26.11/bin/switch-to-configuration test (env sets USER, PATH)"])
+        system = "/nix/store/" + "a" * 32 + "-nixos-system-example-26.11/bin/switch-to-configuration"
+        _, lines = d.describe_sudo(["sudo", "env", "USER=alice", "PATH=/nix/store/x/bin:/run/wrappers/bin", system, "test"])
+        self.assertEqual(lines, ["NixOS rebuild: switch-to-configuration test (nixos-system-example-26.11)",
+                                 "/nix/store/…-nixos-system-example-26.11/bin/switch-to-configuration test (env sets USER, PATH)"])
         self.assertEqual(d.describe_sudo(["sudo", "env", "-u", "HOME", "LD_PRELOAD=/tmp/x.so", "id"])[1],
                          ["id (env sets LD_PRELOAD)"])
         self.assertEqual(d.describe_sudo(["sudo", "env"])[1], ["env"])
 
     def test_rebuild_targets(self):
-        system = "/nix/store/" + "b" * 32 + "-nixos-system-Quanta-26.11"
+        system = "/nix/store/" + "b" * 32 + "-nixos-system-example-26.11"
         self.assertEqual(d.rebuild_target([system + "/bin/switch-to-configuration", "boot"]), (system, "boot"))
         self.assertEqual(d.rebuild_target(["nix", "build", "--no-link", "--profile", d.SYSTEM_PROFILE, system]),
                          (system, d.PROFILE_ACTION), "how nh sets the profile")
@@ -170,7 +170,7 @@ class Sudo(unittest.TestCase):
                          (system, d.PROFILE_ACTION), "how nixos-rebuild sets the profile")
         self.assertEqual(d.rebuild_target(["/nix/store/x-nixos-activate/bin/nixos-activate", system]), (system, "switch"))
         self.assertEqual(d.rebuild_note(["/nix/store/x-nixos-activate/bin/nixos-activate", system, "boot"]),
-                         "NixOS rebuild: boot (nixos-system-Quanta-26.11)")
+                         "NixOS rebuild: boot (nixos-system-example-26.11)")
         self.assertIsNone(d.rebuild_target(["nix", "build", system]), "building alone activates nothing")
 
 
@@ -180,16 +180,16 @@ class Requesters(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.p = Proc(tmp.name)
         self.p.add(900, 1, ["konsole"], "/nix/store/x-konsole/bin/konsole", stdin="/dev/null")
-        self.p.add(901, 900, ["fish"], "/nix/store/x-fish/bin/fish", cwd="/home/dx/nixos")
+        self.p.add(901, 900, ["fish"], "/nix/store/x-fish/bin/fish", cwd="/home/alice/nixos")
 
     def test_rebuild_typed_in_a_terminal(self):
         self.p.add(950, 901, ["nh", "os", "switch"], "/nix/store/x-nh/bin/nh")
-        self.p.sudo(951, 950, "-E", "/nix/store/abc-nixos-system-Quanta-26.11/bin/switch-to-configuration", "test")
+        self.p.sudo(951, 950, "-E", "/nix/store/abc-nixos-system-example-26.11/bin/switch-to-configuration", "test")
         r = self.p.report()
         self.assertEqual(r["warnings"], [])
         (q,) = r["requesters"]
         self.assertEqual(q["title"], "sudo (runs as root)")
-        self.assertEqual(q["lines"][0], "NixOS rebuild: switch-to-configuration test (nixos-system-Quanta-26.11)")
+        self.assertEqual(q["lines"][0], "NixOS rebuild: switch-to-configuration test (nixos-system-example-26.11)")
         self.assertEqual(q["user"], d.user_name(1000), "sudo's real uid is the user who ran it")
         self.assertEqual(q["warnings"], [])
         self.assertEqual(q["holder"], 951)
@@ -197,7 +197,7 @@ class Requesters(unittest.TestCase):
         self.assertIn("sudo (runs as root)", d.summary_line(r))
 
     def test_rebuild_diff_goes_after_the_note(self):
-        system = "/nix/store/" + "c" * 32 + "-nixos-system-Quanta-26.11"
+        system = "/nix/store/" + "c" * 32 + "-nixos-system-example-26.11"
         self.p.sudo(952, 901, "/nix/store/x-nixos-activate/bin/nixos-activate", system)
         asked = []
 
@@ -208,23 +208,23 @@ class Requesters(unittest.TestCase):
         context = types.SimpleNamespace(diff=diff, transient=lambda pid: None)
         (q,) = self.p.report(context=context)["requesters"]
         self.assertEqual(asked, [system])
-        self.assertEqual(q["lines"][:2], ["NixOS rebuild: switch (nixos-system-Quanta-26.11)", "system units: +evil.service"])
+        self.assertEqual(q["lines"][:2], ["NixOS rebuild: switch (nixos-system-example-26.11)", "system units: +evil.service"])
         self.assertEqual(q["warnings"], ["changes root access config: sudoers"])
 
     def test_passwd(self):
-        self.p.add(960, 901, ["passwd", "dx"], "/nix/store/x-shadow/bin/passwd", euid=0, fds=self.p.key())
+        self.p.add(960, 901, ["passwd", "alice"], "/nix/store/x-shadow/bin/passwd", euid=0, fds=self.p.key())
         (q,) = self.p.report()["requesters"]
-        self.assertEqual((q["title"], q["lines"], q["warnings"]), ("passwd (runs as root)", ["passwd dx"], []))
+        self.assertEqual((q["title"], q["lines"], q["warnings"]), ("passwd (runs as root)", ["passwd alice"], []))
 
     def test_foreign_program_from_direnv(self):
-        self.p.add(970, 901, ["direnv", "export", "fish"], "/nix/store/x-direnv/bin/direnv", cwd="/home/dx/Projects/x")
+        self.p.add(970, 901, ["direnv", "export", "fish"], "/nix/store/x-direnv/bin/direnv", cwd="/home/alice/Projects/x")
         self.p.add(971, 970, ["bash", "--noprofile", "--norc", "-c", "eval stdlib"], "/nix/store/x-bash/bin/bash",
                    stdin="pipe:[7]")
-        self.p.add(972, 971, ["/home/dx/Downloads/tool", "--quiet"], "/home/dx/Downloads/tool", fds=self.p.key())
+        self.p.add(972, 971, ["/home/alice/Downloads/tool", "--quiet"], "/home/alice/Downloads/tool", fds=self.p.key())
         (q,) = self.p.report()["requesters"]
         self.assertEqual(q["title"], "tool")
-        self.assertEqual(q["warnings"], ["not from your system: /home/dx/Downloads/tool",
-                                         "started by direnv, from the .envrc in /home/dx/Projects/x"])
+        self.assertEqual(q["warnings"], ["not from your system: /home/alice/Downloads/tool",
+                                         "started by direnv, from the .envrc in /home/alice/Projects/x"])
 
     def test_piped_script(self):
         self.p.add(1000, 901, ["bash"], "/nix/store/x-bash/bin/bash", stdin="pipe:[1234]")
@@ -233,10 +233,10 @@ class Requesters(unittest.TestCase):
         self.assertEqual(q["warnings"], ["started by bash reading piped commands"], "curl | bash must not pass for a shell")
 
     def test_script_in_a_project(self):
-        self.p.add(1010, 901, ["bash", "./install.sh"], "/nix/store/x-bash/bin/bash", cwd="/home/dx/Projects/x")
+        self.p.add(1010, 901, ["bash", "./install.sh"], "/nix/store/x-bash/bin/bash", cwd="/home/alice/Projects/x")
         self.p.sudo(1011, 1010, "cp", "x", "/etc")
         (q,) = self.p.report()["requesters"]
-        self.assertEqual(q["warnings"], ["started by /home/dx/Projects/x/install.sh"])
+        self.assertEqual(q["warnings"], ["started by /home/alice/Projects/x/install.sh"])
         self.assertTrue(q["chain"].startswith("bash install.sh ← fish"), q["chain"])
 
     def test_inline_shell_under_a_store_script(self):
@@ -277,7 +277,7 @@ class Requesters(unittest.TestCase):
 
     def test_git_signing_through_ssh_sk_helper(self):
         self.p.add(990, 901, ["git", "commit", "-m", "fix"], "/nix/store/x-git/bin/git")
-        self.p.add(991, 990, ["ssh-keygen", "-Y", "sign", "-n", "git", "-f", "/home/dx/.ssh/github_yk.pub",
+        self.p.add(991, 990, ["ssh-keygen", "-Y", "sign", "-n", "git", "-f", "/home/alice/.ssh/github_yk.pub",
                               "/tmp/.git_signing_buffer_tmpX"], "/nix/store/x-openssh/bin/ssh-keygen")
         self.p.add(992, 991, ["/nix/store/x-openssh/libexec/ssh-sk-helper"], "/nix/store/x-openssh/libexec/ssh-sk-helper",
                    fds=self.p.key())
@@ -298,7 +298,7 @@ class Requesters(unittest.TestCase):
         self.assertEqual(q["title"], "browser login or passkey")
 
     def test_polkit_names_its_subject(self):
-        self.p.add(996, 901, ["bash", "/home/dx/x/evil.sh"], "/nix/store/x-bash/bin/bash")
+        self.p.add(996, 901, ["bash", "/home/alice/x/evil.sh"], "/nix/store/x-bash/bin/bash")
         self.p.add(997, 1, ["/nix/store/x-polkit/lib/polkit-1/polkit-agent-helper-1"],
                    "/nix/store/x-polkit/lib/polkit-1/polkit-agent-helper-1", uid=0, fds=self.p.key())
         polkit = {"action": "org.freedesktop.policykit.exec", "message": "Run a program as root",
@@ -310,10 +310,10 @@ class Requesters(unittest.TestCase):
         self.assertEqual(q["pid"], 996)
         self.assertEqual(q["holder"], 997)
         self.assertTrue(q["chain"].startswith("bash evil.sh ← fish"), q["chain"])
-        self.assertEqual(q["warnings"], ["started by /home/dx/x/evil.sh"])
+        self.assertEqual(q["warnings"], ["started by /home/alice/x/evil.sh"])
 
     def test_run0_from_a_sandbox_shows_the_unit_command(self):
-        system = "/nix/store/" + "d" * 32 + "-nixos-system-Quanta-26.11"
+        system = "/nix/store/" + "d" * 32 + "-nixos-system-example-26.11"
         self.p.add(1400, 1, ["/nix/store/x-vscode/lib/vscode/code"], "/nix/store/x-vscode/lib/vscode/code")
         self.p.add(1401, 1400, ["/nix/store/x-xdg-dbus-proxy/bin/xdg-dbus-proxy", "--fd=3", "unix:path=/run/user/1000/bus",
                                 "/run/user/1000/confine/com.visualstudio.code.4242/session-bus", "--filter"],
@@ -328,8 +328,8 @@ class Requesters(unittest.TestCase):
                                         transient=lambda pid: unit if pid == 1401 else None)
         (q,) = self.p.report(polkit, context)["requesters"]
         self.assertEqual(q["title"], "run0 (runs as root)")
-        self.assertEqual(q["lines"], ["NixOS rebuild: switch (nixos-system-Quanta-26.11)", "nothing that runs as root changes",
-                                      "/nix/store/x-nixos-activate/bin/nixos-activate /nix/store/…-nixos-system-Quanta-26.11 switch",
+        self.assertEqual(q["lines"], ["NixOS rebuild: switch (nixos-system-example-26.11)", "nothing that runs as root changes",
+                                      "/nix/store/x-nixos-activate/bin/nixos-activate /nix/store/…-nixos-system-example-26.11 switch",
                                       "asked from inside the com.visualstudio.code sandbox"])
 
     def test_polkit_details_without_command(self):
@@ -420,14 +420,14 @@ class Notifier(unittest.TestCase):
         self.assertIsNone(self.check(exe=self.real))
 
     def test_other_program(self):
-        self.assertEqual(self.check(exe="/home/dx/.local/bin/python3"), "it runs another program")
+        self.assertEqual(self.check(exe="/home/alice/.local/bin/python3"), "it runs another program")
 
     def test_other_arguments(self):
-        self.assertEqual(self.check(exe=self.real, cmdline=NOTIFIER[:3] + ["--busctl", "/home/dx/busctl"]),
+        self.assertEqual(self.check(exe=self.real, cmdline=NOTIFIER[:3] + ["--busctl", "/home/alice/busctl"]),
                          "it was started with other arguments")
 
     def test_preloaded_library(self):
-        self.assertEqual(self.check(exe=self.real, environ=("HOME=/home/dx", "LD_PRELOAD=/tmp/x.so")),
+        self.assertEqual(self.check(exe=self.real, environ=("HOME=/home/alice", "LD_PRELOAD=/tmp/x.so")),
                          "its environment sets LD_PRELOAD")
 
     def test_traced(self):
@@ -535,7 +535,7 @@ class Pam(unittest.TestCase):
         return d.Guard(broadcaster, polkit, None, lambda: next(self.ids), self.p.root)
 
     def request(self, tty="/dev/pts/1", pid=950):
-        return d.pam_request({"pid": pid, "service": "sudo", "user": "dx", "ruser": "", "tty": tty, "rhost": ""})
+        return d.pam_request({"pid": pid, "service": "sudo", "user": "alice", "ruser": "", "tty": tty, "rhost": ""})
 
     def test_shown_request_goes_ahead(self):
         b = FakeBroadcaster()
@@ -606,9 +606,9 @@ class Store:
             f.write(text)
         return path
 
-    def system(self, version="26.11.1", users=(), groups=(("wheel", ["dx"]),), pam="auth sufficient pam_u2f.so",
+    def system(self, version="26.11.1", users=(), groups=(("wheel", ["alice"]),), pam="auth sufficient pam_u2f.so",
                nix="substituters = https://cache.nixos.org/", params="quiet", units=(), wrappers=("sudo",)):
-        root = self.path("nixos-system-Quanta-" + version)
+        root = self.path("nixos-system-example-" + version)
         etc = self.path("etc")
         os.makedirs(f"{etc}/etc/pam.d")
         os.makedirs(f"{etc}/etc/nix")
@@ -625,7 +625,7 @@ class Store:
             with open(f"{etc}/etc/systemd/system/{unit}", "w") as f:
                 f.write(f"[Service]\nExecStart=/nix/store/{'1' * 32}-{unit}\n")
         accounts = self.file("users-groups.json", json.dumps({
-            "users": [{"name": "dx", "uid": None, "shell": "fish"}] + [{"name": u, "uid": uid} for u, uid in users],
+            "users": [{"name": "alice", "uid": None, "shell": "fish"}] + [{"name": u, "uid": uid} for u, uid in users],
             "groups": [{"name": g, "members": m} for g, m in groups]}))
         os.makedirs(f"{root}/bin")
         open(f"{root}/bin/switch-to-configuration", "w").close()
@@ -656,7 +656,7 @@ class SystemChanges(unittest.TestCase):
 
     def test_root_access_changes_are_warnings(self):
         old = self.s.system()
-        new = self.s.system(users=(("toor", 0),), groups=(("wheel", ["dx", "eve"]),), pam="auth sufficient pam_permit.so",
+        new = self.s.system(users=(("toor", 0),), groups=(("wheel", ["alice", "eve"]),), pam="auth sufficient pam_permit.so",
                             nix="substituters = https://cache.nixos.org/ https://evil.example",
                             params="quiet init=/bin/sh", wrappers=("sudo", "backdoor"))
         _, warnings = self.changes(old, new)
@@ -724,7 +724,7 @@ class PamHelper(unittest.TestCase):
         threading.Thread(target=run, daemon=True).start()
 
     def run_helper(self, *args, tty="/dev/pts/1"):
-        env = {"PAM_SERVICE": "polkit-1", "PAM_USER": "dx", "PAM_TTY": tty}
+        env = {"PAM_SERVICE": "polkit-1", "PAM_USER": "alice", "PAM_TTY": tty}
         out = io.StringIO()
         with mock.patch.dict(os.environ, env), mock.patch.object(p, "CONNECT_WAIT", 0.2), contextlib.redirect_stdout(out):
             code = p.main(["--socket", self.path, *args])
@@ -754,8 +754,8 @@ class PamHelper(unittest.TestCase):
 class Rendering(unittest.TestCase):
     def test_warnings_lead_and_markup_is_escaped(self):
         summary, body = n.render({"requesters": [{
-            "title": "tool", "lines": ["/tmp/<b>x</b> --go"], "chain": "bash ← fish", "user": "dx",
-            "pid": 5, "cwd": "/tmp", "warnings": ["not from your system: /tmp/x"]}], "warnings": []}, "dx")
+            "title": "tool", "lines": ["/tmp/<b>x</b> --go"], "chain": "bash ← fish", "user": "alice",
+            "pid": 5, "cwd": "/tmp", "warnings": ["not from your system: /tmp/x"]}], "warnings": []}, "alice")
         self.assertEqual(summary, "CHECK BEFORE TOUCHING")
         self.assertTrue(body.startswith("not from your system: /tmp/x\n<b>tool</b>"), body)
         self.assertIn("<b>tool</b>", body)
@@ -763,16 +763,16 @@ class Rendering(unittest.TestCase):
 
     def test_plain_request(self):
         summary, body = n.render({"requesters": [{
-            "title": "sudo (runs as root)", "lines": ["true"], "chain": "fish ← konsole", "user": "dx",
-            "pid": 9, "cwd": "", "warnings": []}], "warnings": []}, "dx")
+            "title": "sudo (runs as root)", "lines": ["true"], "chain": "fish ← konsole", "user": "alice",
+            "pid": 9, "cwd": "", "warnings": []}], "warnings": []}, "alice")
         self.assertEqual(summary, "Touch for sudo (runs as root)")
         self.assertEqual(body, "true\nfrom fish ← konsole, pid 9")
 
     def test_other_users_are_named(self):
         _, body = n.render({"requesters": [{
-            "title": "x", "lines": [], "chain": "", "user": "vm-win11", "pid": 3, "cwd": "", "warnings": []}],
-            "warnings": []}, "dx")
-        self.assertEqual(body, "from unknown, pid 3, user vm-win11")
+            "title": "x", "lines": [], "chain": "", "user": "vm-guest", "pid": 3, "cwd": "", "warnings": []}],
+            "warnings": []}, "alice")
+        self.assertEqual(body, "from unknown, pid 3, user vm-guest")
 
     def test_fixed_bus_address(self):
         command = n.Notifications("/nix/store/x-systemd/bin/busctl").command

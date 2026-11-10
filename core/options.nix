@@ -16,7 +16,6 @@ in
     flake.user = mkOption {
       description = "The primary user of the system";
       type = str;
-      default = "dx";
     };
 
     security.serviceAdminGroups = mkOption {

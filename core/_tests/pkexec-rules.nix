@@ -1,11 +1,37 @@
 # nix build --impure --no-link -L --expr 'import ./core/_tests/pkexec-rules.nix { }'
 {
-  system ? (builtins.getFlake (toString ../..)).nixosConfigurations.Quanta,
+  pkgs ? (builtins.getFlake (toString ../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
 }:
 
 let
-  inherit (system) pkgs config;
   inherit (pkgs) lib;
+
+  anyArgs = "${pkgs.hello}/bin/hello";
+  listed = "${pkgs.coreutils}/bin/true";
+
+  inherit
+    ((import (pkgs.path + "/nixos/lib/eval-config.nix") {
+      inherit (pkgs.stdenv.hostPlatform) system;
+      modules = [
+        ../pkexec.nix
+        {
+          nixpkgs.pkgs = pkgs;
+          my.security.pkexecNoAuth = [
+            { program = anyArgs; }
+            {
+              program = listed;
+              args = [
+                [ "apply" "one" ]
+                [ "apply" "two" "--flag" ]
+                [ "stop" ]
+              ];
+            }
+          ];
+        }
+      ];
+    }))
+    config
+    ;
 
   line = program: args: lib.concatStringsSep " " ([ program ] ++ args);
 
@@ -31,17 +57,15 @@ let
       ++ map (a: exec "${line e.program a} with an extra argument" e.program (a ++ [ "x" ]) [ "wheel" ] null) e.args
       ++ [ (exec "${e.program} outside wheel" e.program (lib.head e.args) [ "users" ] null) ];
 
-  scx = "${config.my.apps.scx.package}/bin/scx-switch";
-
   cases =
     lib.concatMap casesFor config.my.security.pkexecNoAuth
     ++ [
-      (exec "scx-switch apply scx_chaos" scx [ "apply" "scx_chaos" ] [ "wheel" ] null)
-      (exec "scx-switch apply with custom flags" scx [ "apply" "scx_lavd" "--slice-max-us" "1" ] [ "wheel" ] null)
+      (exec "an argument list that is not listed" listed [ "apply" "three" ] [ "wheel" ] null)
+      (exec "a listed command with a flag of another list" listed [ "apply" "one" "--flag" ] [ "wheel" ] null)
       {
         name = "another action with an allowed program";
         id = "org.freedesktop.systemd1.manage-units";
-        details.program = scx;
+        details.program = listed;
         groups = [ "wheel" ];
         expect = null;
       }
@@ -64,7 +88,7 @@ let
       var c = cases[i];
       var action = { id: c.id, lookup: function (k) { return c.details[k]; } };
       var subject = {
-        user: "dx", local: true, active: true,
+        user: "alice", local: true, active: true,
         isInGroup: function (g) { return c.groups.indexOf(g) >= 0; }
       };
       var got = null;

@@ -1,6 +1,6 @@
 # nix build --impure --no-link -L --expr 'import ./modules/touch-guard/_tests/vm.nix { }'
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).nixosConfigurations.Quanta.pkgs,
+  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
 }:
 
 let

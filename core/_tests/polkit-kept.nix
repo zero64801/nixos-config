@@ -1,10 +1,27 @@
 # nix build --impure --no-link -L --expr 'import ./core/_tests/polkit-kept.nix { }'
 {
-  system ? (builtins.getFlake (toString ../..)).nixosConfigurations.Quanta,
+  pkgs ? (builtins.getFlake (toString ../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
 }:
 
 let
-  inherit (system) pkgs config;
+  # The rule file is made from the policy files in the system path, so the packages behind the cases below are installed.
+  inherit
+    ((import (pkgs.path + "/nixos/lib/eval-config.nix") {
+      inherit (pkgs.stdenv.hostPlatform) system;
+      modules = [
+        ../polkit.nix
+        {
+          nixpkgs.pkgs = pkgs;
+          security.polkit.enable = true;
+          environment.systemPackages = [
+            pkgs.libvirt
+            pkgs.modemmanager
+          ];
+        }
+      ];
+    }))
+    config
+    ;
 
   case = name: id: local: active: expect: { inherit name id local active expect; };
 

@@ -22,7 +22,8 @@ in
 
     owner = mkOption {
       type = str;
-      default = "dx";
+      default = config.my.flake.user;
+      defaultText = lib.literalExpression "config.my.flake.user";
       description = "Local account that owns files written through the shares (force user).";
     };
 
