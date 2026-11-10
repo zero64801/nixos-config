@@ -21,6 +21,7 @@ let
     none = null;
     strict = mkFilter { };
     nesting = mkFilter { nesting = true; };
+    userns = mkFilter { userns = true; };
     devel = mkFilter { devel = true; };
     steam = mkFilter {
       nesting = true;
@@ -31,7 +32,7 @@ let
     iouring = mkFilter { ioUring = true; };
   };
 
-  probes64 = "keyctl userns clone3 tiocsti tioclinux open_tree setns personality modify_ldt socket_packet socket_inet socket_can ptrace io_uring";
+  probes64 = "keyctl userns clone3 tiocsti tioclinux open_tree setns personality modify_ldt socket_packet socket_inet socket_can ptrace io_uring chroot mount netfilter xtables xtables6 ip6_tclass";
   probes32 = "keyctl userns tiocsti ptrace modify_ldt socketcall_inet socketcall_packet";
 
   expected = ''
@@ -49,6 +50,12 @@ let
     none     64:socket_can        ok
     none     64:ptrace            ok
     none     64:io_uring          EFAULT
+    none     64:chroot            EFAULT
+    none     64:mount             EFAULT
+    none     64:netfilter         ok
+    none     64:xtables           EBADF
+    none     64:xtables6          EBADF
+    none     64:ip6_tclass        EBADF
     strict   64:keyctl            EPERM
     strict   64:userns            EPERM
     strict   64:clone3            ENOSYS
@@ -63,6 +70,12 @@ let
     strict   64:socket_can        EAFNOSUPPORT
     strict   64:ptrace            EPERM
     strict   64:io_uring          ENOSYS
+    strict   64:chroot            EPERM
+    strict   64:mount             EPERM
+    strict   64:netfilter         ok
+    strict   64:xtables           EBADF
+    strict   64:xtables6          EBADF
+    strict   64:ip6_tclass        EBADF
     nesting  64:keyctl            EPERM
     nesting  64:userns            ok
     nesting  64:clone3            EINVAL
@@ -77,6 +90,12 @@ let
     nesting  64:socket_can        EAFNOSUPPORT
     nesting  64:ptrace            EPERM
     nesting  64:io_uring          ENOSYS
+    nesting  64:chroot            EFAULT
+    nesting  64:mount             EFAULT
+    nesting  64:netfilter         ok
+    nesting  64:xtables           EBADF
+    nesting  64:xtables6          EBADF
+    nesting  64:ip6_tclass        EBADF
     devel    64:keyctl            EPERM
     devel    64:userns            EPERM
     devel    64:clone3            ENOSYS
@@ -91,6 +110,12 @@ let
     devel    64:socket_can        EAFNOSUPPORT
     devel    64:ptrace            ok
     devel    64:io_uring          ENOSYS
+    devel    64:chroot            EPERM
+    devel    64:mount             EPERM
+    devel    64:netfilter         ok
+    devel    64:xtables           EBADF
+    devel    64:xtables6          EBADF
+    devel    64:ip6_tclass        EBADF
     steam    64:keyctl            EPERM
     steam    64:userns            ok
     steam    64:clone3            EINVAL
@@ -105,6 +130,12 @@ let
     steam    64:socket_can        EAFNOSUPPORT
     steam    64:ptrace            EPERM
     steam    64:io_uring          ENOSYS
+    steam    64:chroot            EFAULT
+    steam    64:mount             EFAULT
+    steam    64:netfilter         ok
+    steam    64:xtables           EBADF
+    steam    64:xtables6          EBADF
+    steam    64:ip6_tclass        EBADF
     can      64:keyctl            EPERM
     can      64:userns            EPERM
     can      64:clone3            ENOSYS
@@ -119,6 +150,12 @@ let
     can      64:socket_can        ok
     can      64:ptrace            EPERM
     can      64:io_uring          ENOSYS
+    can      64:chroot            EPERM
+    can      64:mount             EPERM
+    can      64:netfilter         ok
+    can      64:xtables           EBADF
+    can      64:xtables6          EBADF
+    can      64:ip6_tclass        EBADF
     iouring  64:keyctl            EPERM
     iouring  64:userns            EPERM
     iouring  64:clone3            ENOSYS
@@ -133,6 +170,33 @@ let
     iouring  64:socket_can        EAFNOSUPPORT
     iouring  64:ptrace            EPERM
     iouring  64:io_uring          EFAULT
+    iouring  64:chroot            EPERM
+    iouring  64:mount             EPERM
+    iouring  64:netfilter         ok
+    iouring  64:xtables           EBADF
+    iouring  64:xtables6          EBADF
+    iouring  64:ip6_tclass        EBADF
+    # User namespaces and chroot for a browser's own sandbox, with the mount calls and netfilter still shut.
+    userns   64:keyctl            EPERM
+    userns   64:userns            ok
+    userns   64:clone3            EINVAL
+    userns   64:tiocsti           EPERM
+    userns   64:tioclinux         EPERM
+    userns   64:open_tree         ENOSYS
+    userns   64:setns             EPERM
+    userns   64:personality       EPERM
+    userns   64:modify_ldt        EPERM
+    userns   64:socket_packet     EAFNOSUPPORT
+    userns   64:socket_inet       ok
+    userns   64:socket_can        EAFNOSUPPORT
+    userns   64:ptrace            EPERM
+    userns   64:io_uring          ENOSYS
+    userns   64:chroot            EFAULT
+    userns   64:mount             EPERM
+    userns   64:netfilter         EPERM
+    userns   64:xtables           EPERM
+    userns   64:xtables6          EPERM
+    userns   64:ip6_tclass        EBADF
     none     32:keyctl            ok
     none     32:userns            ok
     none     32:tiocsti           ENOTTY

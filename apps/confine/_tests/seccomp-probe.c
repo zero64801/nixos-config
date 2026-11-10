@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
@@ -117,6 +118,26 @@ main (int argc, char **argv)
   else if (strcmp (argv[1], "socketcall_packet") == 0)
     rc = socketcall_socket (AF_PACKET, SOCK_DGRAM);
 #endif
+  else if (strcmp (argv[1], "chroot") == 0)
+    /* A NULL path fails with EFAULT before the kernel checks any privilege, so EPERM can only be the filter. */
+    rc = syscall (SYS_chroot, NULL);
+  else if (strcmp (argv[1], "mount") == 0)
+    rc = syscall (SYS_mount, NULL, NULL, NULL, 0, NULL);
+  else if (strcmp (argv[1], "netfilter") == 0)
+    {
+      rc = socket (AF_NETLINK, SOCK_RAW, 12 /* NETLINK_NETFILTER */);
+      /* A kernel without nfnetlink loaded was still asked. */
+      if (rc < 0 && errno == EPROTONOSUPPORT)
+        rc = 0;
+    }
+  else if (strcmp (argv[1], "xtables") == 0)
+    /* The descriptor is looked up before the option, so unfiltered this is EBADF. 64 is IPT_SO_SET_REPLACE. */
+    rc = syscall (SYS_setsockopt, -1, IPPROTO_IP, 64, NULL, 0);
+  else if (strcmp (argv[1], "xtables6") == 0)
+    rc = syscall (SYS_getsockopt, -1, IPPROTO_IPV6, 68 /* IP6T_SO_GET_REVISION_MATCH */, NULL, NULL);
+  else if (strcmp (argv[1], "ip6_tclass") == 0)
+    /* An ordinary option in the middle of ip6tables' range, which must stay reachable. */
+    rc = syscall (SYS_setsockopt, -1, IPPROTO_IPV6, IPV6_TCLASS, NULL, 0);
   else if (strcmp (argv[1], "ptrace") == 0)
     rc = ptrace (PTRACE_TRACEME, 0, NULL, NULL);
   else if (strcmp (argv[1], "io_uring") == 0)

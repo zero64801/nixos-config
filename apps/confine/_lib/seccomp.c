@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <linux/netlink.h>
+#include <netinet/in.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,8 +65,46 @@ block_family (enum scmp_compare op, int family)
     fail ("seccomp_rule_add_exact (socket)", r);
 }
 
+/* A user namespace can make a network namespace it administers, and from there reach netfilter, the richest source of
+ * kernel privilege escalations, which nothing a browser's sandbox does needs. The kernel reads these arguments as 32-bit
+ * and the filter compares 64, so equality is masked, or a stray high bit would slip past. */
 static void
-add_rules (int nesting, int devel, int multiarch, int io_uring)
+block_netfilter (void)
+{
+  static const int calls[] = { SCMP_SYS (setsockopt), SCMP_SYS (getsockopt) };
+  /* ip6tables shares its range with ordinary IPv6 options, so its own numbers are named. */
+  static const int ip6_options[] = { 64, 65, 68, 69 };
+  unsigned i, j;
+  int r;
+
+  r = seccomp_rule_add_exact (ctx, SCMP_ACT_ERRNO (EPERM), SCMP_SYS (socket), 2,
+                              SCMP_A0 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, AF_NETLINK),
+                              SCMP_A2 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, NETLINK_NETFILTER));
+  if (r < 0)
+    fail ("seccomp_rule_add_exact (socket)", r);
+
+  for (i = 0; i < sizeof calls / sizeof *calls; i++)
+    {
+      /* Every IPv4 socket option from 64 up belongs to iptables, arptables, ebtables, conntrack or IPVS. */
+      r = seccomp_rule_add_exact (ctx, SCMP_ACT_ERRNO (EPERM), calls[i], 2,
+                                  SCMP_A1 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, IPPROTO_IP),
+                                  SCMP_A2 (SCMP_CMP_GE, 64));
+      if (r < 0)
+        fail ("seccomp_rule_add_exact (sockopt)", r);
+
+      for (j = 0; j < sizeof ip6_options / sizeof *ip6_options; j++)
+        {
+          r = seccomp_rule_add_exact (ctx, SCMP_ACT_ERRNO (EPERM), calls[i], 2,
+                                      SCMP_A1 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, IPPROTO_IPV6),
+                                      SCMP_A2 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, ip6_options[j]));
+          if (r < 0)
+            fail ("seccomp_rule_add_exact (sockopt)", r);
+        }
+    }
+}
+
+static void
+add_rules (int nesting, int userns, int devel, int multiarch, int io_uring)
 {
   block (EPERM, SCMP_SYS (syslog));
   block (EPERM, SCMP_SYS (uselib));
@@ -93,21 +133,26 @@ add_rules (int nesting, int devel, int multiarch, int io_uring)
   block_arg (EPERM, SCMP_SYS (ioctl),
              SCMP_A1 (SCMP_CMP_MASKED_EQ, 0xFFFFFFFFu, (int) TIOCLINUX));
 
-  /* These are a mount namespace escape route, which pressure-vessel and Chromium's zygote need. */
+  /* A mount table of its own is a sandbox's way out, and only a nested bubblewrap such as pressure-vessel builds one. */
   if (!nesting)
     {
-      block (EPERM, SCMP_SYS (unshare));
       block (EPERM, SCMP_SYS (setns));
       block (EPERM, SCMP_SYS (mount));
       block (EPERM, SCMP_SYS (umount));
       block (EPERM, SCMP_SYS (umount2));
       block (EPERM, SCMP_SYS (pivot_root));
-      block (EPERM, SCMP_SYS (chroot));
-      block_arg (EPERM, SCMP_SYS (clone),
-                 SCMP_A0 (SCMP_CMP_MASKED_EQ, CLONE_NEWUSER, CLONE_NEWUSER));
 
-      /* seccomp cannot inspect clone3()'s struct clone_args, and ENOSYS makes glibc fall back to the inspectable clone(). */
-      block (ENOSYS, SCMP_SYS (clone3));
+      /* A browser's own sandbox makes user namespaces and chroots into an empty folder, and calls none of the above. */
+      if (!userns)
+        {
+          block (EPERM, SCMP_SYS (unshare));
+          block (EPERM, SCMP_SYS (chroot));
+          block_arg (EPERM, SCMP_SYS (clone),
+                     SCMP_A0 (SCMP_CMP_MASKED_EQ, CLONE_NEWUSER, CLONE_NEWUSER));
+
+          /* seccomp cannot inspect clone3()'s struct clone_args, and ENOSYS makes glibc fall back to the inspectable clone(). */
+          block (ENOSYS, SCMP_SYS (clone3));
+        }
 
       /* The new mount API is another mount-table route (CVE-2021-41133). */
       block (ENOSYS, SCMP_SYS (open_tree));
@@ -141,7 +186,7 @@ static void
 usage (void)
 {
   fprintf (stderr,
-           "usage: confine-seccomp [--allow-nesting] [--devel] [--multiarch]\n"
+           "usage: confine-seccomp [--allow-nesting] [--allow-userns] [--devel] [--multiarch]\n"
            "                       [--allow-bluetooth] [--allow-can] [--allow-io-uring]\n");
   exit (1);
 }
@@ -149,7 +194,7 @@ usage (void)
 int
 main (int argc, char **argv)
 {
-  int nesting = 0, devel = 0, multiarch = 0, bluetooth = 0, can = 0, io_uring = 0;
+  int nesting = 0, userns = 0, devel = 0, multiarch = 0, bluetooth = 0, can = 0, io_uring = 0;
   int allowed[8], n_allowed = 0;
   int i, family, r;
   scmp_filter_ctx native;
@@ -158,6 +203,8 @@ main (int argc, char **argv)
     {
       if (strcmp (argv[i], "--allow-nesting") == 0)
         nesting = 1;
+      else if (strcmp (argv[i], "--allow-userns") == 0)
+        userns = 1;
       else if (strcmp (argv[i], "--devel") == 0)
         devel = 1;
       else if (strcmp (argv[i], "--multiarch") == 0)
@@ -176,7 +223,11 @@ main (int argc, char **argv)
   if (ctx == NULL)
     fail ("seccomp_init", ENOMEM);
 
-  add_rules (nesting, devel, multiarch, io_uring);
+  add_rules (nesting, userns, devel, multiarch, io_uring);
+
+  /* Native ABI only, like the family rules below and for their reason. */
+  if (userns && !nesting)
+    block_netfilter ();
 
   /* Keep this list numerically ordered, the gap walk below depends on it. */
   allowed[n_allowed++] = AF_UNSPEC;
@@ -214,7 +265,7 @@ main (int argc, char **argv)
       if (r < 0)
         fail ("seccomp_arch_remove", r);
 
-      add_rules (nesting, devel, multiarch, io_uring);
+      add_rules (nesting, userns, devel, multiarch, io_uring);
 
       /* On success the merge frees the 32-bit filter. */
       r = seccomp_merge (native, ctx);

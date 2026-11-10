@@ -28,6 +28,7 @@ in
 # Exported BPF is bytecode for the producing arch, build and host must match.
 {
   nesting ? false,
+  userns ? false,
   devel ? false,
   multiarch ? false,
   bluetooth ? false,
@@ -38,6 +39,7 @@ in
 let
   flags =
     lib.optional nesting "--allow-nesting"
+    ++ lib.optional userns "--allow-userns"
     ++ lib.optional devel "--devel"
     ++ lib.optional multiarch "--multiarch"
     ++ lib.optional bluetooth "--allow-bluetooth"
