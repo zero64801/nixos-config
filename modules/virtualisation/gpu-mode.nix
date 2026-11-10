@@ -90,7 +90,7 @@ let
              vm-gpu <domain> <mode> --once   use <mode> for the next start only
              vm-gpu start <domain> [mode] [--paused]
                                              start the domain in its effective mode (persistent XML is never modified)
-             vm-gpu xml <domain> [mode]      print the XML a start would use
+             vm-gpu xml <domain> [mode]      print the XML a start would use, without its passwords
 
       domains: $DOMAINS
       modes:   $MODES (default: $DEFAULT_MODE)
@@ -126,11 +126,15 @@ let
         esac
       }
 
+      # Only a start needs the passwords in the definition, so the preview reads it without them and without root.
       render_xml() {
-        local dom="$1" mode="$2"
+        local dom="$1" mode="$2" xml
         mode_vars "$dom" "$mode"
-        local xml
-        xml=$(virsh dumpxml "$dom" --inactive --security-info)
+        if [ "''${3:-}" = secrets ]; then
+          xml=$(virsh dumpxml "$dom" --inactive --security-info)
+        else
+          xml=$(virsh -r dumpxml "$dom" --inactive)
+        fi
         if [ "''${#EDITS[@]}" -eq 0 ]; then printf '%s\n' "$xml"; return; fi
         if [ -n "$VIDEO" ] && [ "$(printf '%s' "$xml" | xmlstarlet sel "''${NS[@]}" -t -v 'count(/domain/devices/video)')" = 0 ]; then
           xml=$(printf '%s' "$xml" | xmlstarlet ed "''${NS[@]}" -s /domain/devices -t elem -n video -v "" \
@@ -189,11 +193,11 @@ let
           virsh start "$dom" ''${paused:+--paused}
         else
           TMPXML=$(mktemp)
-          render_xml "$dom" "$mode" > "$TMPXML"
+          render_xml "$dom" "$mode" secrets > "$TMPXML"
           echo "vm-gpu: starting $dom ($mode, transient definition; persistent XML untouched)"
           virsh create "$TMPXML" ''${paused:+--paused}
         fi
-        [ "$used_once" = 1 ] && rm -f "$OVERRIDE_DIR/$dom"
+        if [ "$used_once" = 1 ]; then rm -f "$OVERRIDE_DIR/$dom"; fi
       }
 
       cmd_xml() {
@@ -208,7 +212,7 @@ let
         "") cmd_status ;;
         -h|--help|help) usage ;;
         start) as_root "$@"; shift; cmd_start "$@" ;;
-        xml) as_root "$@"; shift; [ $# -ge 1 ] || die "xml needs a domain"; cmd_xml "$@" ;;
+        xml) shift; [ $# -ge 1 ] || die "xml needs a domain"; cmd_xml "$@" ;;
         *) [ $# -ge 2 ] || { usage >&2; exit 1; }; cmd_set "$@" ;;
       esac
     '';
