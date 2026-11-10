@@ -74,7 +74,6 @@ in
       };
       direnv.enable = true;
       confinedTerminal.enable = true;
-      zeditor.enable = true;
       scx.enable = true;
       gaming = {
         enable = true;
@@ -100,7 +99,6 @@ in
     };
   };
 
-  services.lact.enable = true;
   services.displayManager.autoLogin = {
     enable = true;
     user = username;

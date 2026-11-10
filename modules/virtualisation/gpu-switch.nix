@@ -545,7 +545,9 @@ in
       virtualisation.libvirtd.hooks.qemu."00-gpu-vfio-prepare" = libvirtGpuVfioHook;
 
       # lactd refuses to start over a leftover socket, which is always stale after a SIGKILL.
-      systemd.services.lactd.serviceConfig.ExecStartPre = mkIf config.services.lact.enable "-${pkgs.coreutils}/bin/rm -f /run/lactd.sock";
+      systemd.services.lactd = mkIf config.services.lact.enable {
+        serviceConfig.ExecStartPre = "-${pkgs.coreutils}/bin/rm -f /run/lactd.sock";
+      };
       systemd.services.libvirtd-config.restartTriggers = [ libvirtGpuVfioHook ];
     })
 
