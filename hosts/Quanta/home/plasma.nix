@@ -188,7 +188,7 @@ in
           match = {
             window-class = {
               value = "discord";
-              type = "exact";
+              type = "substring";
               match-whole = false;
             };
           };
