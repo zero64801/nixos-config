@@ -281,6 +281,13 @@ in
         });
       '';
 
+      # libvirt repairs DHCP checksums on its bridge with a tc filter.
+      my.security.restrictTrafficControl.keep = [
+        "sch_htb"
+        "cls_u32"
+        "act_csum"
+      ];
+
       environment.systemPackages =
         with pkgs;
         [

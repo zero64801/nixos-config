@@ -50,6 +50,7 @@ in
       yubikey.enable = true;
       touchGuard.enable = true;
       serviceAdminGroups = [ "wheel" ];
+      restrictTrafficControl.enable = true;
     };
 
     apps = {
