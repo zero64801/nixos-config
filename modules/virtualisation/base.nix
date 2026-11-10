@@ -266,11 +266,20 @@ in
           config.virtualisation.libvirtd.qemu.vhostUserPackages;
       };
 
-      # libvirtd membership is root: polkit grants it unauthenticated domain definition with host disks.
+      # libvirtd is left out: the libvirtd module's polkit rule gives that group domain definition with host disks, so root, with no prompt.
       my.security.serviceAdminGroups = [
         "kvm"
       ]
       ++ optional cfg.enableVirgl "render";
+
+      # Read before that rule, so even a member of the group is asked for the key.
+      security.polkit.extraConfig = lib.mkBefore ''
+        polkit.addRule(function(action, subject) {
+          if (action.id == "org.libvirt.unix.manage") {
+            return polkit.Result.AUTH_ADMIN;
+          }
+        });
+      '';
 
       environment.systemPackages =
         with pkgs;
