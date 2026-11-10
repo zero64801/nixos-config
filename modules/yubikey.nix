@@ -4,6 +4,7 @@ let
   inherit (lib) mkEnableOption mkIf mkOption types;
 
   cfg = config.my.security.yubikey;
+  keyFile = "/etc/u2f_keys";
 in
 {
   options.my.security.yubikey = {
@@ -32,7 +33,7 @@ in
     security.pam.u2f = {
       enable = true;
       settings = {
-        authfile = "/etc/u2f_keys";
+        authfile = keyFile;
         cue = true;
       };
     };
@@ -43,6 +44,6 @@ in
       })
     );
 
-    my.persistence.files = [ "/etc/u2f_keys" ];
+    my.persistence.files = lib.optional (config.security.pam.u2f.settings.authfile == keyFile) keyFile;
   };
 }
