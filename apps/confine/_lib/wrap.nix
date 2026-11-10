@@ -232,6 +232,8 @@ let
       throw "confine: networkSetups names may only contain letters, digits, dash and underscore"
     else if cfg.networkSetups != { } && !isolatedNetwork then
       throw "confine: networkSetups need network = \"isolated\", they run inside pasta's namespace"
+    else if namespaceGuard && (cfg.seccomp.multiarch || cfg.seccomp.ioUring) then
+      throw "confine: seccomp.userns cannot be combined with seccomp.multiarch or seccomp.ioUring, both make sockets where no filter sees them, so the userns tier could not keep an app from administering a network of its own. seccomp.nesting allows either."
     else
       x: x;
   name = if cfg.name != null then cfg.name else package.pname or package.name;
@@ -277,6 +279,9 @@ let
       (if lib.hasInfix "/" p then p else "127.0.0.1/${p}")
     else
       throw "confine: networkPorts entries must be integers or pasta port specs";
+
+  # An app that may create user namespaces is the admin of any network it makes for itself. The launcher keeps it from using that.
+  namespaceGuard = cfg.seccomp.enable && cfg.seccomp.userns && !cfg.seccomp.nesting;
 
   filter = mkFilter {
     inherit (cfg.seccomp)
@@ -342,6 +347,15 @@ let
       "--clearenv"
       "--proc"
       "/proc"
+    ]
+    # bwrap only covers /proc/sys where it could write there itself, and the admin of a network namespace can write that namespace's settings.
+    # Kept to this tier: a nested bwrap sets its own namespace limit through the same folder.
+    ++ lib.optionals namespaceGuard [
+      "--ro-bind"
+      "/proc/sys"
+      "/proc/sys"
+    ]
+    ++ [
       "--dev"
       "/dev"
       "--tmpfs"
@@ -413,6 +427,7 @@ let
       };
       inherit staticArgs sysfsDirs maskedFiles maskedDirs;
       filter = if cfg.seccomp.enable then "${filter}" else null;
+      inherit namespaceGuard;
       network = networkMode;
       # Forwards default to "auto", exposing every loopback service, so they start closed. --no-map-gw closes the gateway route.
       # The launcher puts those from the host in front, since only one running instance of an app can hold them.

@@ -10,6 +10,7 @@ macro_rules! warn {
 
 mod config;
 mod dbus;
+mod guard;
 mod launch;
 mod reap;
 mod sys;

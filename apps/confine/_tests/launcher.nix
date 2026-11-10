@@ -130,6 +130,11 @@ let
       // settings
     );
 
+  guardProbe = pkgs.runCommandCC "confine-guard-probe" { } ''
+    mkdir -p "$out/bin"
+    $CC -O1 -Wall -Wextra -Werror -o "$out/bin/guard-probe" ${./guard-probe.c}
+  '';
+
   multiDesktop = wrap {
     package = pkgs.foot;
     appId = "com.test.MultiDesktop";
@@ -228,6 +233,11 @@ pkgs.runCommand "confine-launcher-behaviour"
         nesting = true;
       };
     };
+    guardedNamespacesApp = shell {
+      appId = "com.test.GuardedNamespaces";
+      seccomp.userns = true;
+    };
+    inherit guardProbe;
     gitApp = shell {
       appId = "com.test.Git";
       binds.rw = [ "data" ];
@@ -377,7 +387,7 @@ pkgs.runCommand "confine-launcher-behaviour"
     printf 'filter' > filter.bpf
     cat inner-info > /dev/null &
     cat inner-status > /dev/null &
-    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" &
+    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" &
     inner=$!
     printf -- '--ro-bind\0/a\0/b\0' > inner-args
     wait "$inner" || fail "the inner step failed"
@@ -388,7 +398,7 @@ pkgs.runCommand "confine-launcher-behaviour"
       || fail "the inner step's descriptors point elsewhere: $(cat bwrap-fds)"
     rm bwrap-args
     printf '#!%s\nexit 1\n' ${pkgs.bash}/bin/bash > setup
-    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" &
+    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" &
     inner=$!
     printf -- '--ro-bind\0/a\0/b\0' > inner-args
     wait "$inner" && fail "a failed network setup did not stop the sandbox"
@@ -517,6 +527,17 @@ pkgs.runCommand "confine-launcher-behaviour"
       && fail "a sandbox without nesting could still create a user namespace"
     "$usernsOpenApp/bin/bash" -c "${pkgs.util-linux}/bin/unshare -U $cu/true" \
       || fail "nesting = true no longer allows a user namespace"
+
+    # An app that may create namespaces is the admin of a network it makes, and gets no use of that.
+    printf '%s\n' home-netlink=ok own-netlink=EPERM own-netlink-generic=EPERM early-netlink-tc=EPERM ioctl-read=ok \
+      ioctl-interface=EPERM ioctl-bridge=EPERM raw-socket=EPERM tcp-socket=ok option-ipsec=EPERM option-repair=EPERM \
+      option-plain=ok sysctl=EROFS > guard-want
+    "$guardedNamespacesApp/bin/bash" -c "$guardProbe/bin/guard-probe" > guard-got \
+      || fail "the probe did not run under the namespace guard: $(cat guard-got)"
+    diff -u guard-want guard-got || fail "the namespace guard let something through or refused too much"
+    "$usernsOpenApp/bin/bash" -c "$guardProbe/bin/guard-probe" > guard-off || fail "the probe did not run unguarded"
+    grep -qx own-netlink=ok guard-off && grep -qx ioctl-interface=ok guard-off && grep -qx raw-socket=ok guard-off \
+      || fail "the probe proves nothing, left unguarded it cannot administer its own network either: $(tr '\n' ' ' < guard-off)"
 
     mkdir -p "$HOME/data/repo/.git/hooks" "$HOME/data/nohooks/.git"
     printf '[core]\n' > "$HOME/data/repo/.git/config"

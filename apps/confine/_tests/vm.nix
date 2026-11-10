@@ -202,6 +202,12 @@ pkgs.testers.runNixOSTest {
           ];
         };
 
+        namespaces = shell "namespaces" {
+          appId = "com.test.Namespaces";
+          network = "isolated";
+          seccomp.userns = true;
+        };
+
         # 8082 is taken on the host, so pasta cannot have it.
         clash = shell "clash" {
           appId = "com.test.Clash";
@@ -303,6 +309,11 @@ pkgs.testers.runNixOSTest {
         try 127.0.0.1 8082 undeclared
         gateway=$(ip -4 route show default | awk '{ print $3; exit }')
         if [ -n "$gateway" ]; then try "$gateway" 8082 gateway; fi
+      '';
+
+      guardProbe = pkgs.runCommandCC "confine-guard-probe" { } ''
+        mkdir -p "$out/bin"
+        $CC -O1 -Wall -Wextra -Werror -o "$out/bin/guard-probe" ${./guard-probe.c}
       '';
 
       # Runs an app on a terminal of its own and presses Ctrl+C two seconds in.
@@ -446,6 +457,17 @@ pkgs.testers.runNixOSTest {
           status, refusal = machine.execute(unit(f"--wait --pipe -- {BIN}/clash-bash -c true 2>&1"))
           assert status != 0 and "Address already in use" in refusal and "kept forking" not in refusal, refusal
           wait_gone("com.test.Clash")
+
+      with subtest("an isolated app that may create namespaces cannot administer a network of its own"):
+          # pasta closes what it inherits, so the guard reports over the socket the far side fetched its output on.
+          got = output(f"{BIN}/namespaces-bash -c ${guardProbe}/bin/guard-probe").split()
+          want = [
+              "home-netlink=ok", "own-netlink=EPERM", "own-netlink-generic=EPERM", "early-netlink-tc=EPERM", "ioctl-read=ok",
+              "ioctl-interface=EPERM", "ioctl-bridge=EPERM", "raw-socket=EPERM", "tcp-socket=ok", "option-ipsec=EPERM",
+              "option-repair=EPERM", "option-plain=ok", "sysctl=EROFS",
+          ]
+          assert got == want, got
+          wait_gone("com.test.Namespaces")
 
       with subtest("reading an isolated app's output does not wait for what it left running, and it starts with no signal blocked"):
           captured = alice(f"timeout 20 sh -c '{BIN}/net-bash -c \"sleep 3009 < /dev/null > /dev/null 2>&1 & grep SigBlk /proc/self/status\" 2>&1 | cat'")

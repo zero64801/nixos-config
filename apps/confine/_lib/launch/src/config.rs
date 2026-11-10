@@ -12,6 +12,7 @@ pub struct Config {
     pub tools: Tools,
     pub static_args: Vec<String>,
     pub filter: Option<String>,
+    pub namespace_guard: bool,
     pub network: Network,
     pub pasta_args: Vec<String>,
     pub from_host: Vec<String>,

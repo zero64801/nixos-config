@@ -54,6 +54,24 @@ let
 
     nestingReachesFilter = filterName { seccomp.nesting = true; } == "confine-filter-allow-nesting.bpf";
 
+    # The guard comes with the tier that needs it. The others cannot use it, and a nested bubblewrap needs /proc/sys writable.
+    guardFollowsUserns =
+      let
+        config = settings: builtins.fromJSON (builtins.unsafeDiscardStringContext (build settings).launchConfig.text);
+        guarded = c: c.namespaceGuard && lib.elem "/proc/sys" c.staticArgs;
+        unguarded = c: !c.namespaceGuard && !lib.elem "/proc/sys" c.staticArgs;
+      in
+      guarded (config { seccomp.userns = true; })
+      && unguarded (config { })
+      && unguarded (config { seccomp = { userns = true; nesting = true; }; })
+      && unguarded (config { seccomp = { userns = true; enable = false; }; });
+
+    # Both make sockets no filter sees, which the guard cannot answer for.
+    guardRefusesUnseenSockets =
+      !(builtins.tryEval (build { seccomp = { userns = true; multiarch = true; }; }).drvPath).success
+      && !(builtins.tryEval (build { seccomp = { userns = true; ioUring = true; }; }).drvPath).success
+      && (builtins.tryEval (build { seccomp = { nesting = true; multiarch = true; ioUring = true; }; }).drvPath).success;
+
     steamProfileIsMultiarch =
       (perms { profile = [ "steam" ]; }).seccomp.multiarch
       && filterName { profile = [ "steam" ]; }

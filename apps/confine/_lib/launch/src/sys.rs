@@ -193,7 +193,7 @@ pub fn read_available(fd: RawFd, buf: &mut [u8]) -> Option<usize> {
 const FD_BYTES: usize = std::mem::size_of::<RawFd>();
 
 /// Hands descriptors to the process on the other end of a unix socket, the one way past a program that closes what it inherits.
-pub fn send_fds(socket: RawFd, fds: &[RawFd; 3]) -> io::Result<()> {
+pub fn send_fds(socket: RawFd, fds: &[RawFd]) -> io::Result<()> {
     let mut control = [0u64; 8];
     let mut byte = 0u8;
     let mut iov = libc::iovec { iov_base: (&mut byte as *mut u8).cast(), iov_len: 1 };
@@ -213,8 +213,8 @@ pub fn send_fds(socket: RawFd, fds: &[RawFd; 3]) -> io::Result<()> {
     if r < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
-/// The other side of send_fds. The descriptors arrive close-on-exec, to be placed where the next program expects them.
-pub fn recv_fds(socket: RawFd) -> io::Result<[OwnedFd; 3]> {
+/// The other side of send_fds, for a message of exactly N descriptors. They arrive close-on-exec, to be placed where the next program expects them.
+pub fn recv_fds<const N: usize>(socket: RawFd) -> io::Result<[OwnedFd; N]> {
     let mut control = [0u64; 8];
     let mut byte = 0u8;
     let mut iov = libc::iovec { iov_base: (&mut byte as *mut u8).cast(), iov_len: 1 };
@@ -232,7 +232,7 @@ pub fn recv_fds(socket: RawFd) -> io::Result<[OwnedFd; 3]> {
     if r < 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut raw = [-1 as RawFd; 3];
+    let mut raw = [-1 as RawFd; N];
     let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
     let complete = !header.is_null()
         && unsafe { (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS }
@@ -352,6 +352,20 @@ pub fn poll_readable(fds: &[RawFd], timeout_ms: i32) -> io::Result<Vec<bool>> {
         let r = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
         if r >= 0 {
             return Ok(pfds.iter().map(|p| p.revents != 0).collect());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Waits until something happens on one descriptor and reports what, a hang-up included.
+pub fn poll_events(fd: RawFd) -> io::Result<libc::c_short> {
+    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    loop {
+        if unsafe { libc::poll(&mut pfd, 1, -1) } >= 0 {
+            return Ok(pfd.revents);
         }
         let e = io::Error::last_os_error();
         if e.kind() != io::ErrorKind::Interrupted {

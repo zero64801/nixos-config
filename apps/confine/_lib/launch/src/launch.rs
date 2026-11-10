@@ -1,7 +1,7 @@
 //! Builds the bubblewrap command line for one app from its config and runs it.
 
 use crate::config::{Config, Home, Network, RuntimeDir, Workdir, X11};
-use crate::{dbus, sys, wayland};
+use crate::{dbus, guard, sys, wayland};
 use nix::unistd::{Gid, Group, Uid, User};
 use std::collections::{BTreeSet, HashSet};
 use std::env;
@@ -109,6 +109,9 @@ const STATUS_FD: i32 = 12;
 
 /// Where the reaper finds the caller's stdin, stdout and stderr, which bwrap and pasta must not hold themselves.
 pub const STDIO_FD: i32 = 13;
+
+/// Where the reaper finds the socket its namespace guard reports on.
+const GUARD_FD: i32 = 16;
 
 struct Launch<'a> {
     cfg: &'a Config,
@@ -768,6 +771,10 @@ impl<'a> Launch<'a> {
         let Ok((conn, _)) = listener.accept() else { return };
         let _ = sys::send_fds(conn.as_raw_fd(), &[stdio[0].as_raw_fd(), stdio[1].as_raw_fd(), stdio[2].as_raw_fd()]);
         self.stdio_socket = None;
+        // The far side keeps its end for the reaper, the one descriptor of the launcher's that gets past pasta.
+        if self.cfg.namespace_guard {
+            std::thread::spawn(move || guard::serve(conn.into()));
+        }
     }
 
     fn command(&self, program: &str) -> Command {
@@ -978,7 +985,7 @@ impl<'a> Launch<'a> {
         unsafe { c.pre_exec(sys::die_with_parent) };
         c.args(&self.pasta_args).arg("--").arg(me).arg("--inner");
         c.arg(self.setup.as_deref().unwrap_or("")).arg(cfg.filter.as_deref().unwrap_or("")).arg(&info_fifo).arg(&status_fifo);
-        c.arg(&cfg.tools.bwrap).arg(&args_fifo).arg(&stdio_socket);
+        c.arg(&cfg.tools.bwrap).arg(&args_fifo).arg(&stdio_socket).arg(if cfg.namespace_guard { "guard" } else { "" });
         if self.setup.is_some() {
             c.env("CONFINE_INSTANCE", &self.instance);
         }
@@ -1664,7 +1671,8 @@ impl<'a> Launch<'a> {
         let mut bwrap_args = self.args.clone();
         bwrap_args.extend(["--as-pid-1".into(), "--".into()]);
         bwrap_args.push(env::current_exe().map_err(|e| e.to_string())?.into());
-        bwrap_args.extend(["--reap".into(), if cfg.linger { STATUS_FD.to_string().into() } else { "-".into() }, target]);
+        let fd_or_none = |on: bool, fd: i32| if on { fd.to_string().into() } else { OsString::from("-") };
+        bwrap_args.extend(["--reap".into(), fd_or_none(cfg.linger, STATUS_FD), fd_or_none(cfg.namespace_guard, GUARD_FD), target]);
         bwrap_args.extend(rest);
 
         let (mut child, info, status) = if let Some((child, args_fifo, status)) = slow.pasta.take() {
@@ -1676,8 +1684,10 @@ impl<'a> Launch<'a> {
                 Some(f) => Some(fs::File::open(f).map_err(|e| format!("{f}: {e}"))?),
                 None => None,
             };
+            let report = if cfg.namespace_guard { Some(UnixStream::pair().map_err(|e| e.to_string())?) } else { None };
             let mut c = self.sandbox_command(&cfg.tools.bwrap);
             let mut pairs = vec![(info_write.as_raw_fd(), 11)];
+            pairs.extend(report.as_ref().map(|(_, theirs)| (theirs.as_raw_fd(), GUARD_FD)));
             pairs.extend(status.as_ref().map(|(_, write)| (write.as_raw_fd(), STATUS_FD)));
             pairs.extend(self.stdio.iter().flatten().zip(STDIO_FD..).map(|(fd, at)| (fd.as_raw_fd(), at)));
             if let Some(f) = &filter_fd {
@@ -1688,6 +1698,11 @@ impl<'a> Launch<'a> {
             unsafe { c.pre_exec(move || sys::remap_fds(&pairs)) };
             let child = c.spawn().map_err(|e| format!("bwrap: {e}"))?;
             drop(info_write);
+            // Their end is dropped here, so a sandbox that ends before it reports ends the wait for it too.
+            if let Some((ours, theirs)) = report {
+                drop(theirs);
+                std::thread::spawn(move || guard::serve(ours.into()));
+            }
             (child, Info::Pipe(info_read), status.map(|(read, _)| fs::File::from(read)))
         };
 
@@ -1771,13 +1786,13 @@ impl<'a> Launch<'a> {
     }
 }
 
-/// Runs on pasta's far side: Usage: confine-launch --inner SETUP FILTER INFO STATUS BWRAP ARGS_FIFO STDIO_SOCKET
+/// Runs on pasta's far side: Usage: confine-launch --inner SETUP FILTER INFO STATUS BWRAP ARGS_FIFO STDIO_SOCKET GUARD
 pub fn inner(args: &[OsString]) -> i32 {
-    if args.len() != 7 {
+    if args.len() != 8 {
         warn!("confine: bad --inner call");
         return 2;
     }
-    let (setup, filter, info, status, bwrap, args_fifo, stdio) = (&args[0], &args[1], &args[2], &args[3], &args[4], &args[5], &args[6]);
+    let (setup, filter, info, status, bwrap, args_fifo, stdio, guard) = (&args[0], &args[1], &args[2], &args[3], &args[4], &args[5], &args[6], &args[7]);
     // pasta blocks SIGUSR1 for its own start and leaves it so for what it runs.
     if let Err(e) = sys::block_only_terminal_interrupts() {
         warn!("confine: {e}");
@@ -1805,9 +1820,15 @@ pub fn inner(args: &[OsString]) -> i32 {
     }
     // pasta closed what it inherited, so the caller's stdin, stdout and stderr come over a socket and wait where the reaper takes them from.
     if !stdio.is_empty() {
-        let placed = UnixStream::connect(stdio)
-            .and_then(|socket| sys::recv_fds(socket.as_raw_fd()))
-            .and_then(|fds| sys::remap_fds(&[(fds[0].as_raw_fd(), STDIO_FD), (fds[1].as_raw_fd(), STDIO_FD + 1), (fds[2].as_raw_fd(), STDIO_FD + 2)]));
+        let placed = UnixStream::connect(stdio).and_then(|socket| {
+            let fds = sys::recv_fds::<3>(socket.as_raw_fd())?;
+            let mut pairs: Vec<_> = fds.iter().zip(STDIO_FD..).map(|(fd, at)| (fd.as_raw_fd(), at)).collect();
+            // The same connection carries the guard's listener back once the reaper has it.
+            if !guard.is_empty() {
+                pairs.push((socket.as_raw_fd(), GUARD_FD));
+            }
+            sys::remap_fds(&pairs)
+        });
         if let Err(e) = placed {
             warn!("confine: {}: {e}", Path::new(stdio).display());
             return 1;

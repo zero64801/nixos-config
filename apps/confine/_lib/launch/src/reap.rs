@@ -1,21 +1,22 @@
 //! The sandbox's pid 1.
 //! bwrap and pasta end when it does, so the sandbox lasts until its last process ends, as Flatpak's does, rather than dying with an app's first process when that one only starts the real program and exits.
 
-use crate::sys;
+use crate::{guard, sys};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 use std::process::Command;
 
-/// Usage: confine-launch --reap STATUS_FD|- COMMAND [ARGS...]
+/// Usage: confine-launch --reap STATUS_FD|- GUARD_FD|- COMMAND [ARGS...]
 /// Exits as the app did once nothing is left.
 /// When the app ends with other processes still running, its status goes out on STATUS_FD right away, so the launch can return then as `flatpak run` does.
 /// With - in its place the sandbox ends with the app, since the kernel kills what is left when pid 1 exits.
+/// GUARD_FD is the socket the namespace guard hands its listener out on, - for an app that cannot create namespaces.
 pub fn reap(args: &[OsString]) -> i32 {
-    let (Some(status), Some(program)) = (args.first().and_then(|a| a.to_str()), args.get(1)) else {
-        warn!("usage: confine-launch --reap STATUS_FD|- COMMAND [ARGS...]");
+    let (Some(status), Some(guard), Some(program)) = (args.first().and_then(|a| a.to_str()), args.get(1).and_then(|a| a.to_str()), args.get(2)) else {
+        warn!("usage: confine-launch --reap STATUS_FD|- GUARD_FD|- COMMAND [ARGS...]");
         return 2;
     };
     let linger = status != "-";
@@ -27,7 +28,14 @@ pub fn reap(args: &[OsString]) -> i32 {
     sys::unblock_all();
     // pid 1 inherits orphans anyway, this also holds where the reaper is not pid 1.
     let _ = sys::set_child_subreaper();
-    let app = match Command::new(program).args(&args[2..]).spawn() {
+    // Taken from the app whether or not the guard comes up, and an app without its guard does not start.
+    if let Ok(fd) = guard.parse::<RawFd>() {
+        if let Err(e) = guard::arm(unsafe { OwnedFd::from_raw_fd(fd) }) {
+            warn!("confine: the namespace guard: {e}");
+            return 1;
+        }
+    }
+    let app = match Command::new(program).args(&args[3..]).spawn() {
         Ok(child) => child.id() as libc::pid_t,
         Err(e) => {
             warn!("confine: {}: {e}", Path::new(program).display());
