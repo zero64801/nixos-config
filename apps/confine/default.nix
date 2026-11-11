@@ -3,7 +3,7 @@
 let
   cfg = config.confine;
 
-  wrap = pkgs.callPackage ./_lib/wrap.nix { };
+  wrap = pkgs.callPackage ./_lib/wrap.nix { shared = cfg.defaults; };
   importTool = pkgs.callPackage ./_lib/import.nix { };
   profileNames = lib.attrNames (import ./_lib/profiles.nix);
 
@@ -104,6 +104,20 @@ in
       type = lib.types.attrsOf appType;
       default = { };
       description = "Applications to run under a bubblewrap sandbox.";
+    };
+
+    defaults = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      example = {
+        binds.ro = [ "xdg-config/gtk-3.0" ];
+      };
+      description = ''
+        Permissions every app starts from, confine.lib.wrap included, as a
+        flatpak override without an app name gives them to every Flatpak.
+        They sit under an app's profiles and its own settings: lists add up
+        and a value the app sets wins.
+      '';
     };
 
     packages = lib.mkOption {

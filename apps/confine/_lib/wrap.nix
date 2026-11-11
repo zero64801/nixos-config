@@ -9,6 +9,7 @@
   wayland-proxy-virtwl,
   xdg-dbus-proxy,
   xwayland-satellite,
+  shared ? { },
 }:
 
 let
@@ -138,6 +139,8 @@ let
     "xdg-data"
     "xdg-state"
   ];
+  perApp = [ "name" "binaries" "binPrefix" "keepDesktopNames" "waylandAppId" ];
+
   bindPath = b: if lib.isString b then b else b.from;
 
   # The scope properties the launcher can type for systemd, with systemd-run's spellings.
@@ -183,15 +186,20 @@ let
   confineAgain = p: confine (settings // { package = p; });
 
   selected = map (p: profiles.${p} or (throw "confine: no such profile ${p}")) (
-    settings.profile or [ ]
+    (shared.profile or [ ]) ++ (settings.profile or [ ])
   );
 
-  cfg = lib.foldl' merge defaults (selected ++ [ (removeAttrs settings [ "profile" ]) ]);
+  # What the host sets for every app sits under the profiles, so an app's own value still wins.
+  cfg = lib.foldl' merge defaults (
+    [ (removeAttrs shared [ "profile" ]) ] ++ selected ++ [ (removeAttrs settings [ "profile" ]) ]
+  );
 
   inherit (cfg) appId package;
 
   checked =
-    if unknownKeys != [ ] then
+    if unknownShared != [ ] then
+      throw "confine: defaults cannot set ${lib.concatStringsSep ", " unknownShared}, a name there is unknown or belongs to one app"
+    else if unknownKeys != [ ] then
       throw "confine: unknown permission${lib.optionalString (lib.length unknownKeys > 1) "s"} ${
         lib.concatStringsSep ", " unknownKeys
       }"
@@ -260,6 +268,8 @@ let
   unknownKeys = lib.subtractLists (lib.attrNames defaults ++ [ "package" "appId" ]) (
     lib.attrNames settings
   );
+
+  unknownShared = lib.subtractLists (lib.subtractLists perApp (lib.attrNames defaults)) (lib.attrNames shared);
 
   portSpec =
     ports:

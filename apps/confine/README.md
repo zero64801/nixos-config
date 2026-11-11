@@ -21,6 +21,8 @@ confine.apps.discord = {
 
 The wrapped package replaces the original in `environment.systemPackages`, desktop entries, D-Bus services and systemd units included, so nothing starts the app unconfined.
 `confine.packages.<name>` holds the wrapped build for other modules, such as Home Manager program options.
+`confine.defaults` holds permissions for every app, as a `flatpak override` without an app name does: `confine.defaults.binds.ro = [ "xdg-config/gtk-3.0" ]` gives each one the GTK theme.
+They sit under an app's profiles and its own settings, so lists add up and a value the app sets wins.
 `confine.persistentHomeDirectories` lists the private homes to keep on an impermanent system.
 `confine.lib.wrap` builds a sandbox outside `confine.apps`, and `confine.lib.seccomp` builds a filter for plain `bwrap --seccomp`.
 
@@ -107,7 +109,7 @@ Mounting cgroup2 with `favordynmods` removes that wait, at a small cost to every
 | `--allow=devel`, `multiarch`, `bluetooth`, `canbus` | `seccomp.devel`, `multiarch`, `bluetooth`, `can` |
 | file forwarding with `@@` | automatic for apps with `portals = true` |
 | `flatpak ps`, `kill`, `enter`, `info`, `run --command` | `confine ps`, `kill`, `enter`, `info`, `run --command` |
-| `flatpak override` | the Nix configuration, there are no runtime overrides a process could loosen |
+| `flatpak override` | the Nix configuration, with `confine.defaults` for every app at once. There are no runtime overrides a process could loosen |
 
 Beyond Flatpak, confine isolates the network per app, can give an app its own X server, blocks io_uring unless asked, lets a browser keep its namespace sandbox without the network administration that comes with it, keeps security keys out of device patterns, guards git repositories in shared folders, runs its D-Bus proxy in a sandbox of its own, and runs every app in a scope that can be limited.
 Unlike Flatpak, every sandbox sees the whole read only Nix store and the host's `/etc`, minus credentials, since the store is the runtime here.

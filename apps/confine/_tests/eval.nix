@@ -197,6 +197,27 @@ let
 
     resourcesNeedTheScope = !(builtins.tryEval (build { scope = false; resources.MemoryMax = "4G"; }).drvPath).success;
 
+    defaultsSitUnderEveryApp =
+      let
+        withDefaults = pkgs.callPackage ../_lib/wrap.nix {
+          shared = {
+            profile = [ "audio" ];
+            binds.ro = [ "xdg-config/gtk-3.0" ];
+            gpu = true;
+          };
+        };
+        p = (withDefaults { package = pkgs.hello; appId = "org.test.App"; binds.ro = [ "Music" ]; gpu = false; }).permissions;
+      in
+      map (b: b.from or b) p.binds.ro == [ "xdg-config/gtk-3.0" "Music" ] && p.pipewire && !p.gpu;
+
+    defaultsCannotNameAnApp =
+      let
+        refused =
+          shared:
+          !(builtins.tryEval ((pkgs.callPackage ../_lib/wrap.nix { inherit shared; }) { package = pkgs.hello; appId = "org.test.App"; }).drvPath).success;
+      in
+      refused { binaries = [ "hello" ]; } && refused { appId = "org.test.Other"; } && refused { typo = true; };
+
     bindsCanBeRemapped =
       (build {
         binds.rw = [

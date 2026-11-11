@@ -6,8 +6,8 @@
 let
   inherit (pkgs) lib;
 
-  evalWith =
-    apps:
+  evalModule =
+    extra:
     (import (pkgs.path + "/nixos/lib/eval-config.nix") {
       inherit (pkgs.stdenv.hostPlatform) system;
       modules = [
@@ -20,10 +20,12 @@ let
             fsType = "tmpfs";
           };
           system.stateVersion = "25.11";
-          confine.apps = apps;
         }
+        extra
       ];
     }).config;
+
+  evalWith = apps: evalModule { confine.apps = apps; };
 
   failures = apps: map (a: a.message) (lib.filter (a: !a.assertion) (evalWith apps).assertions);
   warnings = apps: (evalWith apps).warnings;
@@ -36,6 +38,17 @@ let
   anyMatching = pattern: msgs: lib.any (m: lib.hasInfix pattern m) msgs;
 
   checks = {
+    defaultsReachAppsAndWrap =
+      let
+        c =
+          (evalModule {
+            confine.apps.a = plain;
+            confine.defaults.binds.ro = [ "xdg-config/gtk-3.0" ];
+          }).confine;
+        has = p: lib.elem "xdg-config/gtk-3.0" (map (b: b.from or b) p.binds.ro);
+      in
+      has c.packages.a.permissions && has (c.lib.wrap (plain // { appId = "com.vendor.Other"; })).permissions;
+
     # readOnly plus a default counts as two definitions and threw on read.
     packagesIsReadable = (evalWith { a = plain; }).confine.packages ? a;
 
