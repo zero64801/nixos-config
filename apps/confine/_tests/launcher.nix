@@ -191,6 +191,16 @@ pkgs.runCommand "confine-launcher-behaviour"
       appId = "com.test.Shared";
       runtimeDir = "shared";
     };
+    movedHomeLauncher = launcherOf {
+      appId = "com.test.MovedHome";
+      home = "ephemeral";
+      env.HOME = "/srv/elsewhere";
+      binds.ro = [
+        "xdg-config/gtk-3.0"
+        ".themes"
+        "/etc/hostname"
+      ];
+    };
     plainConfig = configOf { };
     unscopedConfig = configOf { scope = false; };
     zenConfig = configOf {
@@ -218,6 +228,10 @@ pkgs.runCommand "confine-launcher-behaviour"
     multiDesktopApp = multiDesktop;
     portalApp = portalService;
     accountsApp = shell { };
+    movedAccountApp = shell {
+      appId = "com.test.MovedAccount";
+      env.HOME = "/srv/elsewhere";
+    };
     hostAccountsApp = shell {
       appId = "com.test.HostAccounts";
       hostAccounts = true;
@@ -313,6 +327,15 @@ pkgs.runCommand "confine-launcher-behaviour"
     plan "$sharedLauncher" > shared.json
     has shared.json bwrap --bind "$rt/app/com.test.Shared" "$rt" \
       || fail "runtimeDir = shared does not back the runtime dir with the app directory"
+
+    # An app told its home is elsewhere looks for its theme and settings there, not under the caller's home.
+    plan "$movedHomeLauncher" > moved.json
+    has moved.json bwrap --ro-bind-try "$HOME/.config/gtk-3.0" /srv/elsewhere/.config/gtk-3.0 \
+      || fail "a bind relative to the config folder does not follow env.HOME"
+    has moved.json bwrap --ro-bind-try "$HOME/.themes" /srv/elsewhere/.themes \
+      || fail "a bind relative to the home does not follow env.HOME"
+    has moved.json bwrap --ro-bind-try /etc/hostname /etc/hostname \
+      || fail "an absolute bind moved along with env.HOME"
 
     # The build sandbox's /bin/sh is a bind mount, so a private /bin with a link stands in for the host's.
     ${pkgs.util-linux}/bin/unshare -Urm ${pkgs.bash}/bin/bash -c "
@@ -519,6 +542,10 @@ pkgs.runCommand "confine-launcher-behaviour"
     [ "$(wc -l < passwd-inside)" = 2 ] || fail "the sandbox passwd is not just the user and nfsnobody: $(cat passwd-inside)"
     grep -q "^$(id -un):x:$(id -u):" passwd-inside || fail "the sandbox passwd lacks the user"
     grep -q '^nfsnobody:x:65534:' passwd-inside || fail "the sandbox passwd lacks the overflow id"
+    # OpenSSH reads its files from the account's home and not from HOME, so the two have to agree.
+    "$movedAccountApp/bin/bash" -c "$cu/cat /etc/passwd" > passwd-moved || fail "the sandbox with a moved home did not run"
+    grep -q "^$(id -un):x:$(id -u):.*:/srv/elsewhere:/bin/sh$" passwd-moved \
+      || fail "the sandbox passwd does not name the home env.HOME sets: $(cat passwd-moved)"
     "$hostAccountsApp/bin/bash" -c "$cu/cat /etc/passwd" > passwd-host
     cmp -s passwd-host /etc/passwd || fail "hostAccounts = true does not show the host's passwd"
 

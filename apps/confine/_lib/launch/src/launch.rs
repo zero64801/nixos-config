@@ -251,6 +251,10 @@ impl<'a> Launch<'a> {
     }
 
     fn add_bind(&mut self, mode: Mode, src: PathBuf, dest: PathBuf, create: bool) -> Res<()> {
+        // A folder pinned later would cover a mount below it whose source lies elsewhere, so those above are pinned first.
+        if src != dest {
+            self.guard_path(&dest)?;
+        }
         if mode == Mode::Rw {
             // Absolute paths are never created, that would paper over an unmounted disk.
             if create {
@@ -272,8 +276,24 @@ impl<'a> Launch<'a> {
         Ok(())
     }
 
+    /// The home the app is told about, which env.HOME can move away from the caller's.
+    fn app_home(&self) -> &Path {
+        self.cfg.env.iter().rev().find(|(k, _)| k == "HOME").map_or(self.home.as_path(), |(_, v)| Path::new(v))
+    }
+
+    /// A path given relative to the home lands in the app's home.
+    fn inside(&self, spec: &str, outside: PathBuf) -> PathBuf {
+        if spec.starts_with('/') || spec.starts_with("./") || spec.starts_with("xdg-run/") {
+            return outside;
+        }
+        match outside.strip_prefix(&self.home) {
+            Ok(rest) => self.app_home().join(rest),
+            Err(_) => outside,
+        }
+    }
+
     fn add_spec(&mut self, mode: Mode, from: &str, to: &str) -> Res<()> {
-        let (Some(src), Some(dest)) = (self.resolve(from), self.resolve(to)) else { return Ok(()) };
+        let (Some(src), Some(dest)) = (self.resolve(from), self.resolve(to).map(|d| self.inside(to, d))) else { return Ok(()) };
         let create = !(from.starts_with('/') || from.starts_with("./"));
         self.add_bind(mode, src, dest, create)
     }
@@ -454,7 +474,8 @@ impl<'a> Launch<'a> {
                 "{user_name}:x:{}:{}:{real_name}:{}:/bin/sh\nnfsnobody:x:65534:65534:Unmapped user:/:/sbin/nologin\n",
                 self.uid,
                 self.gid,
-                self.home.display()
+                // The account's home too: OpenSSH looks for its files there and not under HOME.
+                self.app_home().display()
             );
             let group = format!("{group_name}:x:{}:{user_name}\nnfsnobody:x:65534:\n", self.gid);
             let (pf, gf) = (self.instance_path("passwd"), self.instance_path("group"));

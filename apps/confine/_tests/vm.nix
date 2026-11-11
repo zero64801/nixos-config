@@ -216,6 +216,18 @@ pkgs.testers.runNixOSTest {
           networkPorts.fromHost = [ 8082 ];
         };
 
+        # Its home sits in a shared folder next to a guarded file, so the launcher pins the folder above both.
+        moved = shell "moved" {
+          appId = "com.test.Moved";
+          home = "ephemeral";
+          env.HOME = "/home/alice/work/inner/home";
+          binds.rw = [ "/home/alice/work" ];
+          binds.ro = [
+            "xdg-config/theme"
+            "/home/alice/work/inner/guarded"
+          ];
+        };
+
         limited = shell "limited" {
           appId = "com.test.Limited";
           resources = {
@@ -485,6 +497,11 @@ pkgs.testers.runNixOSTest {
           answered = alice(f"${interrupt} {BIN}/net-bash")
           assert "got-int" in answered and "survived" in answered, answered
           wait_gone("com.test.Net")
+
+      with subtest("a folder bound into a moved home is not covered by a guard on its shared folder"):
+          alice("mkdir -p ~/.config/theme ~/work/inner/home && echo styled > ~/.config/theme/marker && echo kept > ~/work/inner/guarded")
+          seen = output(f"{BIN}/moved-bash -c 'cat ~/.config/theme/marker; echo changed 2>/dev/null > /home/alice/work/inner/guarded; cat /home/alice/work/inner/guarded'")
+          assert seen == "styled\nkept\n", seen
 
       with subtest("resource limits sit on the scope"):
           start("limited", f"{BIN}/limited-bash -c 'sleep 3003'")

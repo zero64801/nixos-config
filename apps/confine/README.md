@@ -44,7 +44,7 @@ Everything is closed unless an app or one of its profiles opens it.
 | `a11y` | `false` | The accessibility bus, filtered as Flatpak filters it. |
 | `home` | `"private"` | `"private"` keeps a home under `~/.local/share/confine/<appId>`. `"ephemeral"` starts empty every time. `"host"` shares the real home. |
 | `hostAccounts` | `false` | Shows the host's passwd and group instead of ones listing only the user, as Flatpak generates them. |
-| `binds.ro`, `binds.rw` | `[ ]` | Paths relative to the home, absolute paths, `./` paths relative to the folder the app starts in, `xdg-run/` paths, Flatpak's `xdg-download` style names, and glob patterns. |
+| `binds.ro`, `binds.rw` | `[ ]` | Paths relative to the home, absolute paths, `./` paths relative to the folder the app starts in, `xdg-run/` paths, Flatpak's `xdg-download` style names, and glob patterns. Where `env.HOME` moves the app's home, a path relative to the home or named the Flatpak way lands in that home. |
 | `workdir` | `null` | `"ro"` or `"rw"` shares the folder the app starts in, refusing the home itself or anything above it. |
 | `gitGuard.enable`, `.depth` | `false`, `4` | Keeps hooks, config and commondir of every repository in a writable shared folder read only, with `.git` pinned in place, and reports repositories that gained any while the app ran. |
 | `dbus.session.talk`, `.own`, `.call`, `.broadcast` | `[ ]` | Session bus rules for xdg-dbus-proxy. The app may always own its `appId` names. |
