@@ -7,8 +7,8 @@ in
   options.my.apps.confinedTerminal = {
     enable = lib.mkEnableOption ''
       the confined terminal: a "confined" command that opens a throwaway confine sandbox
-      seeing only the folder it starts in, and a "Terminal (Confined)" entry that opens it in
-      the default terminal
+      seeing only the folder it starts in, or runs one command in it, and a "Terminal (Confined)"
+      entry that opens it in the default terminal
     '';
 
     scratchDir = lib.mkOption {

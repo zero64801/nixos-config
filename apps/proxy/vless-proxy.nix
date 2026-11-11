@@ -134,6 +134,28 @@ if __name__ == "__main__":
 PY
   '';
 
+  outboundFiles = [ cfg.outboundFile ] ++ cfg.fallback.outboundFiles;
+
+  # With a fallback the outbounds sit behind a group that tests them. The tolerance keeps it on the first one that
+  # answers, in the order given, where it would otherwise move to whichever answers fastest.
+  outboundsJq = ''
+    def outbounds:
+      [inputs] | to_entries
+      | map(.value + { tag: (if .key == 0 then "vless-out" else "vless-fallback-\(.key)" end) })
+      | if length > 1 then
+          . + [ {
+            type: "urltest",
+            tag: "vless-auto",
+            outbounds: map(.tag),
+            url: $checkUrl,
+            interval: $checkInterval,
+            tolerance: 30000,
+            interrupt_exist_connections: true
+          } ]
+        else . end;
+  '';
+  outboundsArgs = "--arg checkUrl ${lib.escapeShellArg cfg.fallback.checkUrl} --arg checkInterval ${lib.escapeShellArg cfg.fallback.checkInterval}";
+
   singBoxConfigScript = pkgs.writeShellScript "sing-box-vless-socks" ''
     set -euo pipefail
 
@@ -151,9 +173,10 @@ PY
       -n \
       --arg socksListen ${lib.escapeShellArg cfg.socks.listen} \
       --argjson socksPort ${toString cfg.socks.port} \
-      --slurpfile outbound ${lib.escapeShellArg cfg.outboundFile} \
+      ${outboundsArgs} \
       '
-        ($outbound[0] + { tag: ($outbound[0].tag // "vless-out") }) as $out |
+        ${outboundsJq}
+        outbounds as $outs | ($outs | last | .tag) as $final |
         {
           log: {
             level: "info",
@@ -167,13 +190,12 @@ PY
               listen_port: $socksPort
             }
           ],
-          outbounds: [
-            $out,
+          outbounds: ($outs + [
             {
               type: "direct",
               tag: "direct"
             }
-          ],
+          ]),
           route: {
             rules: [
               {
@@ -181,10 +203,10 @@ PY
                 action: "sniff"
               }
             ],
-            final: $out.tag
+            final: $final
           }
         }
-      ' > "$tmp_config"
+      ' ${lib.escapeShellArgs outboundFiles} > "$tmp_config"
 
     test -s "$tmp_config"
     ${lib.getExe pkgs.sing-box} check -c "$tmp_config"
@@ -222,15 +244,16 @@ PY
       -n \
       --arg dns ${lib.escapeShellArg cfg.tunnelDns} \
       --argjson mark ${toString tunMark} \
-      --slurpfile outbound ${lib.escapeShellArg cfg.outboundFile} \
+      ${outboundsArgs} \
       '
-        ($outbound[0] + { tag: ($outbound[0].tag // "vless-out") }) as $out |
+        ${outboundsJq}
+        outbounds as $outs | ($outs | last | .tag) as $final |
         {
           log: { level: "warn", timestamp: true },
           certificate: { store: "mozilla" },
           dns: {
             servers: [
-              { type: "tcp", tag: "tunnel-dns", server: $dns, detour: $out.tag },
+              { type: "tcp", tag: "tunnel-dns", server: $dns, detour: $final },
               { type: "local", tag: "local" }
             ],
             final: "tunnel-dns",
@@ -246,18 +269,18 @@ PY
               auto_route: false
             }
           ],
-          outbounds: [ $out ],
+          outbounds: $outs,
           route: {
             rules: [
               { action: "sniff" },
               { protocol: "dns", action: "hijack-dns" }
             ],
-            final: $out.tag,
+            final: $final,
             default_mark: $mark,
             default_domain_resolver: "local"
           }
         }
-      ' > "$config"
+      ' ${lib.escapeShellArgs outboundFiles} > "$config"
 
     ${lib.getExe pkgs.sing-box} check -c "$config"
 
@@ -317,6 +340,30 @@ in
         Runtime JSON file containing a single sing-box VLESS outbound object.
         Keep this outside the Nix store because it contains server details.
       '';
+    };
+
+    fallback = {
+      outboundFiles = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Runtime JSON files, each a single sing-box outbound object, used in this order while the one in
+          outboundFile does not answer. A fallback stays in use until it stops answering or the proxy restarts,
+          so nothing is cut off again when the first server returns.
+        '';
+      };
+
+      checkUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "https://www.gstatic.com/generate_204";
+        description = "Page fetched through each outbound to tell whether it answers.";
+      };
+
+      checkInterval = lib.mkOption {
+        type = lib.types.str;
+        default = "15s";
+        description = "How often each outbound is tested, as a sing-box duration.";
+      };
     };
 
     socks = {

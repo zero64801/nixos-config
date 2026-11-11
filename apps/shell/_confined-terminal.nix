@@ -59,10 +59,12 @@ let
         // lib.optionalAttrs v.offline { network = "none"; }
         // lib.optionalAttrs v.keep { home = "host"; }
         // lib.optionalAttrs v.gui {
-          wayland = true;
-          gpu = true;
-          sysfs = true;
+          profile = [
+            "gui"
+            "gpu"
+          ];
         }
+        // lib.optionalAttrs v.audio { pulse = true; }
       );
     in
     {
@@ -70,6 +72,7 @@ let
         (if v.offline then "o" else "-")
         (if v.keep then "k" else "-")
         (if v.gui then "g" else "-")
+        (if v.audio then "a" else "-")
       ];
       path = "${w.launcher}/bin/${w.launcher.name}";
     }
@@ -77,6 +80,7 @@ let
     offline = [ false true ];
     keep = [ false true ];
     gui = [ false true ];
+    audio = [ false true ];
   });
 
   bashrc = writeText "confined-terminal-bashrc" ''
@@ -91,18 +95,30 @@ let
       getent
     ];
     text = ''
-      offline=- keep=- gui=- folder=""
+      offline=- keep=- gui=- audio=- folder="" command=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --offline) offline=o ;;
           --keep) keep=k ;;
           --gui) gui=g ;;
+          --audio) audio=a ;;
+          --)
+            shift
+            if [ "$#" -eq 0 ]; then
+              echo "confined: nothing to run after --" >&2
+              exit 2
+            fi
+            command=("$@")
+            break
+            ;;
           -h | --help)
-            echo "usage: confined [--offline] [--keep] [--gui] [FOLDER]"
+            echo "usage: confined [--offline] [--keep] [--gui] [--audio] [FOLDER] [-- COMMAND...]"
             echo "A throwaway sandboxed shell that sees only FOLDER, or the current folder, or a new scratch folder in ~/${scratchDir}."
+            echo "With a COMMAND it runs that in the sandbox, in place of the shell."
             echo "  --offline  no network"
             echo "  --keep     keep this folder's sandbox home between runs"
-            echo "  --gui      allow windows (Wayland and GPU)"
+            echo "  --gui      allow windows (Wayland, GPU, the desktop's theme, dialogs and notifications)"
+            echo "  --audio    allow sound, which includes the microphone"
             exit 0
             ;;
           -*)
@@ -142,20 +158,22 @@ let
         export HOME
       fi
 
-      case "$offline$keep$gui" in
+      case "$offline$keep$gui$audio" in
         ${lib.concatMapStrings (l: ''
           ${l.key}) launcher=${l.path} ;;
         '') launchers}
       esac
 
-      shell=$(getent passwd "$(id -u)" | cut -d: -f7)
-      shell_args=()
-      case "$(basename "$shell")" in
-        fish)
-          shell_args=(--init-command 'functions -q fish_prompt; and functions -c fish_prompt __confined_prompt; function fish_prompt; set_color red; echo -n "[confined] "; set_color normal; functions -q __confined_prompt; and __confined_prompt; end')
-          ;;
-        bash) shell_args=(--rcfile ${bashrc} -i) ;;
-      esac
+      if [ "''${#command[@]}" -eq 0 ]; then
+        shell=$(getent passwd "$(id -u)" | cut -d: -f7)
+        command=("$shell")
+        case "$(basename "$shell")" in
+          fish)
+            command+=(--init-command 'functions -q fish_prompt; and functions -c fish_prompt __confined_prompt; function fish_prompt; set_color red; echo -n "[confined] "; set_color normal; functions -q __confined_prompt; and __confined_prompt; end')
+            ;;
+          bash) command+=(--rcfile ${bashrc} -i) ;;
+        esac
+      fi
 
       old_background=""
       if [ -t 0 ] && [ -t 1 ]; then
@@ -180,7 +198,7 @@ let
 
       cd "$folder"
       status=0
-      "$launcher" "$shell" "''${shell_args[@]}" || status=$?
+      "$launcher" "''${command[@]}" || status=$?
 
       if [ -t 1 ]; then
         if [ -n "$old_background" ]; then

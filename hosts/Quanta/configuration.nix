@@ -59,6 +59,7 @@ in
       vlessProxy = {
         enable = true;
         outboundFile = "/mnt/vault/secrets/sing-box/vless-outbound.json";
+        fallback.outboundFiles = [ "/mnt/vault/secrets/sing-box/vless-outbound-fallback.json" ];
       };
       wgProxy = {
         enable = true;
