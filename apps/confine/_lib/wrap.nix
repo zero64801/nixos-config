@@ -431,9 +431,11 @@ let
       network = networkMode;
       # Forwards default to "auto", exposing every loopback service, so they start closed. --no-map-gw closes the gateway route.
       # The launcher puts those from the host in front, since only one running instance of an app can hold them.
+      # --host-lo-to-ns-lo hands a connection made to the host's loopback to the app's loopback, where a server on localhost listens.
       pastaArgs = [
         "--config-net"
         "--no-map-gw"
+        "--host-lo-to-ns-lo"
         "--quiet"
         "-T"
         (portSpec cfg.networkPorts.toHost)

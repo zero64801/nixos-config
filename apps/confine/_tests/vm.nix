@@ -199,6 +199,7 @@ pkgs.testers.runNixOSTest {
           networkPorts.fromHost = [
             8090
             "0.0.0.0/8091"
+            8092
           ];
         };
 
@@ -255,6 +256,7 @@ pkgs.testers.runNixOSTest {
         cd /tmp
         python3 -m http.server 8090 &
         python3 -m http.server 8091 &
+        python3 -m http.server --bind 127.0.0.1 8092 &
         exec python3 -c '
         import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -438,6 +440,9 @@ pkgs.testers.runNixOSTest {
           assert not [a for a in listening if a.endswith(":8090") and a != "127.0.0.1:8090"], listening
           # A client given the name tries ::1 first, is refused there and falls back, which a listener on ::1 with nothing behind it would not allow.
           machine.succeed("curl --silent --fail --max-time 5 --output /dev/null http://localhost:8090/")
+
+      with subtest("a server that listens on loopback alone inside is reached from the host's loopback"):
+          machine.wait_until_succeeds("curl --silent --fail --max-time 5 --output /dev/null http://127.0.0.1:8092/", timeout=30)
 
       with subtest("another machine reaches a port that names an address and none left on loopback"):
           machine.wait_until_succeeds("timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/8091'", timeout=30)
