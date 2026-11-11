@@ -92,9 +92,9 @@ let
     nesting  64:io_uring          ENOSYS
     nesting  64:chroot            EFAULT
     nesting  64:mount             EFAULT
-    nesting  64:netfilter         ok
-    nesting  64:xtables           EBADF
-    nesting  64:xtables6          EBADF
+    nesting  64:netfilter         EPERM
+    nesting  64:xtables           EPERM
+    nesting  64:xtables6          EPERM
     nesting  64:ip6_tclass        EBADF
     devel    64:keyctl            EPERM
     devel    64:userns            EPERM
@@ -132,9 +132,9 @@ let
     steam    64:io_uring          ENOSYS
     steam    64:chroot            EFAULT
     steam    64:mount             EFAULT
-    steam    64:netfilter         ok
-    steam    64:xtables           EBADF
-    steam    64:xtables6          EBADF
+    steam    64:netfilter         EPERM
+    steam    64:xtables           EPERM
+    steam    64:xtables6          EPERM
     steam    64:ip6_tclass        EBADF
     can      64:keyctl            EPERM
     can      64:userns            EPERM

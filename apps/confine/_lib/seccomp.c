@@ -66,8 +66,8 @@ block_family (enum scmp_compare op, int family)
 }
 
 /* A user namespace can make a network namespace it administers, and from there reach netfilter, the richest source of
- * kernel privilege escalations, which nothing a browser's sandbox does needs. The kernel reads these arguments as 32-bit
- * and the filter compares 64, so equality is masked, or a stray high bit would slip past. */
+ * kernel privilege escalations, which neither a browser's sandbox nor a nested bubblewrap needs. The kernel reads these
+ * arguments as 32-bit and the filter compares 64, so equality is masked, or a stray high bit would slip past. */
 static void
 block_netfilter (void)
 {
@@ -226,7 +226,7 @@ main (int argc, char **argv)
   add_rules (nesting, userns, devel, multiarch, io_uring);
 
   /* Native ABI only, like the family rules below and for their reason. */
-  if (userns && !nesting)
+  if (userns || nesting)
     block_netfilter ();
 
   /* Keep this list numerically ordered, the gap walk below depends on it. */
