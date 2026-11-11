@@ -1,4 +1,4 @@
-{ lib, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   devHome = "/home/dx/Projects/dev/.home";
@@ -39,7 +39,10 @@ let
       NIX_REMOTE = "daemon";
       NH_ELEVATION_STRATEGY = "run0";
     };
-    envPassthrough = [ "NIX_PATH" ];
+    envPassthrough = [
+      "NIX_PATH"
+      "SHELL"
+    ];
 
     binds.rw = [
       "/home/dx/nixos"
@@ -57,14 +60,38 @@ let
 
     dbus.session = {
       talk = [ "org.freedesktop.Notifications" ];
-      call = [ "org.freedesktop.portal.Desktop=org.freedesktop.portal.OpenURI.*@/org/freedesktop/portal/desktop" ];
+      call = [
+        "org.freedesktop.portal.Desktop=org.freedesktop.portal.OpenURI.*@/org/freedesktop/portal/desktop"
+        "org.freedesktop.portal.Desktop=org.freedesktop.portal.Settings.*@/org/freedesktop/portal/desktop"
+      ];
+      broadcast = [ "org.freedesktop.portal.Desktop=org.freedesktop.portal.Settings.*@/org/freedesktop/portal/desktop" ];
     };
     dbus.system.talk = [ "org.freedesktop.systemd1" ];
+  };
+
+  git = config.my.apps.git;
+  key = lib.removePrefix "~/" (lib.removeSuffix ".pub" git.signing.keyFile);
+
+  gitAccess = lib.optionalAttrs (git.enable && git.github.enable) {
+    devices = [ "/dev/input/by-id/*-fido" ];
+    securityKeys = true;
+
+    binds = workspace.binds // {
+      ro = workspace.binds.ro ++ [
+        "xdg-config/git/config"
+        key
+        "${key}.pub"
+        ".ssh/known_hosts"
+      ];
+    };
+    env = workspace.env // {
+      GIT_SSH_COMMAND = "ssh -F ${config.hm.home.file.".ssh/config".source}";
+    };
   };
 in
 {
   confine.apps = {
-    vscode = workspace // {
+    vscode = workspace // gitAccess // {
       package = pkgs.vscode;
       appId = "com.visualstudio.code";
       waylandAppId = "code";
