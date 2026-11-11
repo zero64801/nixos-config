@@ -1,4 +1,5 @@
 import argparse
+import collections
 import glob
 import hashlib
 import itertools
@@ -35,6 +36,18 @@ FIDO_USAGE_CTAPHID = 0x01
 WAIT_GRACE = 2.0
 REPLY_GRACE = 0.2
 MAX_CLIENTS = 4
+
+TRACING = "/sys/kernel/tracing"
+# A key answers a request with a first keepalive within ~100 ms, so whoever made it wait sent something shortly before.
+SEND_WINDOW = 2.0
+# hidraw ioctls that carry nothing to the key, by number. Any other one may hold a report for it.
+HIDRAW_READS = frozenset({0x01, 0x02, 0x03, 0x04, 0x05, 0x07, 0x08, 0x0A, 0x0C, 0x0D})
+# The task name ahead of the pid is the program's own choice, so the match is anchored on what the kernel prints after it.
+SEND_PROBES = {
+    "key_write": "hidraw_write rdev=file->f_inode->i_rdev",
+    "key_ioctl": "hidraw_ioctl rdev=file->f_inode->i_rdev cmd=cmd",
+}
+SEND_EVENT = re.compile(r".*-(\d+)\s+\[\d+\]\s+\S+\s+(\d+\.\d+): (key_write|key_ioctl): \(.*\) rdev=(\d+)(?: cmd=(\d+))?\s*$")
 
 # The PAM step waits this long for a notifier that is restarting, as one does during a switch.
 NOTIFIER_WAIT = 5.0
@@ -176,14 +189,24 @@ class WaitTracker:
         self.cid = None
         self.deadline = 0.0
         self.outcome = None
+        self.busy = {}
+        self.since = 0.0
 
     def feed(self, report, now):
         """True when the report starts a new wait."""
         kind = frame_kind(report)
         cid = bytes(report[:4])
+        # A key may work on a request for a while before it asks for the touch, the request was sent before all of that.
+        if len(report) > 4 and report[4] == CTAPHID_KEEPALIVE:
+            self.busy = {c: t for c, t in self.busy.items() if now - t < 60}
+            self.busy.setdefault(cid, now)
+        elif kind == "reply":
+            self.busy.pop(cid, None)
         if kind == "wait":
             started = cid != self.cid or self.outcome is not None
             self.cid, self.outcome, self.deadline = cid, None, now + WAIT_GRACE
+            if started:
+                self.since = self.busy.get(cid, now)
             return started
         if kind == "reply" and cid == self.cid and self.outcome is None:
             self.outcome = reply_outcome(report)
@@ -334,6 +357,145 @@ def holders_of(device, proc_root="/proc", exclude=()):
                 pids.append(int(entry))
                 break
     return pids
+
+
+def kernel_dev(device):
+    """The device number as the kernel holds it in an inode, None when the node is gone."""
+    try:
+        rdev = os.stat(device).st_rdev
+    except OSError:
+        return None
+    return os.major(rdev) << 20 | os.minor(rdev)
+
+
+class SendTrace:
+    """Which programs sent something to a security key, from kernel probes on the two calls a program can send through.
+
+    A program that only holds the key open sends nothing, which tells it apart from the one that made the key blink.
+    Whenever that cannot be told for sure (no probes, lost events, a sender that is already gone) the answer is
+    None, and every program holding the key is named as before.
+    """
+
+    def __init__(self, root=TRACING, proc_root="/proc"):
+        self.root = root
+        self.proc_root = proc_root
+        self.instance = os.path.join(root, "instances", "touch-guard")
+        self.pipe = None
+        self.pending = b""
+        self.keys = None
+        self.sent = collections.deque(maxlen=4096)
+        self.unsure = 0.0
+        self.lost = None
+        self.checked = 0.0
+
+    @staticmethod
+    def write(path, text):
+        try:
+            # Not open(path, "a"): Python then seeks to the end, which these kernel files refuse.
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, text.encode() + b"\n")
+            finally:
+                os.close(fd)
+        except OSError as e:
+            # A failed write names no file by itself, and which setting the kernel refused is the whole answer.
+            raise OSError(e.errno, f"{e.strerror}, writing {text!r} to {path}") from None
+
+    def open(self):
+        events = os.path.join(self.root, "dynamic_events")
+        group = os.path.join(self.instance, "events", "touchguard")
+        os.makedirs(self.instance, exist_ok=True)
+        defined = read_text(events).splitlines()
+        for name, probe in SEND_PROBES.items():
+            line = f"p:touchguard/{name} {probe}"
+            if line in defined:
+                continue
+            if any(d.startswith(f"p:touchguard/{name} ") for d in defined):
+                self.write(os.path.join(group, name, "enable"), "0")
+                self.write(events, f"-:touchguard/{name}")
+            self.write(events, line)
+        self.write(os.path.join(self.instance, "trace_clock"), "mono")
+        self.write(os.path.join(self.instance, "buffer_size_kb"), "64")
+        self.filter()
+        self.write(os.path.join(group, "enable"), "1")
+        self.pipe = os.open(os.path.join(self.instance, "trace_pipe"), os.O_RDONLY | os.O_NONBLOCK)
+
+    def filter(self):
+        wanted = " || ".join(f"rdev == {dev}" for dev in sorted(self.keys or ())) or "rdev == 0"
+        for name in SEND_PROBES:
+            self.write(os.path.join(self.instance, "events", "touchguard", name, "filter"), wanted)
+
+    def watch(self, devices):
+        """Follows these device nodes. Probes are set up with the first key, when the driver they sit in is loaded."""
+        keys = {dev for dev in map(kernel_dev, devices) if dev is not None}
+        if keys == self.keys:
+            return
+        self.keys = keys
+        try:
+            if self.pipe is None:
+                if keys:
+                    self.open()
+                    log("following which programs send to a security key")
+            else:
+                self.filter()
+        except OSError as e:
+            log(f"cannot follow which programs send to a security key ({e}), every program holding one is named")
+            self.close()
+
+    def close(self):
+        if self.pipe is not None:
+            os.close(self.pipe)
+        self.pipe = None
+
+    def tgid(self, tid):
+        return int(key_value_lines(read_text(os.path.join(self.proc_root, str(tid), "status"))).get("Tgid", 0)) or None
+
+    def losses(self):
+        total = 0
+        for path in glob.glob(os.path.join(self.instance, "per_cpu", "cpu*", "stats")):
+            stats = key_value_lines(read_text(path))
+            total += int(stats.get("overrun", 0)) + int(stats.get("dropped events", 0))
+        return total
+
+    def drain(self, now):
+        if self.pipe is None:
+            return
+        try:
+            while chunk := os.read(self.pipe, 65536):
+                self.pending += chunk
+        except BlockingIOError:
+            pass
+        except OSError as e:
+            log(f"stopped following which programs send to a security key: {e}")
+            self.close()
+            return
+        *lines, self.pending = self.pending.split(b"\n")
+        for raw in lines:
+            line = raw.decode(errors="replace")
+            event = SEND_EVENT.match(line)
+            if not event:
+                if "key_write" in line or "key_ioctl" in line or "LOST" in line:
+                    self.unsure = now + SEND_WINDOW
+                continue
+            tid, stamp, name, rdev, cmd = event.groups()
+            if name == "key_ioctl" and ((int(cmd) >> 8 & 0xFF) != ord("H") or int(cmd) & 0xFF in HIDRAW_READS):
+                continue
+            self.sent.append((float(stamp), int(rdev), self.tgid(int(tid))))
+        if now - self.checked >= 1.0:
+            self.checked = now
+            lost = self.losses()
+            if self.lost is not None and lost != self.lost:
+                self.unsure = now + SEND_WINDOW
+            self.lost = lost
+
+    def senders(self, device, since, now):
+        """Pids that sent to the device from `since` on, None when that is not known for sure."""
+        self.drain(now)
+        dev = kernel_dev(device)
+        if self.pipe is None or dev is None or since <= self.unsure:
+            return None
+        pids = {pid for stamp, rdev, pid in self.sent if rdev == dev and stamp >= since}
+        return None if None in pids else pids
 
 
 def notifier_problem(pid, uid, argv, proc_root="/proc"):
@@ -702,12 +864,18 @@ def describe_request(chain, polkit, proc_root, context=None):
     }
 
 
-def report_for(device, proc_root, exclude, polkit, context=None):
+def report_for(device, proc_root, exclude, polkit, context=None, senders=None):
+    """`senders` are the pids known to have sent to the key for this wait, None when that is not known."""
     holders = {}
-    for pid in holders_of(device, proc_root, exclude):
+    for pid in list(holders_of(device, proc_root, exclude)) + sorted((senders or set()) - set(exclude)):
         info = proc_info(pid, proc_root)
         if info:
             holders[pid] = info
+    idle = []
+    # With nobody seen sending the key should not be waiting at all, so everyone holding it stays named.
+    if senders and any(pid in holders for pid in senders):
+        idle = [info for pid, info in holders.items() if pid not in senders]
+        holders = {pid: info for pid, info in holders.items() if pid in senders}
     requesters = []
     for pid in holders:
         chain = chain_of(pid, proc_root)
@@ -720,7 +888,7 @@ def report_for(device, proc_root, exclude, polkit, context=None):
         warnings.append("no program has the key open, don't touch unless you just started something")
     if len(requesters) > 1:
         warnings.append(f"{len(requesters)} requests at once, don't touch")
-    return {"device": device, "requesters": requesters, "warnings": warnings}
+    return {"device": device, "requesters": requesters, "warnings": warnings, "idle": idle}
 
 
 def summary_line(report):
@@ -1480,11 +1648,32 @@ def main():
     events = queue.Queue()
     trackers = {}
     current = {}
+    asking = {}
+    trace = SendTrace()
     next_scan = 0.0
     exclude = {os.getpid()}
     log("watching for security key touches")
 
+    def announce(device, since, senders, extra=None):
+        result = report_for(device, "/proc", exclude, polkit.latest(), context, senders)
+        idle = result.pop("idle")
+        if idle:
+            log(f"holding {device} without sending to it, left out: "
+                + ", ".join(f"{p['name']} (pid {p['pid']})" for p in idle))
+        if extra:
+            result["warnings"].append(extra)
+        asking[device] = (since, senders)
+        claimed = guard.claim(result)
+        if claimed is not None:
+            current[device] = claimed
+            log(f"touch requested on {device}, as announced through PAM: {summary_line(result)}")
+        else:
+            current[device] = next_id()
+            log(f"touch requested on {device}: {summary_line(result)}")
+            broadcaster.publish({"event": "waiting", "id": current[device], **result})
+
     def finish(device, why):
+        asking.pop(device, None)
         if device in current:
             event_id = current.pop(device)
             log(f"touch wait on {device} ended: {why}")
@@ -1499,26 +1688,32 @@ def main():
                     trackers[device] = WaitTracker()
                     threading.Thread(target=watch_device, args=(device, events), daemon=True).start()
                     log(f"watching {device}")
+            trace.watch(list(trackers))
             next_scan = now + 2.0
         try:
             kind, device, report = events.get(timeout=0.1)
         except queue.Empty:
             kind = None
         now = time.monotonic()
+        trace.drain(now)
         if kind == "gone":
             trackers.pop(device, None)
+            trace.watch(list(trackers))
             finish(device, "key removed")
         elif kind == "report" and device in trackers and trackers[device].feed(report, now):
             finish(device, "a new request took over")
-            result = report_for(device, "/proc", exclude, polkit.latest(), context)
-            claimed = guard.claim(result)
-            if claimed is not None:
-                current[device] = claimed
-                log(f"touch requested on {device}, as announced through PAM: {summary_line(result)}")
-            else:
-                current[device] = next_id()
-                log(f"touch requested on {device}: {summary_line(result)}")
-                broadcaster.publish({"event": "waiting", "id": current[device], **result})
+            since = trackers[device].since - SEND_WINDOW
+            announce(device, since, trace.senders(device, since, now))
+        # A request slipped in on the waiting channel changes no frame the key sends, only who has sent to it.
+        for device, (since, known) in list(asking.items()):
+            if known is None or device not in current:
+                continue
+            late = trace.senders(device, since, now)
+            if late is None or late - known:
+                finish(device, "another program sent to the key")
+                announce(device, since, None if late is None else late - known,
+                         "sent to the key while it was already waiting, don't touch")
+                asking[device] = (since, None if late is None else known | late)
         for device, tracker in trackers.items():
             outcome = tracker.end(now)
             if outcome:

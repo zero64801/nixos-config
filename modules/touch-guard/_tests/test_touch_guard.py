@@ -55,7 +55,7 @@ class Proc:
         os.makedirs(os.path.join(base, "ns"))
         euid = uid if euid is None else euid
         files = {
-            "status": f"Name:\tx\nPPid:\t{ppid}\nTracerPid:\t{tracer}\nUid:\t{uid}\t{euid}\t{euid}\t{euid}\n",
+            "status": f"Name:\tx\nTgid:\t{pid}\nPPid:\t{ppid}\nTracerPid:\t{tracer}\nUid:\t{uid}\t{euid}\t{euid}\t{euid}\n",
             "comm": os.path.basename(exe)[:15] + "\n",
             "cmdline": "\0".join(cmdline) + "\0",
             "environ": "".join(e + "\0" for e in environ),
@@ -81,8 +81,8 @@ class Proc:
         """The real sudo: setuid, so it runs as root for the user who started it."""
         self.add(pid, ppid, ["sudo", *command], "/nix/store/x-sudo/bin/sudo", euid=0, fds=self.key())
 
-    def report(self, polkit=None, context=None):
-        return d.report_for(self.device, self.root, set(), polkit, context)
+    def report(self, polkit=None, context=None, senders=None):
+        return d.report_for(self.device, self.root, set(), polkit, context, senders)
 
 
 class Descriptors(unittest.TestCase):
@@ -368,6 +368,149 @@ class Requesters(unittest.TestCase):
     def test_unlisted_mount_still_counts(self):
         self.p.add(986, 1, ["holder"], "/nix/store/x-holder/bin/holder", fds={7: ("/gone/hidraw16", "77", self.p.ino)})
         self.assertEqual([q["pid"] for q in self.p.report()["requesters"]], [986])
+
+
+KEY = 245 << 20 | 3
+
+
+def sent(pid, stamp, call="key_write", rdev=KEY, cmd=None, comm="python3"):
+    """A probe event as the kernel prints it."""
+    function = "hidraw_write+0x4/0x70" if call == "key_write" else "hidraw_ioctl+0x4/0x3f0"
+    tail = "" if cmd is None else f" cmd={cmd}"
+    return f"{comm:>16}-{pid:<7} [000] ..... {stamp:13.6f}: {call}: ({function} [hid]) rdev={rdev}{tail}\n".encode()
+
+
+def hid_ioctl(number, size=65):
+    return 3 << 30 | size << 16 | ord("H") << 8 | number
+
+
+class Senders(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.p = Proc(tmp.name)
+        self.p.add(900, 1, ["konsole"], "/nix/store/x-konsole/bin/konsole", stdin="/dev/null")
+        self.p.add(901, 900, ["fish"], "/nix/store/x-fish/bin/fish")
+        self.p.sudo(951, 901, "true")
+        self.p.add(700, 1, ["winedevice.exe"], "/nix/store/x-wine/bin/wine-preloader", fds=self.p.key(), stdin="/dev/null")
+        self.trace = d.SendTrace(os.path.join(tmp.name, "tracing"), self.p.root)
+        self.trace.pipe, self.feed = os.pipe()
+        os.set_blocking(self.trace.pipe, False)
+        self.addCleanup(os.close, self.feed)
+        self.addCleanup(self.trace.close)
+        patch = mock.patch.object(d, "kernel_dev", return_value=KEY)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def senders(self, *events, since=10.0, now=12.0):
+        for event in events:
+            os.write(self.feed, event)
+        return self.trace.senders(self.p.device, since, now)
+
+    def test_only_the_program_that_sent_is_a_sender(self):
+        self.assertEqual(self.senders(sent(951, 11.0)), {951})
+
+    def test_a_thread_counts_as_its_program(self):
+        base = os.path.join(self.p.root, "952")
+        os.makedirs(base)
+        with open(os.path.join(base, "status"), "w") as f:
+            f.write("Name:\tx\nTgid:\t951\n")
+        self.assertEqual(self.senders(sent(952, 11.0)), {951})
+
+    def test_reports_sent_through_ioctl_count_and_queries_do_not(self):
+        self.assertEqual(self.senders(sent(700, 11.0, "key_ioctl", cmd=hid_ioctl(0x07))), set(), "HIDIOCGFEATURE")
+        self.assertEqual(self.senders(sent(700, 11.1, "key_ioctl", cmd=0x5401)), set(), "a terminal ioctl reaches no key")
+        for number in (0x06, 0x09, 0x0B, 0x3F):
+            self.trace.sent.clear()
+            self.assertEqual(self.senders(sent(700, 11.2, "key_ioctl", cmd=hid_ioctl(number))), {700}, hex(number))
+
+    def test_older_sends_and_other_devices_are_left_out(self):
+        self.assertEqual(self.senders(sent(700, 9.9), sent(951, 11.0, rdev=KEY + 1)), set())
+
+    def test_a_task_name_cannot_forge_the_pid(self):
+        forged = sent(951, 11.0, comm="x-700 [000] . 1:")
+        self.assertEqual(self.senders(forged), {951})
+        split = sent(951, 11.0, comm="\nx-700 [0] . 1:")
+        self.assertEqual(self.senders(split), {951})
+
+    def test_a_sender_that_is_gone_makes_the_answer_unknown(self):
+        self.assertIsNone(self.senders(sent(4242, 11.0)))
+
+    def test_lost_or_unreadable_events_make_the_answer_unknown(self):
+        self.assertIsNone(self.senders(b"CPU:0 [LOST 12 EVENTS]\n", sent(951, 11.0)))
+        self.trace.unsure = 0.0
+        self.assertIsNone(self.senders(b"  x-1  [000] ..... 11.0: key_write: garbage\n"))
+
+    def test_dropped_events_in_the_buffer_make_the_answer_unknown(self):
+        stats = os.path.join(self.trace.instance, "per_cpu", "cpu0")
+        os.makedirs(stats)
+        with open(os.path.join(stats, "stats"), "w") as f:
+            f.write("entries: 2\noverrun: 0\ndropped events: 0\n")
+        self.assertEqual(self.senders(sent(951, 11.0), now=12.0), {951})
+        with open(os.path.join(stats, "stats"), "w") as f:
+            f.write("entries: 2\noverrun: 7\ndropped events: 0\n")
+        self.assertIsNone(self.senders(now=14.0, since=13.0))
+        self.assertEqual(self.senders(sent(951, 20.0), now=21.0, since=19.0), {951}, "known again once the loss is behind")
+
+    def test_no_probes_means_unknown(self):
+        self.trace.close()
+        self.assertIsNone(self.trace.senders(self.p.device, 0.0, 1.0))
+
+    def test_a_program_holding_the_key_idle_is_left_out(self):
+        r = self.p.report(senders={951})
+        self.assertEqual([q["holder"] for q in r["requesters"]], [951])
+        self.assertEqual(r["warnings"], [])
+        self.assertEqual([p["pid"] for p in r["idle"]], [700])
+
+    def test_every_holder_is_named_when_the_sender_is_unknown(self):
+        for senders in (None, set(), {4242}):
+            r = self.p.report(senders=senders)
+            self.assertEqual(sorted(q["holder"] for q in r["requesters"]), [700, 951], senders)
+            self.assertIn("2 requests at once, don't touch", r["warnings"])
+            self.assertEqual(r["idle"], [])
+
+    def test_a_sender_that_closed_the_key_is_still_named(self):
+        self.p.add(960, 901, ["python3", "ask.py"], "/nix/store/x-python/bin/python3")
+        r = self.p.report(senders={960})
+        self.assertEqual([q["holder"] for q in r["requesters"]], [960])
+        self.assertEqual(sorted(p["pid"] for p in r["idle"]), [700, 951])
+
+    def test_the_wait_reaches_back_to_the_first_keepalive(self):
+        t = d.WaitTracker()
+        self.assertFalse(t.feed(frame(d.CTAPHID_KEEPALIVE, 0x01), 1.0))
+        self.assertTrue(t.feed(UPNEEDED, 4.0))
+        self.assertEqual(t.since, 1.0)
+        t.feed(TOUCHED, 4.5)
+        self.assertTrue(t.feed(UPNEEDED, 9.0))
+        self.assertEqual(t.since, 9.0, "a reply ends what the earlier keepalives belonged to")
+
+    def test_probes_are_defined_once_and_filtered_to_the_keys(self):
+        self.trace.close()
+        root = self.trace.root
+        for name in d.SEND_PROBES:
+            os.makedirs(os.path.join(self.trace.instance, "events", "touchguard", name))
+        with open(os.path.join(root, "dynamic_events"), "w") as f:
+            f.write("p:touchguard/key_write hidraw_write rdev=file->f_inode->i_rdev\n"
+                    "p:touchguard/key_ioctl hidraw_ioctl old=definition\n")
+        open(os.path.join(self.trace.instance, "trace_pipe"), "w").close()
+        self.trace.watch([self.p.device])
+        self.assertIsNotNone(self.trace.pipe)
+        with open(os.path.join(root, "dynamic_events")) as f:
+            written = f.read().splitlines()[2:]
+        self.assertEqual(written, ["-:touchguard/key_ioctl", "p:touchguard/key_ioctl hidraw_ioctl rdev=file->f_inode->i_rdev cmd=cmd"])
+        for name in d.SEND_PROBES:
+            with open(os.path.join(self.trace.instance, "events", "touchguard", name, "filter")) as f:
+                self.assertEqual(f.read(), f"rdev == {KEY}\n")
+        with open(os.path.join(self.trace.instance, "trace_clock")) as f:
+            self.assertEqual(f.read(), "mono\n")
+
+    def test_missing_tracing_falls_back_without_failing(self):
+        self.trace.close()
+        blocked = d.SendTrace("/proc/nonexistent/tracing", self.p.root)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            blocked.watch([self.p.device])
+        self.assertIn("every program holding one is named", out.getvalue())
+        self.assertIsNone(blocked.senders(self.p.device, 0.0, 1.0))
 
 
 class Polkit(unittest.TestCase):

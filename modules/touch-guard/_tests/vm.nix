@@ -88,6 +88,11 @@ pkgs.testers.runNixOSTest {
 
     security.polkit.enable = true;
     environment.systemPackages = [ pkgs.python3 ];
+
+    # A stand-in key: uhid gives it a real hidraw node, which is what the daemon's kernel probes follow.
+    boot.kernelModules = [ "uhid" ];
+    environment.etc."touch-guard-test/fake_key.py".source = ./fake_key.py;
+    environment.etc."touch-guard-test/use_key.py".source = ./use_key.py;
   };
 
   testScript = ''
@@ -143,6 +148,36 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_file("/tmp/run0-ok")
         notified("run0 (runs as root)")
         notified("/run/current-system/sw/bin/touch /tmp/run0-ok")
+
+    def use_key(name, mode, seconds):
+        machine.succeed(f"cp /etc/touch-guard-test/use_key.py /tmp/{name}.py")
+        machine.succeed(f"python3 -I /tmp/{name}.py {mode} {seconds} >/dev/null 2>&1 &")
+
+
+    with subtest("of two programs with the key open, only the one that sent to it is named"):
+        machine.succeed("python3 -I /etc/touch-guard-test/fake_key.py 3 >/tmp/fake-key.log 2>&1 &")
+        machine.wait_until_succeeds("journalctl -u touch-guard | grep -q 'following which programs send to a security key'", timeout=30)
+        use_key("idle-holder", "idle", 120)
+        machine.sleep(1)
+        use_key("asker", "write", 5)
+        notified("asker.py")
+        machine.wait_until_succeeds("journalctl -u touch-guard | grep 'without sending to it, left out' | grep -q python")
+        machine.fail("grep -F idle-holder.py /tmp/notifications.jsonl")
+
+    with subtest("a report sent through an ioctl counts as sending"):
+        machine.sleep(5)
+        use_key("ioctl-asker", "ioctl", 5)
+        notified("ioctl-asker.py")
+        machine.fail("grep -F idle-holder.py /tmp/notifications.jsonl")
+
+    with subtest("a program that sends while the key already waits is called out"):
+        machine.sleep(5)
+        use_key("first-asker", "write", 5)
+        notified("first-asker.py")
+        use_key("late-sender", "write", 5)
+        notified("late-sender.py")
+        notified("sent to the key while it was already waiting")
+        machine.fail("grep -F idle-holder.py /tmp/notifications.jsonl")
 
     with subtest("refused while no notifier runs"):
         machine.succeed("systemctl --user -M alice@ stop touch-guard-notify.service")

@@ -18,8 +18,9 @@ in
   options.my.security.touchGuard = {
     enable = mkEnableOption ''
       touch-guard, which names the program and command behind every security key touch request.
-      A root service detects the wait, finds who holds the key and logs it to the journal, and a user
-      service shows it as a notification
+      A root service detects the wait, finds who sent the request to the key and logs it to the journal, and a
+      user service shows it as a notification. Kernel probes on the calls that send to a key tell the sender from
+      programs that only hold it open. Where the kernel offers none, every program holding the key is named
     '';
 
     user = mkOption {
@@ -65,7 +66,8 @@ in
         RuntimeDirectory = "touch-guard";
         RuntimeDirectoryMode = "0755";
 
-        # Root only to read every process's fd, fdinfo and exe links (ptrace read, DAC search) and to monitor polkit on the system bus.
+        # Root only to read every process's fd, fdinfo and exe links (ptrace read, DAC search), to monitor polkit on the system bus
+        # and to set its probes under /sys/kernel/tracing, which root owns.
         CapabilityBoundingSet = [ "CAP_SYS_PTRACE" "CAP_DAC_READ_SEARCH" ];
         NoNewPrivileges = true;
         ProtectSystem = "strict";
