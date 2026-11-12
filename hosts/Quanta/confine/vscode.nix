@@ -86,6 +86,7 @@ in
     vscode = workspace // gitAccess // {
       devices = lib.optional withGit "/dev/input/by-id/*-fido" ++ lib.optional withInspect "/dev/fuse";
       binds = workspace.binds // {
+        rw = workspace.binds.rw ++ [ "/home/dx/Downloads" ];
         ro =
           workspace.binds.ro
           ++ lib.optionals withGit [
