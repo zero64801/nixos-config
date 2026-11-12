@@ -73,6 +73,13 @@
       defaultMode = "host";
     };
 
+    inspect = {
+      enable = true;
+      domains = [
+        "win11-re"
+      ];
+    };
+
     nixvirt = {
       enable = true;
       domains = [
