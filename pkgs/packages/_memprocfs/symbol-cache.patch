@@ -1,0 +1,35 @@
+--- a/vmm/pdb.c
++++ b/vmm/pdb.c
+@@ -32,6 +32,7 @@
+ #include "ob/ob.h"
+ #include "ob/ob_tag.h"
+ #include <libpdbcrust.h>
++#include <sys/stat.h>
+ 
+ VOID PDB_PrintError(_In_ VMM_HANDLE H, _In_ LPSTR szErrorMessage1, _In_opt_ LPSTR szErrorMessage2)
+ {
+@@ -1267,9 +1268,22 @@
+     // 1: set symbol path to Symbol directory related to 'vmm.so'/'vmm.dylib' folder.
+     Util_GetPathDll(H->pdb.szLocal, H->vmm.hModuleVmmOpt);
+     strncat_s(H->pdb.szLocal, _countof(H->pdb.szLocal), "Symbols", _TRUNCATE);
+-    // 2: if directory is not writable - then use /tmp
++    // 2: if directory is not writable, as in a read-only install, use the
++    //    user's cache directory so symbols are kept between runs - or /tmp.
+     if(access(H->pdb.szLocal, W_OK)) {
+-        strncpy_s(H->pdb.szLocal, _countof(H->pdb.szLocal), "/tmp", _TRUNCATE);
++        LPCSTR szCache = getenv("XDG_CACHE_HOME"), szHome = getenv("HOME");
++        H->pdb.szLocal[0] = 0;
++        if(szCache && (szCache[0] == '/')) {
++            snprintf(H->pdb.szLocal, _countof(H->pdb.szLocal), "%s/memprocfs", szCache);
++        } else if(szHome && (szHome[0] == '/')) {
++            snprintf(H->pdb.szLocal, _countof(H->pdb.szLocal), "%s/.cache", szHome);
++            mkdir(H->pdb.szLocal, 0700);
++            snprintf(H->pdb.szLocal, _countof(H->pdb.szLocal), "%s/.cache/memprocfs", szHome);
++        }
++        if(H->pdb.szLocal[0]) { mkdir(H->pdb.szLocal, 0700); }
++        if(!H->pdb.szLocal[0] || access(H->pdb.szLocal, W_OK)) {
++            strncpy_s(H->pdb.szLocal, _countof(H->pdb.szLocal), "/tmp", _TRUNCATE);
++        }
+     }
+     // 3: set final values:
+     H->pdb.fEnable = H->pdb.fEnable ? 1 : 0;

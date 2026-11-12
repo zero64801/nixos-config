@@ -1,0 +1,110 @@
+--- a/memprocfs/Makefile
++++ b/memprocfs/Makefile
+@@ -4,7 +4,7 @@
+ # the folder '../files/'.
+ #
+ CC=gcc
+-CFLAGS	+= -I. -I../includes -D LINUX -D_FILE_OFFSET_BITS=64 -pthread `pkg-config fuse --cflags`
++CFLAGS	+= -I. -I../includes -D LINUX -D_FILE_OFFSET_BITS=64 -pthread `pkg-config fuse3 --cflags`
+ CFLAGS  += -fPIE -fPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2 -O1
+ CFLAGS	+= -Wall -Wno-multichar -Wno-unused-variable -Wno-unused-parameter -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast
+ ifeq ($(shell basename $(CC)),gcc)
+@@ -12,7 +12,7 @@
+ 	#DEBUG FLAGS BELOW
+ 	#CFLAGS  += -g -O0 -Wextra
+ endif
+-LDFLAGS += -Wl,-rpath,'$$ORIGIN' -ldl -L. -l:vmm.so -Wl,-z,noexecstack `pkg-config fuse --libs`
++LDFLAGS += -Wl,-rpath,'$$ORIGIN' -ldl -L. -l:vmm.so -Wl,-z,noexecstack `pkg-config fuse3 --libs`
+ DEPS = vfs.h vmmloader.h
+ OBJ  = oscompatibility.o charutil.o vfslist.o vmmloader.o memprocfs_fuse.o ob/ob_cachemap.o ob/ob_core.o ob/ob_map.o ob/ob_set.o
+ 
+--- a/memprocfs/memprocfs_fuse.c
++++ b/memprocfs/memprocfs_fuse.c
+@@ -10,14 +10,13 @@
+ #include "vfslist.h"
+ #include "vmmloader.h"
+ #include "version.h"
+-#define FUSE_USE_VERSION 30
++#define FUSE_USE_VERSION 31
+ #include <fuse.h>
+ #include <signal.h>
+ 
+ typedef struct tdFUSE_INFO {
+     struct fuse* pfuse;
+     char* szMountPoint;
+-    struct fuse_chan *pchan;
+ } FUSE_INFO;
+ 
+ FUSE_INFO g_FuseInfo = { 0 };
+@@ -38,7 +37,7 @@
+ #define VER_OSARCH                  "macOS"
+ #endif /* MACOS */
+ 
+-static int vfs_getattr(const char *uszPathFull, struct stat *st)
++static int vfs_getattr(const char *uszPathFull, struct stat *st, struct fuse_file_info *fi)
+ {
+     CHAR uszPath[3 * MAX_PATH];
+     LPSTR uszFile;
+@@ -82,16 +81,16 @@
+ 
+ static void vfs_readdir_cb(_In_ PVFS_ENTRY pVfsEntry, _In_opt_ preaddir_cb_ctx ctx)
+ {
+-    ctx->filler(ctx->buffer, pVfsEntry->uszName, NULL, 0);
++    ctx->filler(ctx->buffer, pVfsEntry->uszName, NULL, 0, 0);
+ }
+ 
+-static int vfs_readdir(const char *uszPath, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
++static int vfs_readdir(const char *uszPath, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
+ {
+     readdir_cb_ctx ctx;
+     ctx.buffer = buffer;
+     ctx.filler = filler;
+-    filler(buffer, ".", NULL, 0);
+-    filler(buffer, "..", NULL, 0);
++    filler(buffer, ".", NULL, 0, 0);
++    filler(buffer, "..", NULL, 0, 0);
+     VfsList_ListDirectory((LPSTR)uszPath, &ctx, (void(*)(PVFS_ENTRY, PVOID))vfs_readdir_cb);
+     return 0;
+ }
+@@ -111,7 +110,7 @@
+     return ((nt == VMMDLL_STATUS_SUCCESS) || (nt == VMMDLL_STATUS_END_OF_FILE)) ? (int)readlength : -EIO;
+ }
+ 
+-static int vfs_truncate(const char *path, off_t size)
++static int vfs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
+ {
+     // dummy function - required and called before vfs_write().
+     return 0;
+@@ -144,7 +143,9 @@
+ int vfs_initialize_and_mount_displayinfo(char *szMountPoint)
+ {
+ #ifdef LINUX
+-    struct fuse_args fargs = { 0 };
++    // FUSE 3 refuses to start without a program name.
++    char* argv[] = {"memprocfs", NULL};
++    struct fuse_args fargs = FUSE_ARGS_INIT(1, argv);
+ #endif /* LINUX */
+ #ifdef MACOS
+     int argc = 5;
+@@ -152,10 +153,9 @@
+     struct fuse_args fargs = FUSE_ARGS_INIT(argc, argv);
+ #endif /* MACOS */
+     g_FuseInfo.szMountPoint = szMountPoint;
+-    g_FuseInfo.pchan = fuse_mount(g_FuseInfo.szMountPoint, &fargs);
+-    if(!g_FuseInfo.pchan) { return -ENOENT; };
+-    g_FuseInfo.pfuse = fuse_new(g_FuseInfo.pchan, &fargs, &vfs_operations, sizeof(vfs_operations), NULL);
++    g_FuseInfo.pfuse = fuse_new(&fargs, &vfs_operations, sizeof(vfs_operations), NULL);
+     if(!g_FuseInfo.pfuse) { return -ENOENT; };
++    if(fuse_mount(g_FuseInfo.pfuse, g_FuseInfo.szMountPoint)) { return -ENOENT; };
+     return fuse_loop(g_FuseInfo.pfuse);
+ }
+ 
+@@ -198,7 +198,7 @@
+     if(signo == SIGINT) {
+         printf("CTRL+C detected - shutting down ...\n");
+         VMMDLL_CloseAll();
+-        fuse_unmount(g_FuseInfo.szMountPoint, g_FuseInfo.pchan);
++        fuse_unmount(g_FuseInfo.pfuse);
+         fuse_exit(g_FuseInfo.pfuse);
+     } 
+ }

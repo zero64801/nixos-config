@@ -1,0 +1,93 @@
+--- a/leechcore_device_qemu/leechcore_device_qemu.c
++++ b/leechcore_device_qemu/leechcore_device_qemu.c
+@@ -544,12 +544,52 @@
+     return false;
+ }
+ 
++// Guest RAM that has no path, such as a memfd, arrives as a descriptor from whoever listens on a unix socket.
++_Success_(return)
++BOOL LcPluginCreate_RamSocket(_In_ PLC_CONTEXT ctxLC, _Inout_ PDEVICE_CONTEXT_QEMU ctx, _In_ PLC_DEVICE_PARAMETER_ENTRY pPathRam)
++{
++    struct sockaddr_un addr = { 0 };
++    struct msghdr msg = { 0 };
++    struct iovec iov;
++    struct cmsghdr *cmsg;
++    union { char buf[CMSG_SPACE(sizeof(int))]; struct cmsghdr align; } control;
++    char b;
++    int sock = -1, fd = -1;
++    BOOL fResult = false;
++
++    if(!pPathRam->szValue[0] || (strlen(pPathRam->szValue) >= sizeof(addr.sun_path))) { goto fail; }
++    sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++    if(sock < 0) { goto fail; }
++    addr.sun_family = AF_UNIX;
++    strcpy(addr.sun_path, pPathRam->szValue);
++    if(connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) { goto fail; }
++    iov.iov_base = &b;
++    iov.iov_len = 1;
++    msg.msg_iov = &iov;
++    msg.msg_iovlen = 1;
++    msg.msg_control = control.buf;
++    msg.msg_controllen = sizeof(control.buf);
++    if(recvmsg(sock, &msg, MSG_CMSG_CLOEXEC) != 1) { goto fail; }
++    cmsg = CMSG_FIRSTHDR(&msg);
++    if(!cmsg || (cmsg->cmsg_level != SOL_SOCKET) || (cmsg->cmsg_type != SCM_RIGHTS) || (cmsg->cmsg_len != CMSG_LEN(sizeof(int)))) { goto fail; }
++    memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
++    fResult = DeviceQEMU_MapFd(ctxLC, ctx, fd);
++fail:
++    if(!fResult) {
++        lcprintf(ctxLC, "DEVICE: QEMU: FAIL: No guest memory from socket '%s'.\n", pPathRam->szValue);
++    }
++    if(fd >= 0) { close(fd); }
++    if(sock >= 0) { close(sock); }
++    return fResult;
++}
++
+ _Success_(return) EXPORTED_FUNCTION
+ BOOL LcPluginCreate(_Inout_ PLC_CONTEXT ctxLC, _Out_opt_ PPLC_CONFIG_ERRORINFO ppLcCreateErrorInfo)
+ {
+     PDEVICE_CONTEXT_QEMU ctx = NULL;
+     PLC_DEVICE_PARAMETER_ENTRY pPathShm = NULL;
+     PLC_DEVICE_PARAMETER_ENTRY pPathQmp = NULL;
++    PLC_DEVICE_PARAMETER_ENTRY pPathRam = NULL;
+     CHAR szPathQmp[MAX_PATH] = { 0 };
+     CHAR szPathMem[MAX_PATH] = { 0 };
+     PLC_DEVICE_PARAMETER_ENTRY pPmxVmid, pPmxVmname;
+@@ -570,6 +610,7 @@
+     qwHugePagePid = LcDeviceParameterGetNumeric(ctxLC, "hugepage-pid");
+     pPathShm = LcDeviceParameterGet(ctxLC, "shm");
+     pPathQmp = LcDeviceParameterGet(ctxLC, "qmp");
++    pPathRam = LcDeviceParameterGet(ctxLC, "ram");
+ 
+     ctx->tmnsDelayLatency = LcDeviceParameterGetNumeric(ctxLC, "delay-latency-ns");
+     ctx->tmnsDelayReadPage = LcDeviceParameterGetNumeric(ctxLC, "delay-readpage-ns");
+@@ -578,7 +619,7 @@
+     pPmxVmid = LcDeviceParameterGet(ctxLC, "pmx-vmid");
+     pPmxVmname = LcDeviceParameterGet(ctxLC, "pmx-vmname");
+     if(pPmxVmid || pPmxVmname) {
+-        fResult = !(pPmxVmid && pPmxVmname) && !pPathShm && !pPathQmp && !LcDeviceParameterGet(ctxLC, "hugepage-pid");
++        fResult = !(pPmxVmid && pPmxVmname) && !pPathShm && !pPathQmp && !pPathRam && !LcDeviceParameterGet(ctxLC, "hugepage-pid");
+         if(!fResult) {
+             lcprintf(ctxLC, "DEVICE: QEMU: FAIL: Use one pmx selector without shm, hugepage-pid or qmp.\n");
+             goto fail;
+@@ -595,8 +636,8 @@
+         goto success;
+     }
+ 
+-    if(!qwHugePagePid && !pPathShm) {
+-        lcprintf(ctxLC, "DEVICE: QEMU: FAIL: Required parameter shm or hugepages-pid not given.\n");
++    if(!qwHugePagePid && !pPathShm && !pPathRam) {
++        lcprintf(ctxLC, "DEVICE: QEMU: FAIL: Required parameter shm, hugepages-pid or ram not given.\n");
+         lcprintf(ctxLC, "   Example: qemu://hugepage-pid=<pid>\n");
+         lcprintf(ctxLC, "   Example: qemu://shm=qemu-ram\n");
+         goto fail;
+@@ -609,6 +650,9 @@
+     if(qwHugePagePid && !LcPluginCreate_HugePages(ctxLC, ctx, qwHugePagePid)) {
+         goto fail;
+     }
++    if(pPathRam && !LcPluginCreate_RamSocket(ctxLC, ctx, pPathRam)) {
++        goto fail;
++    }
+ 
+     // parse memory ranges using qmp (or heuristics as fallback)
+     if(!pPathQmp || !pPathQmp->szValue[0] || (strlen(pPathQmp->szValue) > MAX_PATH - 10)) {
