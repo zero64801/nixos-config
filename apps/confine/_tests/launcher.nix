@@ -143,11 +143,15 @@ in
 pkgs.runCommand "confine-launcher-behaviour"
   {
     nativeBuildInputs = [
+      pkgs.dbus
       pkgs.gnugrep
       pkgs.jq
-      pkgs.python3
+      (pkgs.python3.withPackages (p: [ p.jeepney ]))
       pkgs.xdg-dbus-proxy
     ];
+
+    busConfig = "${pkgs.dbus}/share/dbus-1/session.conf";
+    busPeers = ./bus-peers.py;
 
     launchBin = "${launch}/bin/confine-launch";
     plainLauncher = launcherOf { };
@@ -449,6 +453,32 @@ pkgs.runCommand "confine-launcher-behaviour"
       check_rules ${p.profileName} ${lib.escapeShellArgs p.session}
       check_rules ${p.profileName}-system ${lib.escapeShellArgs p.system}
     '') profileRules}
+
+    # An app that splits itself into a service and its callers has both behind the one proxy.
+    await() {
+      local tries=0
+      until [ -e "$1" ]; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 100 ] || fail "$1 never appeared"
+        sleep 0.1
+      done
+    }
+    dbus-daemon --config-file="$busConfig" --address="unix:path=$TMPDIR/peer-bus" --nofork 2> peer-bus-err &
+    peerBus=$!
+    await "$TMPDIR/peer-bus"
+    "$(jq -r .tools.dbusProxy "$plainConfig")" "unix:path=$TMPDIR/peer-bus" "$TMPDIR/peer-proxy" \
+      --filter '--own=com.test.Peer.*' &
+    peerProxy=$!
+    await "$TMPDIR/peer-proxy"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$TMPDIR/peer-proxy" python3 -I "$busPeers" serve com.test.Peer.One "$TMPDIR/peer-ready" &
+    peerService=$!
+    await "$TMPDIR/peer-ready"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$TMPDIR/peer-proxy" python3 -I "$busPeers" call com.test.Peer.One \
+      || fail "a service behind the bus proxy cannot signal its caller in the same sandbox"
+    status=0
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$TMPDIR/peer-bus" python3 -I "$busPeers" call com.test.Peer.One || status=$?
+    [ "$status" -eq 3 ] || fail "a service behind the bus proxy signalled a caller outside the sandbox (exit $status)"
+    kill "$peerService" "$peerProxy" "$peerBus"
 
     [ -x "$noDesktopApp/bin/hello" ] || fail "a package without a desktop entry lost its binary"
     [ -e "$noDesktopApp/share/applications" ] \

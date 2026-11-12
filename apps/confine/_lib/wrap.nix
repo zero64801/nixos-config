@@ -17,6 +17,11 @@ let
   launch = callPackage ./launch.nix { };
   profiles = import ./profiles.nix;
 
+  # Stock, a service in the sandbox cannot signal the caller it answers when that caller is in the sandbox too.
+  busProxy = xdg-dbus-proxy.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./dbus-proxy-siblings.patch ];
+  });
+
   defaults = {
     name = null;
     binaries = null;
@@ -430,7 +435,7 @@ let
       tools = {
         bwrap = "${bubblewrap}/bin/bwrap";
         pasta = if isolatedNetwork then "${passt}/bin/pasta" else null;
-        dbusProxy = if useProxy then "${xdg-dbus-proxy}/bin/xdg-dbus-proxy" else null;
+        dbusProxy = if useProxy then "${busProxy}/bin/xdg-dbus-proxy" else null;
         dbusProxyFilter = if useProxy then "${mkFilter { }}" else null;
         satellite = if isolatedX11 then "${xwayland-satellite}/bin/xwayland-satellite" else null;
         waylandProxy = if useWaylandProxy then "${wayland-proxy-virtwl}/bin/wayland-proxy-virtwl" else null;

@@ -1,0 +1,66 @@
+--- a/flatpak-proxy.c
++++ b/flatpak-proxy.c
+@@ -398,6 +398,9 @@
+ 
+   GHashTable *unique_id_policy;
+   GHashTable *unique_id_owned_names;
++
++  /* The name the bus gave this connection, NULL until Hello is answered. */
++  char       *unique_id;
+ };
+ 
+ typedef struct
+@@ -506,6 +509,7 @@
+   g_hash_table_destroy (client->get_owner_reply);
+   g_hash_table_destroy (client->unique_id_policy);
+   g_hash_table_destroy (client->unique_id_owned_names);
++  g_free (client->unique_id);
+   g_hash_table_destroy (client->expected_replies_from_bus);
+   g_hash_table_destroy (client->expected_replies_from_client);
+ 
+@@ -1897,6 +1901,26 @@
+ 
+ static Filter *match_all[FLATPAK_POLICY_OWN + 1] = { NULL };
+ 
++/* Every connection through one proxy comes from the same sandbox, so they
++ * may talk to each other: a service in there can then send a signal to the
++ * caller it answers, which is otherwise only allowed to be seen. */
++static gboolean
++flatpak_proxy_has_client_id (FlatpakProxy *proxy,
++                             const char   *unique_id)
++{
++  GList *l;
++
++  for (l = proxy->clients; l != NULL; l = l->next)
++    {
++      FlatpakProxyClient *other = l->data;
++
++      if (g_strcmp0 (other->unique_id, unique_id) == 0)
++        return TRUE;
++    }
++
++  return FALSE;
++}
++
+ 
+ static FlatpakPolicy
+ flatpak_proxy_client_get_max_policy_and_matched (FlatpakProxyClient *client,
+@@ -1928,6 +1952,9 @@
+     {
+       /* Default to the unique id policy, i.e. TALK for self, and SEE for trusted peers */
+       max_policy = GPOINTER_TO_UINT (g_hash_table_lookup (client->unique_id_policy, source));
++      if (max_policy < FLATPAK_POLICY_TALK &&
++          flatpak_proxy_has_client_id (client->proxy, source))
++        max_policy = FLATPAK_POLICY_TALK;
+       if (max_policy > FLATPAK_POLICY_NONE && matched_filters)
+         *matched_filters = g_list_append (*matched_filters, match_all[max_policy]);
+ 
+@@ -2896,6 +2923,8 @@
+                 {
+                   g_autofree char *my_id = get_arg0_string (buffer);
+                   flatpak_proxy_client_update_unique_id_policy (client, my_id, FLATPAK_POLICY_TALK);
++                  g_free (client->unique_id);
++                  client->unique_id = g_strdup (my_id);
+                 }
+               /* ... else it's an ERROR or something. Either way, pass it
+                * through to the client unedited. */
