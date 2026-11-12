@@ -70,20 +70,12 @@ let
   };
 
   git = config.my.apps.git;
+  withGit = git.enable && git.github.enable;
+  withInspect = config.my.virtualisation.inspect.enable;
   key = lib.removePrefix "~/" (lib.removeSuffix ".pub" git.signing.keyFile);
 
-  gitAccess = lib.optionalAttrs (git.enable && git.github.enable) {
-    devices = [ "/dev/input/by-id/*-fido" ];
+  gitAccess = lib.optionalAttrs withGit {
     securityKeys = true;
-
-    binds = workspace.binds // {
-      ro = workspace.binds.ro ++ [
-        "xdg-config/git/config"
-        key
-        "${key}.pub"
-        ".ssh/known_hosts"
-      ];
-    };
     env = workspace.env // {
       GIT_SSH_COMMAND = "ssh -F ${config.hm.home.file.".ssh/config".source}";
     };
@@ -92,6 +84,21 @@ in
 {
   confine.apps = {
     vscode = workspace // gitAccess // {
+      devices = lib.optional withGit "/dev/input/by-id/*-fido" ++ lib.optional withInspect "/dev/fuse";
+      binds = workspace.binds // {
+        ro =
+          workspace.binds.ro
+          ++ lib.optionals withGit [
+            "xdg-config/git/config"
+            key
+            "${key}.pub"
+            ".ssh/known_hosts"
+          ]
+          ++ lib.optionals withInspect [
+            "xdg-run/vm-inspect"
+            "/run/vm-inspect"
+          ];
+      };
       package = pkgs.vscode;
       appId = "com.visualstudio.code";
       waylandAppId = "code";
