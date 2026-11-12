@@ -113,6 +113,9 @@ pub const STDIO_FD: i32 = 13;
 /// Where the reaper finds the socket its namespace guard reports on.
 const GUARD_FD: i32 = 16;
 
+/// Where the host's /etc sits in the sandbox, behind the links in the sandbox's own /etc.
+const HOST_ETC: &str = "/run/confine/etc";
+
 struct Launch<'a> {
     cfg: &'a Config,
     script: OsString,
@@ -421,6 +424,34 @@ impl<'a> Launch<'a> {
         }
     }
 
+    /// The host replaces a file in /etc by renaming a new one over it, which takes a mount on the old one out of every
+    /// running sandbox, the generated passwd and the masks included. So /etc is the sandbox's own folder of links to
+    /// the host's entries, and what gets mounted in it sits on that folder, out of the host's reach.
+    fn shadow_etc(&mut self, held: &[PathBuf]) {
+        self.push3("--ro-bind", "/etc", HOST_ETC);
+        self.push("--tmpfs");
+        self.push("/etc");
+        self.shadow_dir(Path::new("/etc"), held);
+    }
+
+    fn shadow_dir(&mut self, dir: &Path, held: &[PathBuf]) {
+        let mut entries: Vec<PathBuf> = fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        entries.sort();
+        for path in entries {
+            if held.contains(&path) {
+                continue;
+            }
+            // A folder that holds one of them has to be the sandbox's own as well, a link would lead back onto the host's.
+            if held.iter().any(|h| h.starts_with(&path)) && fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                self.push("--dir");
+                self.push(&path);
+                self.shadow_dir(&path, held);
+            } else if let Ok(rest) = path.strip_prefix("/etc") {
+                self.push3("--symlink", Path::new(HOST_ETC).join(rest), &path);
+            }
+        }
+    }
+
     fn build(&mut self) -> Res<()> {
         let cfg = self.cfg;
         self.args.extend(cfg.static_args.iter().map(OsString::from));
@@ -451,18 +482,10 @@ impl<'a> Launch<'a> {
             self.push3("--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve");
         }
 
-        // Masks only land on existing paths, the /etc bind is read-only.
-        for f in &cfg.masked_files {
-            if Path::new(f).is_file() {
-                self.push3("--ro-bind", "/dev/null", f);
-            }
-        }
-        for d in &cfg.masked_dirs {
-            if Path::new(d).is_dir() {
-                self.push("--tmpfs");
-                self.push(d);
-            }
-        }
+        // Masks only land on existing paths.
+        let mut over: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+        over.extend(cfg.masked_files.iter().map(PathBuf::from).filter(|f| f.is_file()).map(|f| (f, Some(PathBuf::from("/dev/null")))));
+        over.extend(cfg.masked_dirs.iter().map(PathBuf::from).filter(|d| d.is_dir()).map(|d| (d, None)));
 
         let user = lookup_user(self.uid);
         let user_name = user.as_ref().map(|u| u.name.clone()).or_else(|| env::var("USER").ok()).unwrap_or_else(|| self.uid.to_string());
@@ -481,9 +504,22 @@ impl<'a> Launch<'a> {
             let (pf, gf) = (self.instance_path("passwd"), self.instance_path("group"));
             fs::write(&pf, passwd).map_err(|e| e.to_string())?;
             fs::write(&gf, group).map_err(|e| e.to_string())?;
-            self.push3("--ro-bind", pf, "/etc/passwd");
-            self.push3("--ro-bind", gf, "/etc/group");
+            over.push(("/etc/passwd".into(), Some(pf)));
+            over.push(("/etc/group".into(), Some(gf)));
         }
+        let held: Vec<PathBuf> = over.iter().map(|(dest, _)| dest.clone()).collect();
+        self.shadow_etc(&held);
+        for (dest, src) in over {
+            match src {
+                Some(src) => self.push3("--ro-bind", src, dest),
+                None => {
+                    self.push("--tmpfs");
+                    self.push(dest);
+                }
+            }
+        }
+        self.push("--remount-ro");
+        self.push("/etc");
 
         // Host plugin trees stay out because mismatched toolkit plugins crash apps and GSettings must fall back to the keyfile backend.
         let mut lc: Vec<OsString> = env::vars_os().map(|(k, _)| k).filter(|k| k.as_bytes().starts_with(b"LC_")).collect();

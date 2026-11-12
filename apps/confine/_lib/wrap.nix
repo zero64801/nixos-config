@@ -380,9 +380,6 @@ let
       "--ro-bind"
       "/nix/store"
       "/nix/store"
-      "--ro-bind"
-      "/etc"
-      "/etc"
     ]
     ++ lib.optionals cfg.sysfs (
       lib.concatMap (d: [

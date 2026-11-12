@@ -419,6 +419,17 @@ pkgs.testers.runNixOSTest {
           assert machine.succeed(f"readlink /proc/{proxy}/ns/net") != machine.succeed("readlink /proc/1/ns/net")
           assert alice(f"confine enter com.test.Plain {GET_ID}").startswith('s "')
 
+      with subtest("a host that replaces its account files leaves a running sandbox with its own passwd and its masks"):
+          before = alice("confine enter com.test.Plain cat /etc/passwd")
+          assert "nfsnobody" in before and "root" not in before, before
+          masked = "confine enter com.test.Plain stat -c %F /etc/shadow"
+          assert alice(masked).strip() == "character special file"
+          for name in ["passwd", "shadow"]:
+              machine.succeed(f"cp -p /etc/{name} /etc/{name}.new && mv /etc/{name}.new /etc/{name}")
+          assert alice("confine enter com.test.Plain cat /etc/passwd") == before
+          assert alice(masked).strip() == "character special file"
+          assert alice("confine enter com.test.Plain readlink /etc/nsswitch.conf").strip() == "/run/confine/etc/nsswitch.conf"
+
       with subtest("ps, enter and kill reach the running sandbox"):
           assert scope in alice("confine ps")
           status = alice("confine enter com.test.Plain grep -E '^(Seccomp|NoNewPrivs):' /proc/self/status")
