@@ -73,6 +73,7 @@ let
       pkgs.memprocfs
       pkgs.gdb
       pkgs.radare2
+      pkgs.memprocfs.symbolGateway
       guestMount
       guestGdb
       labBox
@@ -107,6 +108,7 @@ let
     ];
     binds.ro = [
       "xdg-run/vm-inspect"
+      "xdg-run/vm-lab"
       "/run/vm-inspect"
     ];
     env.__NIXOS_SET_ENVIRONMENT_DONE = "1";
@@ -120,6 +122,7 @@ let
       "VM_LAB_PATH"
       "VM_LAB_ENV"
       "VM_LAB_ONLINE"
+      "PDBCRUST_SYMBOL_SOCKET"
     ];
   };
 
@@ -165,6 +168,7 @@ let
       echo "  --full     no limit on memory, tasks and processor share"
       echo "  --tool     a package to have inside, such as nixpkgs#binwalk"
       echo "A ./lab.nix in the starting folder is built and put on the path, as nix-shell does with shell.nix."
+      echo "Windows debug symbols come from Microsoft through a gateway outside the lab that fetches nothing else, kept in ~/.cache/vm-lab/symbols."
       echo "Inside:"
       echo "  guest-mount   the guest's memory as files under ~/guest (MemProcFS), runs until stopped"
       echo "  guest-gdb     gdb on QEMU's debug stub, the guest stops while it is attached"
@@ -203,6 +207,31 @@ let
       exit 1
     fi
     export VM_LAB_TOOLS=${toolsOut}
+
+    sockets="''${XDG_RUNTIME_DIR:?}/vm-lab"
+    symbols="$links/symbols"
+    ${pkgs.coreutils}/bin/mkdir -p "$sockets" "$symbols"
+    for stale in "$sockets"/symbols.*.sock; do
+      owner=''${stale##*/symbols.}
+      if [ -e "$stale" ] && ! kill -0 "''${owner%.sock}" 2>/dev/null; then
+        ${pkgs.coreutils}/bin/rm -f "$stale"
+      fi
+    done
+    export PDBCRUST_SYMBOL_SOCKET="$sockets/symbols.$$.sock"
+    ${pkgs.bubblewrap}/bin/bwrap --unshare-all --share-net --die-with-parent --new-session --clearenv \
+      --ro-bind /nix/store /nix/store --proc /proc --dev /dev --tmpfs /tmp \
+      --ro-bind /etc/resolv.conf /etc/resolv.conf \
+      --bind "$sockets" "$sockets" --bind "$symbols" "$symbols" \
+      --setenv SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
+      -- "$VM_LAB_TOOLS/bin/pdb-symbol-gateway" "$PDBCRUST_SYMBOL_SOCKET" "$symbols" </dev/null &
+    for _ in $(${pkgs.coreutils}/bin/seq 1 50); do
+      if [ -S "$PDBCRUST_SYMBOL_SOCKET" ]; then break; fi
+      ${pkgs.coreutils}/bin/sleep 0.1
+    done
+    if [ ! -S "$PDBCRUST_SYMBOL_SOCKET" ]; then
+      echo "vm-lab: the symbol gateway did not start, so Windows debug symbols will be missing" >&2
+      unset PDBCRUST_SYMBOL_SOCKET
+    fi
 
     path=()
     add() {
