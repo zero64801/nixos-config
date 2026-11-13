@@ -1,0 +1,35 @@
+--- a/src/lib.rs	2026-11-12 23:16:05.362731744 -0300
++++ b/src/lib.rs	2026-11-12 23:16:05.370015368 -0300
+@@ -13,6 +13,7 @@
+ use std::collections::HashMap;
+ use std::ffi::CString;
+ use std::fs::File;
++use std::io::{BufRead, Read, Write};
+ use std::path::Path;
+ use std::sync::Mutex;
+ use lazy_static::lazy_static;
+@@ -276,6 +277,24 @@
+     // test if possible to create a file in the directory:
+     std::fs::File::create(&path)?;
+     std::fs::remove_file(&path)?;
++    // fetch pdb file from a local symbol gateway, for a process without network:
++    if let Some(socket) = std::env::var_os("PDBCRUST_SYMBOL_SOCKET") {
++        let mut stream = std::io::BufReader::new(std::os::unix::net::UnixStream::connect(socket)?);
++        stream.get_mut().write_all(format!("{pdb_name} {pdb_guidage}\n").as_bytes())?;
++        let mut length = String::new();
++        stream.read_line(&mut length)?;
++        let length : usize = length.trim().parse()?;
++        if length < 0x1000 {
++            return Err("download content length too small".into());
++        }
++        if length > 0x04000000 {
++            return Err("download content length too large".into());
++        }
++        let mut content = vec![0u8; length];
++        stream.read_exact(&mut content)?;
++        std::fs::write(&path, content)?;
++        return Ok(path_string);
++    }
+     // fetch pdb file from microsoft symbol server:
+     let url = format!("https://msdl.microsoft.com/download/symbols/{pdb_name}/{pdb_guidage}/{pdb_name}");
+     let response = reqwest::blocking::get(url)?;

@@ -7,6 +7,9 @@
   fuse3,
   libusb1,
   openssl,
+  python3,
+  runCommand,
+  writeScriptBin,
 }:
 
 let
@@ -27,6 +30,9 @@ let
         "sha256-3PStkW3q4FJFeBmujYxhdhm2fUYCD3ayRtL/sAjumpY=";
 
     # Upstream ships no lock file.
+    # Lets a process without network get its symbols from a gateway on a unix socket, named by PDBCRUST_SYMBOL_SOCKET.
+    patches = [ ./_memprocfs/symbol-socket.patch ];
+
     cargoLock.lockFile = ./_memprocfs/pdbcrust.Cargo.lock;
     postPatch = "ln -s ${./_memprocfs/pdbcrust.Cargo.lock} Cargo.lock";
 
@@ -34,6 +40,11 @@ let
     buildInputs = [ openssl ];
     doCheck = false;
   };
+
+  symbolGateway = writeScriptBin "pdb-symbol-gateway" ''
+    #!${python3}/bin/python3 -I
+    ${builtins.readFile ./_memprocfs/symbol-gateway.py}
+  '';
 in
 stdenv.mkDerivation {
   pname = "memprocfs";
@@ -91,6 +102,14 @@ stdenv.mkDerivation {
     ln -s $out/lib/memprocfs/memprocfs $out/bin/memprocfs
     runHook postInstall
   '';
+
+  passthru = {
+    inherit symbolGateway;
+    tests.symbolGateway = runCommand "memprocfs-symbol-gateway-test" { nativeBuildInputs = [ python3 ]; } ''
+      python3 -I ${./_memprocfs/symbol-gateway-test.py} ${symbolGateway}/bin/pdb-symbol-gateway ${pdbcrust}/lib/libpdbcrust.so
+      touch $out
+    '';
+  };
 
   meta = {
     description = "Memory of a running or dumped Windows system as files, with the LeechCore QEMU device";
