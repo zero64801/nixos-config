@@ -4,50 +4,15 @@ let
   proxy = config.my.apps.wgProxy;
   engine = config.confine.packages.marinara-engine;
 
+  proxyUrl = "http://${proxy.listen}:${toString proxy.port}";
+
   proxied = pkgs.writeShellScriptBin "marinara" ''
-    set -euo pipefail
-
-    service="sing-box-wg-proxy.service"
-    proxy_host=${lib.escapeShellArg proxy.listen}
-    proxy_port=${toString proxy.port}
-
-    systemctl --user start "$service"
-
-    ready=0
-    for _ in $(${lib.getExe' pkgs.coreutils "seq"} 1 100); do
-      if ${lib.getExe pkgs.netcat-openbsd} -z "$proxy_host" "$proxy_port" 2>/dev/null; then
-        ready=1
-        break
-      fi
-      sleep 0.1
-    done
-
-    if [ "$ready" != 1 ]; then
-      systemctl --user status "$service" --no-pager || true
-      exit 1
-    fi
-
     export NODE_USE_ENV_PROXY=1
-    export HTTP_PROXY="http://$proxy_host:$proxy_port"
-    export HTTPS_PROXY="http://$proxy_host:$proxy_port"
+    export HTTP_PROXY=${lib.escapeShellArg proxyUrl}
+    export HTTPS_PROXY=${lib.escapeShellArg proxyUrl}
     export NO_PROXY="127.0.0.1,localhost"
 
-    ${lib.getExe engine} "$@" &
-    app_pid=$!
-
-    cleanup() {
-      if [ -n "''${app_pid:-}" ]; then
-        kill "$app_pid" 2>/dev/null || true
-      fi
-      systemctl --user stop "$service" || true
-    }
-
-    trap cleanup INT TERM EXIT
-    wait "$app_pid"
-    status=$?
-    trap - INT TERM EXIT
-    systemctl --user stop "$service" || true
-    exit "$status"
+    exec ${lib.getExe engine} "$@"
   '';
 
   direct = pkgs.writeShellScriptBin "marinara-direct" ''

@@ -5,54 +5,19 @@ let
   tavern = config.confine.packages.sillytavern;
   port = 8000;
 
+  proxyUrl = "http://${proxy.listen}:${toString proxy.port}";
+
   proxied = pkgs.writeShellScriptBin "sillytavern" ''
-    set -euo pipefail
-
-    service="sing-box-wg-proxy.service"
-    proxy_host=${lib.escapeShellArg proxy.listen}
-    proxy_port=${toString proxy.port}
-
-    systemctl --user start "$service"
-
-    ready=0
-    for _ in $(${lib.getExe' pkgs.coreutils "seq"} 1 100); do
-      if ${lib.getExe pkgs.netcat-openbsd} -z "$proxy_host" "$proxy_port" 2>/dev/null; then
-        ready=1
-        break
-      fi
-      sleep 0.1
-    done
-
-    if [ "$ready" != 1 ]; then
-      systemctl --user status "$service" --no-pager || true
-      exit 1
-    fi
-
     export NODE_USE_ENV_PROXY=1
-    export HTTP_PROXY="http://$proxy_host:$proxy_port"
-    export HTTPS_PROXY="http://$proxy_host:$proxy_port"
+    export HTTP_PROXY=${lib.escapeShellArg proxyUrl}
+    export HTTPS_PROXY=${lib.escapeShellArg proxyUrl}
     export NO_PROXY="127.0.0.1,localhost"
 
-    ${tavern}/bin/sillytavern \
+    exec ${tavern}/bin/sillytavern \
       --requestProxyEnabled \
-      --requestProxyUrl "http://$proxy_host:$proxy_port" \
+      --requestProxyUrl ${lib.escapeShellArg proxyUrl} \
       --requestProxyBypass localhost 127.0.0.1 \
-      "$@" &
-    app_pid=$!
-
-    cleanup() {
-      if [ -n "''${app_pid:-}" ]; then
-        kill "$app_pid" 2>/dev/null || true
-      fi
-      systemctl --user stop "$service" || true
-    }
-
-    trap cleanup INT TERM EXIT
-    wait "$app_pid"
-    status=$?
-    trap - INT TERM EXIT
-    systemctl --user stop "$service" || true
-    exit "$status"
+      "$@"
   '';
 
   direct = pkgs.writeShellScriptBin "sillytavern-direct" ''
