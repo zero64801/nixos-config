@@ -3,6 +3,8 @@
 let
   devHome = "/home/dx/Projects/dev/.home";
   vinegar = "/home/dx/.var/app/org.vinegarhq.Vinegar/data/vinegar";
+  proxySwitch = config.my.apps.proxySwitch;
+  proxySwitchUrl = "http://127.0.0.1:${toString proxySwitch.port}";
 
   workspace = {
     profile = [ "gpu" ];
@@ -13,6 +15,10 @@ let
     home = "ephemeral";
     runtimeDir = "shared";
     network = "isolated";
+    networkPorts.toHost = lib.optionals proxySwitch.enable [
+      proxySwitch.port
+      proxySwitch.controlPort
+    ];
 
     seccomp = {
       nesting = true;
@@ -55,7 +61,8 @@ let
       "${vinegar}/kombucha"
       "/home/dx/Projects/dev/.envrc"
       "/home/dx/Projects/dev/shell.nix"
-    ];
+    ]
+    ++ lib.optional proxySwitch.enable "xdg-run/proxy-switch";
     gitGuard.enable = true;
 
     dbus.session = {
@@ -104,11 +111,13 @@ in
       appId = "com.visualstudio.code";
       waylandAppId = "code";
       binaries = [ "code" ];
-      networkPorts.fromHost = [
-        13469
-        34872
-        58761
-      ];
+      networkPorts = workspace.networkPorts // {
+        fromHost = [
+          13469
+          34872
+          58761
+        ];
+      };
     };
 
     claude-code = workspace // {
@@ -116,6 +125,17 @@ in
       appId = "com.anthropic.ClaudeCode";
       binaries = [ "claude" ];
       linger = false;
+    };
+  };
+
+  environment.etc."claude-code/managed-settings.d/proxy-switch.json" = lib.mkIf proxySwitch.enable {
+    mode = "0444";
+    text = builtins.toJSON {
+      env = {
+        HTTPS_PROXY = proxySwitchUrl;
+        HTTP_PROXY = proxySwitchUrl;
+        NO_PROXY = "localhost,127.0.0.1,::1";
+      };
     };
   };
 }
