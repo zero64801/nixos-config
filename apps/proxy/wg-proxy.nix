@@ -2,6 +2,10 @@
 
 let
   cfg = config.my.apps.wgProxy;
+  onDemand = import ./_on-demand.nix {
+    inherit lib pkgs;
+    systemd = config.systemd.package;
+  };
 
   # Assembled at runtime because the endpoint file holds the private key and must never enter the store.
   configScript = pkgs.writeShellScript "sing-box-wg-proxy" ''
@@ -19,7 +23,7 @@ let
 
     ${lib.getExe pkgs.jq} \
       -n \
-      --arg listen ${lib.escapeShellArg cfg.listen} \
+      --arg listen ${onDemand.backend} \
       --argjson port ${toString cfg.port} \
       --arg dns ${lib.escapeShellArg cfg.tunnelDns} \
       --slurpfile endpoint ${lib.escapeShellArg cfg.endpointFile} \
@@ -73,6 +77,12 @@ in
       description = "Port for the local HTTP and SOCKS proxy.";
     };
 
+    idleTimeout = lib.mkOption {
+      type = lib.types.str;
+      default = "5min";
+      description = "How long the proxy keeps running after its last connection closes, as a systemd time span.";
+    };
+
     tunnelDns = lib.mkOption {
       type = lib.types.str;
       default = "1.1.1.1";
@@ -81,22 +91,37 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # No wantedBy: consumers start it for exactly as long as they run.
-    systemd.user.services.sing-box-wg-proxy = {
-      description = "Local proxy through a userspace WireGuard tunnel";
+    assertions = [ (onDemand.listenAssertion "my.apps.wgProxy.listen" cfg.listen) ];
 
-      unitConfig.ConditionPathExists = cfg.endpointFile;
+    # No wantedBy: the first connection to the socket starts it, and it stops once the last one has been closed for a while.
+    systemd.user = lib.mkMerge [
+      (onDemand.front {
+        name = "sing-box-wg-proxy-relay";
+        core = "sing-box-wg-proxy.service";
+        description = "local proxy through a userspace WireGuard tunnel";
+        inherit (cfg) listen port idleTimeout;
+      })
+      {
+        services.sing-box-wg-proxy = lib.mkMerge [
+          (onDemand.core [ cfg.port ])
+          {
+            description = "Local proxy through a userspace WireGuard tunnel";
 
-      serviceConfig = {
-        Type = "exec";
-        RuntimeDirectory = "sing-box-wg-proxy";
-        RuntimeDirectoryMode = "0700";
-        ExecStart = configScript;
-        Restart = "on-failure";
-        RestartSec = "3s";
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-      };
-    };
+            unitConfig.ConditionPathExists = cfg.endpointFile;
+
+            serviceConfig = {
+              Type = "exec";
+              RuntimeDirectory = "sing-box-wg-proxy";
+              RuntimeDirectoryMode = "0700";
+              ExecStart = configScript;
+              Restart = "on-failure";
+              RestartSec = "3s";
+              NoNewPrivileges = true;
+              PrivateTmp = true;
+            };
+          }
+        ];
+      }
+    ];
   };
 }

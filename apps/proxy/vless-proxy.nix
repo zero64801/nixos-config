@@ -2,6 +2,10 @@
 
 let
   cfg = config.my.apps.vlessProxy;
+  onDemand = import ./_on-demand.nix {
+    inherit lib pkgs;
+    systemd = config.systemd.package;
+  };
 
   vlessLinkToOutbound = pkgs.writeShellScriptBin "vless-link-to-outbound" ''
     exec ${pkgs.python3}/bin/python3 - "$@" <<'PY'
@@ -171,7 +175,7 @@ PY
 
     ${lib.getExe pkgs.jq} \
       -n \
-      --arg socksListen ${lib.escapeShellArg cfg.socks.listen} \
+      --arg socksListen ${onDemand.backend} \
       --argjson socksPort ${toString cfg.socks.port} \
       ${outboundsArgs} \
       '
@@ -378,12 +382,18 @@ in
         default = 1080;
       description = "Port for the local SOCKS5 proxy.";
       };
+
+      idleTimeout = lib.mkOption {
+        type = lib.types.str;
+        default = "5min";
+        description = "How long the proxy keeps running after its last connection closes, as a systemd time span.";
+      };
     };
 
     autoStart = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Start the proxy automatically at user login instead of on demand.";
+      description = "Keep the proxy running from user login on, instead of only while it has connections.";
     };
 
     tunnelDns = lib.mkOption {
@@ -409,24 +419,40 @@ in
         vlessLinkToOutbound
       ];
 
-      systemd.user.services.sing-box-vless-socks = {
-        description = "Local SOCKS5 proxy to VLESS via sing-box";
+      assertions = [ (onDemand.listenAssertion "my.apps.vlessProxy.socks.listen" cfg.socks.listen) ];
 
-        unitConfig.ConditionPathExists = cfg.outboundFile;
+      systemd.user = lib.mkMerge [
+        (onDemand.front {
+          name = "sing-box-vless-socks-relay";
+          core = "sing-box-vless-socks.service";
+          description = "local SOCKS5 proxy to VLESS";
+          inherit (cfg.socks) listen port idleTimeout;
+        })
+        {
+          services.sing-box-vless-socks = lib.mkMerge [
+            (onDemand.core [ cfg.socks.port ])
+            {
+              description = "Local SOCKS5 proxy to VLESS via sing-box";
 
-        serviceConfig = {
-          Type = "exec";
-          RuntimeDirectory = "sing-box-vless-socks";
-          RuntimeDirectoryMode = "0700";
-          ExecStart = singBoxConfigScript;
-          Restart = "on-failure";
-          RestartSec = "3s";
-          NoNewPrivileges = true;
-          PrivateTmp = true;
-        };
-      } // lib.optionalAttrs cfg.autoStart {
-        wantedBy = [ "default.target" ];
-      };
+              unitConfig.ConditionPathExists = cfg.outboundFile;
+
+              # Wanted by the login target, it is never without a user, so it stays up.
+              wantedBy = lib.optional cfg.autoStart "default.target";
+
+              serviceConfig = {
+                Type = "exec";
+                RuntimeDirectory = "sing-box-vless-socks";
+                RuntimeDirectoryMode = "0700";
+                ExecStart = singBoxConfigScript;
+                Restart = "on-failure";
+                RestartSec = "3s";
+                NoNewPrivileges = true;
+                PrivateTmp = true;
+              };
+            }
+          ];
+        }
+      ];
     }
 
     (lib.mkIf (cfg.discordWrapper.enable && config.my.apps.discord.enable) {
