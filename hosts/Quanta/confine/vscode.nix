@@ -59,6 +59,7 @@ let
       "/lib64"
       "${vinegar}/versions"
       "${vinegar}/kombucha"
+      "${vinegar}/prefixes"
       "/home/dx/Projects/dev/.envrc"
       "/home/dx/Projects/dev/shell.nix"
     ]
@@ -79,6 +80,7 @@ let
   git = config.my.apps.git;
   withGit = git.enable && git.github.enable;
   withInspect = config.my.virtualisation.inspect.enable;
+  studio = config.my.apps.studioBroker;
   key = lib.removePrefix "~/" (lib.removeSuffix ".pub" git.signing.keyFile);
 
   gitAccess = lib.optionalAttrs withGit {
@@ -93,7 +95,7 @@ in
     vscode = workspace // gitAccess // {
       devices = lib.optional withGit "/dev/input/by-id/*-fido" ++ lib.optional withInspect "/dev/fuse";
       binds = workspace.binds // {
-        rw = workspace.binds.rw ++ [ "/home/dx/Downloads" ];
+        rw = workspace.binds.rw ++ [ "/home/dx/Downloads" ] ++ lib.optional studio.enable "/home/dx/${studio.places}";
         ro =
           workspace.binds.ro
           ++ lib.optionals withGit [
@@ -105,7 +107,8 @@ in
           ++ lib.optionals withInspect [
             "xdg-run/vm-inspect"
             "/run/vm-inspect"
-          ];
+          ]
+          ++ lib.optional studio.enable "xdg-run/${dirOf studio.socket}";
       };
       package = pkgs.vscode;
       appId = "com.visualstudio.code";
