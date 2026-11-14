@@ -116,6 +116,16 @@ const GUARD_FD: i32 = 16;
 /// Where the host's /etc sits in the sandbox, behind the links in the sandbox's own /etc.
 const HOST_ETC: &str = "/run/confine/etc";
 
+/// The host's /etc as this launcher sees it. Started inside another sandbox, /etc is that sandbox's folder of links
+/// and the real one is what they point into.
+fn host_etc() -> &'static Path {
+    if Path::new(HOST_ETC).is_dir() { Path::new(HOST_ETC) } else { Path::new("/etc") }
+}
+
+fn at_host(path: &Path) -> PathBuf {
+    path.strip_prefix("/etc").map_or_else(|_| path.to_path_buf(), |rest| host_etc().join(rest))
+}
+
 struct Launch<'a> {
     cfg: &'a Config,
     script: OsString,
@@ -428,26 +438,30 @@ impl<'a> Launch<'a> {
     /// running sandbox, the generated passwd and the masks included. So /etc is the sandbox's own folder of links to
     /// the host's entries, and what gets mounted in it sits on that folder, out of the host's reach.
     fn shadow_etc(&mut self, held: &[PathBuf]) {
-        self.push3("--ro-bind", "/etc", HOST_ETC);
+        self.push3("--ro-bind", host_etc(), HOST_ETC);
         self.push("--tmpfs");
         self.push("/etc");
-        self.shadow_dir(Path::new("/etc"), held);
+        self.shadow_dir(Path::new(""), held);
     }
 
-    fn shadow_dir(&mut self, dir: &Path, held: &[PathBuf]) {
-        let mut entries: Vec<PathBuf> = fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-        entries.sort();
-        for path in entries {
+    /// `below` is the folder's path under /etc.
+    fn shadow_dir(&mut self, below: &Path, held: &[PathBuf]) {
+        let dir = host_etc().join(below);
+        let mut names: Vec<OsString> = fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+        names.sort();
+        for name in names {
+            let rest = below.join(&name);
+            let path = Path::new("/etc").join(&rest);
             if held.contains(&path) {
                 continue;
             }
             // A folder that holds one of them has to be the sandbox's own as well, a link would lead back onto the host's.
-            if held.iter().any(|h| h.starts_with(&path)) && fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            if held.iter().any(|h| h.starts_with(&path)) && fs::symlink_metadata(dir.join(&name)).is_ok_and(|m| m.is_dir()) {
                 self.push("--dir");
                 self.push(&path);
-                self.shadow_dir(&path, held);
-            } else if let Ok(rest) = path.strip_prefix("/etc") {
-                self.push3("--symlink", Path::new(HOST_ETC).join(rest), &path);
+                self.shadow_dir(&rest, held);
+            } else {
+                self.push3("--symlink", Path::new(HOST_ETC).join(&rest), &path);
             }
         }
     }
@@ -482,10 +496,13 @@ impl<'a> Launch<'a> {
             self.push3("--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve");
         }
 
-        // Masks only land on existing paths.
+        // Masks only land on existing paths. Inside another sandbox a masked file is a device node and not a file.
         let mut over: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
-        over.extend(cfg.masked_files.iter().map(PathBuf::from).filter(|f| f.is_file()).map(|f| (f, Some(PathBuf::from("/dev/null")))));
-        over.extend(cfg.masked_dirs.iter().map(PathBuf::from).filter(|d| d.is_dir()).map(|d| (d, None)));
+        over.extend(cfg.masked_files.iter().map(PathBuf::from).filter(|f| fs::metadata(at_host(f)).is_ok_and(|m| !m.is_dir())).map(|f| (f, Some(PathBuf::from("/dev/null")))));
+        over.extend(cfg.masked_dirs.iter().map(PathBuf::from).filter(|d| at_host(d).is_dir()).map(|d| (d, None)));
+        // The same entries behind the links. A host that replaces one of these files takes this mount away, the one in /etc stays.
+        let behind: Vec<(PathBuf, Option<PathBuf>)> =
+            over.iter().filter_map(|(dest, src)| dest.strip_prefix("/etc").ok().map(|rest| (Path::new(HOST_ETC).join(rest), src.clone()))).collect();
 
         let user = lookup_user(self.uid);
         let user_name = user.as_ref().map(|u| u.name.clone()).or_else(|| env::var("USER").ok()).unwrap_or_else(|| self.uid.to_string());
@@ -509,7 +526,7 @@ impl<'a> Launch<'a> {
         }
         let held: Vec<PathBuf> = over.iter().map(|(dest, _)| dest.clone()).collect();
         self.shadow_etc(&held);
-        for (dest, src) in over {
+        for (dest, src) in over.into_iter().chain(behind) {
             match src {
                 Some(src) => self.push3("--ro-bind", src, dest),
                 None => {
@@ -699,7 +716,7 @@ impl<'a> Launch<'a> {
                 "--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-net", "--unshare-uts", "--unshare-cgroup-try",
                 "--disable-userns", "--new-session", "--die-with-parent", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                 "--ro-bind", "/nix/store", "/nix/store", "--ro-bind-try", "/run/current-system", "/run/current-system",
-                "--ro-bind", "/etc", "/etc", "--dir",
+                "--ro-bind", "/etc", "/etc", "--ro-bind-try", HOST_ETC, HOST_ETC, "--dir",
             ]
             .iter()
             .map(OsString::from)

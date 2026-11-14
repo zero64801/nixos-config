@@ -430,6 +430,10 @@ pkgs.testers.runNixOSTest {
           assert alice(masked).strip() == "character special file"
           assert alice("confine enter com.test.Plain readlink /etc/nsswitch.conf").strip() == "/run/confine/etc/nsswitch.conf"
 
+      with subtest("the masks cover the host's entries behind the links as well"):
+          assert alice("confine enter com.test.Plain stat -c %F /run/confine/etc/subuid").strip() == "character special file"
+          assert alice("confine enter com.test.Plain ls -A /run/confine/etc/ssh /etc/ssh").strip() == "/etc/ssh:\n\n/run/confine/etc/ssh:"
+
       with subtest("ps, enter and kill reach the running sandbox"):
           assert scope in alice("confine ps")
           status = alice("confine enter com.test.Plain grep -E '^(Seccomp|NoNewPrivs):' /proc/self/status")
@@ -554,6 +558,13 @@ pkgs.testers.runNixOSTest {
       with subtest("a launch inside a sandbox stays in its parent's scope without a complaint"):
           nested = output(f"{BIN}/outer-bash -c \"{BIN}/plain-bash -c 'echo nested' 2>&1\"")
           assert nested == "nested\n", nested
+
+      with subtest("a sandbox started inside another reads the host's /etc, with its own passwd and the masks"):
+          probe = "cat /etc/nsswitch.conf > /dev/null && cat /etc/passwd && stat -c %F /etc/shadow /run/confine/etc/shadow && ls -A /etc/ssh /run/confine/etc/ssh"
+          inner = output(f"{BIN}/outer-bash -c \"{BIN}/plain-bash -c '{probe}' 2>&1\"")
+          assert inner.count("character special file") == 2, inner
+          assert "nfsnobody" in inner and "root" not in inner, inner
+          assert inner.endswith("/etc/ssh:\n\n/run/confine/etc/ssh:\n"), inner
 
       def globals_of(text):
           return {line.split("'")[1] for line in text.splitlines() if line.startswith("interface: ")}

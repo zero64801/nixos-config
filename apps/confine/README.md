@@ -115,3 +115,5 @@ Beyond Flatpak, confine isolates the network per app, can give an app its own X 
 The proxy carries one patch: programs of one sandbox may message each other on the bus, so that a service in there can signal the caller it answers, which the stock proxy drops.
 Unlike Flatpak, every sandbox sees the whole read only Nix store and the host's `/etc`, minus credentials, since the store is the runtime here.
 Its `/etc` is a folder of links to the host's entries as they were at launch, so the sandbox's own passwd and the masks over credentials hold when the host replaces those files, as a rebuild does.
+The host's entries behind the links carry the same masks, which last until the host replaces the file under one.
+A sandbox started inside another links to the same host entries, so it has a working `/etc` of its own.
