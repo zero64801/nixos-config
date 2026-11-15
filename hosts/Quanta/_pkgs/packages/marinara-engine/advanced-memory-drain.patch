@@ -113,23 +113,23 @@ index fea0256..9ea18f0 100644
            return api.post<AdvancedMemoryStatus>(`${base}/initialize`, {
              settings: request.settings,
 diff --git a/packages/client/src/localization/locales/en.json b/packages/client/src/localization/locales/en.json
-index 8f5f68b..d94aa09 100644
+index 8f5f68b..3b7fa24 100644
 --- a/packages/client/src/localization/locales/en.json
 +++ b/packages/client/src/localization/locales/en.json
-@@ -546,6 +546,13 @@
-   "chat.advancedMemory.maximumScenesHelp": "Recall up to this many relevant past scenes, with one excerpt per scene. Default: 3. Set to 0 to turn off optional scene recall.",
-   "chat.advancedMemory.mayTakeAWhile": "This may take a while.",
-   "chat.advancedMemory.memoryAllocationHelp": "Summary and recall budget specifies how much of the total context is used for memories (recommended at least 10% of the total allowed one). Constants come first and use at most 70% of the specified budget, then scene summaries, then message excerpts. Memories can go up to 2,000 tokens over when needed. Constant summaries get compressed once they get large.",
+@@ -640,6 +640,13 @@
+   "chat.advancedMemory.status.needs_confirmation": "Character knowledge needs confirmation",
+   "chat.advancedMemory.status.ready": "Memory is ready",
+   "chat.advancedMemory.status.running": "Processing memory",
++  "chat.advancedMemory.storyState": "Current story state",
++  "chat.advancedMemory.storyStateDiscard": "Discard changes",
++  "chat.advancedMemory.storyStateEmpty": "Filled in when scenes leave the live window.",
 +  "chat.advancedMemory.storyStateEnabled": "Story state",
 +  "chat.advancedMemory.storyStateEnabledHelp": "Keep a short list of lasting facts current: where characters are, injuries, items, open threads and promises. The Helper updates it once each time older messages leave the live window.",
-+  "chat.advancedMemory.storyState": "Current story state",
-+  "chat.advancedMemory.storyStateEmpty": "Filled in when scenes leave the live window.",
 +  "chat.advancedMemory.storyStateHelp": "Lasting facts at the end of the archived history: where characters are, injuries, items, open threads, promises word for word. The Helper updates it each time older messages leave the live window, and edits you save are kept and built on.",
 +  "chat.advancedMemory.storyStateSave": "Save story state",
-+  "chat.advancedMemory.storyStateDiscard": "Discard changes",
-   "chat.advancedMemory.memoryBudget": "Summary and recall budget (tokens)",
-   "chat.advancedMemory.messageChoice": "#{{number}} — {{excerpt}}",
-   "chat.advancedMemory.minimumMessages": "Minimum messages per excerpt",
+   "chat.advancedMemory.summaryGenerationHelp": "Scene summaries are written by the Helper model, using only that scene's messages and your corrections. Your Summaries prompts and Chat Summary's Maximum output size still apply. Constant summaries are also written by the Helper model. Characters who saw the same events share a summary, and Resume picks up where it stopped.",
+   "chat.advancedMemory.summaryText": "Summary text",
+   "chat.advancedMemory.timeframe": "Story timeframe",
 diff --git a/packages/server/src/routes/advanced-memory.routes.ts b/packages/server/src/routes/advanced-memory.routes.ts
 index a34c531..8e47f6c 100644
 --- a/packages/server/src/routes/advanced-memory.routes.ts
