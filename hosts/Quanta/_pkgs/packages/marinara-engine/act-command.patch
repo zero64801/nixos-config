@@ -1,0 +1,274 @@
+diff --git a/docs/chats/slash-commands.md b/docs/chats/slash-commands.md
+index 5783b8f..10d98c3 100644
+--- a/docs/chats/slash-commands.md
++++ b/docs/chats/slash-commands.md
+@@ -82,6 +82,8 @@ These commands help you steer a story, play a character, and add art. Most of th
+ | `/random` | `/rand`, `/event` | Asks the AI to add a surprise event to the story. |
+ | `/scene [description (optional)]` | `/rp` | Run from a Conversation chat. Starts a new Roleplay scene that branches off that conversation. |
+ | `/illustrate [range=N\|range=N-M (optional)] [prompt (optional)]` | `/ill` | Generates a gallery image for the current chat. |
++| `/act [direction (optional)]` | `/do` | Writes the whole next scene in one AI reply: your persona's part and everyone else's. A random angle shapes how your persona goes about it, and it changes with every swipe. Without a direction, the AI also picks your persona's move. |
++| `/act! [direction (optional)]` | `/do!` | Like `/act`, exactly as directed, with no random angle. |
+ | `/impersonate [direction (optional)]` | `/imp` | Writes a reply as your persona. |
+ | `/impersonate_prompt [prompt\|reset]` | `/imp_prompt` | Sets the instruction that `/impersonate` uses in this chat. |
+ 
+diff --git a/packages/client/src/lib/slash-commands.ts b/packages/client/src/lib/slash-commands.ts
+index 497f384..de29485 100644
+--- a/packages/client/src/lib/slash-commands.ts
++++ b/packages/client/src/lib/slash-commands.ts
+@@ -14,6 +14,7 @@ import {
+   SUPPORTED_MACROS,
+   buildGuidedGenerationInstructionMessage,
+   buildNarratorInstructionMessage,
++  buildSceneInstructionMessage,
+   isWithinDiceLimits,
+   normalizeTextForMatch,
+   parseDiceNotation,
+@@ -183,6 +184,20 @@ function buildStatusCommandHelp(characters: Array<{ id: string; name: string }>)
+     .join("\n");
+ }
+ 
++/** /act and /act!: one AI reply that carries the whole scene, {{user}}'s part included. */
++async function writeScene(args: string, ctx: SlashCommandContext, varied: boolean): Promise<SlashCommandResult> {
++  // One merged reply carries the scene; a manual reply order has no single author for it.
++  if (ctx.requiresManualGuideTarget)
++    return { handled: true, feedback: "/act writes one shared scene, so it needs an automatic reply order." };
++  await ctx.generate({
++    chatId: ctx.chatId,
++    connectionId: null,
++    generationGuide: buildSceneInstructionMessage(args, { varied }),
++    generationGuideSource: "narrator",
++  });
++  return { handled: true };
++}
++
+ function formatGuidedTargetHelp(characters: Array<{ name: string }>): string {
+   const available = formatAvailableCharacterList(characters);
+   return `Use /guided respond for <character> <direction>${available ? `\nAvailable: ${available}` : ""}`;
+@@ -801,6 +816,23 @@ const COMMANDS: SlashCommand[] = [
+       return { handled: true };
+     },
+   },
++  {
++    name: "act",
++    aliases: ["do"],
++    description:
++      "Write the whole scene, your character included, from a random angle so swipes differ. Without a direction the AI picks your character's move",
++    usage: "/act [direction (optional)]",
++    modes: ["roleplay"],
++    execute: (args, ctx) => writeScene(args, ctx, true),
++  },
++  {
++    name: "actplain",
++    aliases: ["act!", "do!"],
++    description: "Like /act, exactly as directed: no random angle",
++    usage: "/act! [direction (optional)]",
++    modes: ["roleplay"],
++    execute: (args, ctx) => writeScene(args, ctx, false),
++  },
+   {
+     name: "continue",
+     aliases: ["cont"],
+diff --git a/packages/client/src/localization/locales/en.json b/packages/client/src/localization/locales/en.json
+index 3b7fa24..1fa2a59 100644
+--- a/packages/client/src/localization/locales/en.json
++++ b/packages/client/src/localization/locales/en.json
+@@ -8659,6 +8659,8 @@
+   "ui.chat.slash.hideUsage": "Usage: /hide [range] [name (optional)]. Name-first syntax is also accepted.",
+   "ui.chat.slash.messageOutOfRange": "Message {{index}} does not exist. This chat has {{total}} messages.",
+   "ui.chat.slash.statusCompletionUsage": "/status {{status}} [name (optional)]",
++  "ui.chat.slash.usage.act": "/act [direction (optional)]",
++  "ui.chat.slash.usage.actplain": "/act! [direction (optional)]",
+   "ui.chat.slash.usage.as": "/as [name] [message (optional)]",
+   "ui.chat.slash.usage.emote": "/emote [expression (optional)] | /emote \"[name]\" [expression (optional)]",
+   "ui.chat.slash.usage.goto": "/goto [number]",
+diff --git a/packages/shared/src/utils/generation-guide.ts b/packages/shared/src/utils/generation-guide.ts
+index 53f04e5..7adaf4d 100644
+--- a/packages/shared/src/utils/generation-guide.ts
++++ b/packages/shared/src/utils/generation-guide.ts
+@@ -8,9 +8,83 @@ export function buildGuidedGenerationInstructionMessage(direction: string): stri
+   return `[Guided generation instruction — do not include a reply from {{user}}. Instead, write the next generated message steering it toward the following: ${direction.trim()}]`;
+ }
+ 
++/** Ways to go about an action. One is drawn per generation, so a swipe differs where the model alone repeats itself. */
++export const SCENE_ANGLES = [
++  "indirectly, from a side nobody expects",
++  "with brute force and no finesse",
++  "with words first and action second",
++  "by using something in the surroundings",
++  "by using something they carry or a skill they are known for",
++  "with a feint that hides the real move",
++  "by turning someone else's move to their own advantage",
++  "patiently, waiting for the right opening",
++  "all at once, before anyone can react",
++  "in a way that costs them something",
++  "in a way that someone unexpected notices",
++  "in a way that reveals something they would rather keep hidden",
++  "at a bad moment, so they have to adapt",
++  "with a first try that goes wrong, so they improvise",
++  "holding back at the last moment",
++  "overconfidently",
++  "hesitantly at first, then fully committed",
++  "coldly and efficiently",
++  "recklessly",
++  "playfully, making a show of it",
++  "quietly, drawing as little attention as possible",
++  "with more anger than the moment calls for",
++  "with visible effort",
++  "while saying the opposite of what they are doing",
++] as const;
++
++/** Kinds of move, for a reply where the model also picks what {{user}} does. */
++export const SCENE_MOVES = [
++  "going straight for what they want",
++  "testing someone with a provocation, a lie or a dare",
++  "offering a deal or a trade",
++  "backing off or leaving, to see who follows",
++  "looking into something odd about the scene",
++  "revealing something about themselves",
++  "taking a risk that could backfire",
++  "helping someone who did not ask for it",
++  "picking a fight, with words or with fists",
++  "steering things toward something they care about",
++  "making a demand",
++  "doing something kind that costs them",
++  "using their skills or belongings in an unusual way",
++  "calling out something another character is hiding",
++  "picking up a loose thread from earlier in the story",
++  "making a joke of it to break the tension",
++  "raising the stakes on purpose",
++  "waiting and watching, then acting on what they notice",
++  "asking the question nobody wants asked",
++  "breaking a rule of the place they are in",
++] as const;
++
++function drawFrom(deck: readonly string[]): string {
++  return `{{random::${deck.join("::")}}}`;
++}
++
++/**
++ * For one reply the model writes {{user}} too: the whole scene, where /guided leaves {{user}} out. With no direction
++ * the model also picks {{user}}'s move. `varied` adds a random draw, which the server makes anew for every generation.
++ */
++export function buildSceneInstructionMessage(direction: string, options: { varied?: boolean } = {}): string {
++  const wanted = direction.trim();
++  const opening =
++    "[Scene instruction for this reply only: the user asks you to write {{user}} too, which sets aside any rule against writing {{user}} for this one reply. Write the next part of the scene in full, with what {{user}} does and says in their established voice alongside what everyone else does and says. What {{user}} does is still an attempt whose outcome you decide.";
++  if (wanted) {
++    const angle = options.varied
++      ? ` If it fits the scene, shape how {{user}} goes about it this way: ${drawFrom(SCENE_ANGLES)}.`
++      : "";
++    return `${opening}${angle} Base {{user}}'s part on the following: ${wanted}]`;
++  }
++  const move = options.varied ? `, and if the scene allows it is this kind of move: ${drawFrom(SCENE_MOVES)}` : "";
++  return `${opening} {{user}}'s next move is yours to choose, true to their persona and to what they want in this scene${move}. Base {{user}}'s part on the following: their own next move, chosen by you]`;
++}
++
+ export function stripGenerationGuideInstruction(value: string): string {
+   if (!value.endsWith("]")) return value;
+-  const prefixes = ["[Narrator instruction ", "[Guided generation instruction "];
++  const prefixes = ["[Narrator instruction ", "[Guided generation instruction ", "[Scene instruction "];
+   const prefix = prefixes.find((candidate) => value.startsWith(candidate));
+   if (!prefix) return value;
+   const marker = " following:";
+diff --git a/scripts/regressions/slash-command-usage.regression.ts b/scripts/regressions/slash-command-usage.regression.ts
+index 6a407c9..806a5fb 100644
+--- a/scripts/regressions/slash-command-usage.regression.ts
++++ b/scripts/regressions/slash-command-usage.regression.ts
+@@ -10,6 +10,12 @@ import {
+   type SlashCommandContext,
+ } from "../../packages/client/src/lib/slash-commands.js";
+ import { i18n, translate } from "../../packages/client/src/localization/i18n.js";
++import {
++  SCENE_ANGLES,
++  SCENE_MOVES,
++  stripGenerationGuideInstruction,
++} from "../../packages/shared/src/utils/generation-guide.js";
++import { resolveMacros } from "../../packages/shared/src/utils/macro-engine.js";
+ 
+ const english = JSON.parse(
+   readFileSync(new URL("../../packages/client/src/localization/locales/en.json", import.meta.url), "utf8"),
+@@ -53,6 +59,75 @@ const context: SlashCommandContext = {
+ };
+ 
+ try {
++  // /guided leaves {{user}} out and /impersonate writes only {{user}}: /act asks for both in one reply.
++  const act = matchSlashCommand("/act", { mode: "roleplay" })!.command;
++  const actPlain = matchSlashCommand("/act!", { mode: "roleplay" })!.command;
++  assert.equal(matchSlashCommand("/do", { mode: "roleplay" })!.command, act, "/do is its alias");
++  assert.equal(matchSlashCommand("/do!", { mode: "roleplay" })!.command, actPlain, "/do! is the plain alias");
++  assert.equal(matchSlashCommand("/actplain", { mode: "roleplay" })!.command, actPlain);
++  assert.deepEqual(
++    getSlashCompletions("/act", { mode: "roleplay" }).map((command) => command.usage),
++    ["/act [direction (optional)]", "/act! [direction (optional)]"],
++    "typing /act offers both",
++  );
++  assert.notEqual(actPlain, act);
++  assert.equal(matchSlashCommand("/act", { mode: "conversation" }), null, "it is a Roleplay command");
++  const acted: Array<Record<string, unknown>> = [];
++  const actContext = { ...context, generate: async (params: Record<string, unknown>) => void acted.push(params) };
++  const guideOf = async (command: typeof act, args: string) => {
++    await command.execute(args, actContext);
++    return String(acted.at(-1)!.generationGuide);
++  };
++  const macros = { user: "Aren", char: "Mira", characters: ["Mira"], variables: {} };
++  /** What the server sends: it resolves the guide's macros anew for every generation, with no fixed seed. */
++  const sent = (guide: string) => resolveMacros(guide, macros, { trimResult: false });
++
++  const plain = await guideOf(actPlain, "  attacks the guard  ");
++  assert.match(plain, /the user asks you to write \{\{user\}\} too/u);
++  assert.match(plain, /sets aside any rule against writing \{\{user\}\} for this one reply/u);
++  assert.doesNotMatch(plain, /do not include a reply from/u);
++  assert.doesNotMatch(plain, /\{\{random/u, "/act! draws nothing");
++  assert.equal(acted.at(-1)!.generationGuideSource, "narrator");
++  assert.equal(acted.at(-1)!.impersonate, undefined, "the reply stays a scene, not a user message");
++  assert.equal(stripGenerationGuideInstruction(plain), "attacks the guard", "replay details show the direction");
++
++  // /act adds one angle from the deck, drawn again for each generation so a swipe differs.
++  const varied = await guideOf(act, "attacks the guard");
++  assert.equal(stripGenerationGuideInstruction(varied), "attacks the guard");
++  const angles = new Set<string>();
++  for (let draw = 0; draw < 200; draw++) {
++    const text = sent(varied);
++    assert.doesNotMatch(text, /\{\{|\}\}/u, "every macro resolves");
++    const angle = text.match(
++      /goes about it this way: (.+?)\. Base Aren's part on the following: attacks the guard\]$/u,
++    );
++    assert.ok(angle && (SCENE_ANGLES as readonly string[]).includes(angle[1]!), text);
++    angles.add(angle[1]!);
++  }
++  assert.ok(angles.size > SCENE_ANGLES.length / 2, `200 draws reach most of the deck, got ${angles.size}`);
++
++  // With no direction the model picks the move: /act draws its kind, /act! leaves it open.
++  const open = await guideOf(act, "   ");
++  const moves = new Set<string>();
++  for (let draw = 0; draw < 200; draw++) {
++    const move = sent(open).match(/it is this kind of move: (.+?)\. Base Aren's part on the following: /u);
++    assert.ok(move && (SCENE_MOVES as readonly string[]).includes(move[1]!));
++    moves.add(move[1]!);
++  }
++  assert.ok(moves.size > SCENE_MOVES.length / 2, `200 draws reach most of the deck, got ${moves.size}`);
++  const openPlain = await guideOf(actPlain, "");
++  assert.match(openPlain, /next move is yours to choose/u);
++  assert.doesNotMatch(openPlain, /\{\{random/u);
++  assert.equal(stripGenerationGuideInstruction(open), "their own next move, chosen by you");
++  // A deck entry must not end the macro, split it, read as a weight or cut the replay text short.
++  for (const entry of [...SCENE_ANGLES, ...SCENE_MOVES]) assert.doesNotMatch(entry, /::|[{}[\]@]| following:/u, entry);
++
++  const before = acted.length;
++  assert.match(
++    (await act.execute("attacks", { ...actContext, requiresManualGuideTarget: true })).feedback ?? "",
++    /automatic reply order/u,
++  );
++  assert.equal(acted.length, before, "a manual reply order does not generate");
+   const illustrate = matchSlashCommand("/illustrate", { mode: "roleplay" })!.command;
+   const illustrations: unknown[] = [];
+   const illustrationContext = {
+@@ -230,7 +305,7 @@ const parameterized = [
+       .map((command) => [command.name, command]),
+   ).values(),
+ ];
+-assert.equal(parameterized.length, 17);
++assert.equal(parameterized.length, 19);
+ for (const command of parameterized) {
+   assert.equal(english[`ui.chat.slash.usage.${command.name}`], command.usage);
+   assert.equal(getSlashCommandUsage(command, translate), command.usage);
