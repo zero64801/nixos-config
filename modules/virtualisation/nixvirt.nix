@@ -382,6 +382,7 @@ let
       usage() {
         cat <<EOF
       usage: nixvirt-snapshot <command> ...
+             nixvirt-snapshot                            on a terminal: pick the domain, action and snapshot from a menu
 
         create  [-y] [--mem[=file]] [--internal] <domain> [name]
                                                          create a snapshot (defaults: external, disk-only; --mem adds RAM state, --internal stores inside the qcow2)
@@ -427,6 +428,52 @@ let
         virsh define "$tmpf" >/dev/null
         rm -f "$tmpf"
       }
+
+      list_domain() {
+        local state cnt cur sname f sz ttype device tdev src
+        state=$(virsh domstate "$dom" 2>/dev/null || true)
+        cnt=$(virsh snapshot-list "$dom" --name 2>/dev/null | grep -c . || true)
+        cur=$(virsh snapshot-current --name "$dom" 2>/dev/null || true)
+        echo "domain: $dom (''${state:-unknown})"
+        echo "snapshots: ''${cnt:-0}''${cur:+  (current: $cur)}"
+        virsh snapshot-list "$dom" --tree 2>/dev/null | sed '/^$/d; s/^/  /'
+        if [ "''${cnt:-0}" -gt 0 ]; then
+          echo "snapshot overlays (allocated = changes held on that layer):"
+          while read -r sname; do
+            [ -n "$sname" ] || continue
+            while read -r f; do
+              [ -n "$f" ] || continue
+              if [ -f "$f" ]; then
+                sz=$(du -h "$f" 2>/dev/null | cut -f1)
+              else
+                sz="MISSING"
+              fi
+              echo "  [$sname] $f ($sz)"
+            done < <(virsh snapshot-dumpxml "$dom" "$sname" 2>/dev/null \
+              | xmlstarlet sel -t -m "/domainsnapshot/disks/disk[@snapshot='external']" -v "source/@file" -n 2>/dev/null || true)
+          done < <(virsh snapshot-list "$dom" --name 2>/dev/null)
+        fi
+        echo "live disks:"
+        while read -r ttype device tdev src; do
+          [ -n "$tdev" ] || continue
+          [ "$ttype" = "file" ] || continue
+          sz=""
+          if [ "$device" = "disk" ] && [ -f "$src" ]; then
+            sz="  ($(du -h "$src" 2>/dev/null | cut -f1))"
+          fi
+          echo "  $tdev  $src$sz"
+        done < <(virsh domblklist "$dom" --details 2>/dev/null | tail -n +3)
+      }
+
+      # A user reads through libvirt's read only socket, which asks for no authentication.
+      if [ "$(id -u)" -ne 0 ]; then
+        virsh() { command virsh -r "$@"; }
+      fi
+
+      ${builtins.readFile ./_nixvirt-snapshot-menu.sh}
+      if [ "$#" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+        menu
+      fi
 
       assume_yes=0
       all=0
@@ -493,7 +540,7 @@ let
         exit 1
       fi
 
-      if [ "$(id -u)" -ne 0 ]; then echo "run as root: sudo nixvirt-snapshot $sub $dom" >&2; exit 1; fi
+      if [ "$sub" != "list" ] && [ "$(id -u)" -ne 0 ]; then echo "run as root: sudo nixvirt-snapshot $sub $dom" >&2; exit 1; fi
 
       if [ "$sub" != "list" ]; then
         exec 9>"/run/lock/nixvirt-snapshot.$dom.lock"
@@ -522,38 +569,7 @@ let
       fi
 
       if [ "$sub" = "list" ]; then
-        state=$(virsh domstate "$dom" 2>/dev/null || true)
-        cnt=$(virsh snapshot-list "$dom" --name 2>/dev/null | grep -c . || true)
-        cur=$(virsh snapshot-current --name "$dom" 2>/dev/null || true)
-        echo "domain: $dom (''${state:-unknown})"
-        echo "snapshots: ''${cnt:-0}''${cur:+  (current: $cur)}"
-        virsh snapshot-list "$dom" --tree 2>/dev/null | sed '/^$/d; s/^/  /'
-        if [ "''${cnt:-0}" -gt 0 ]; then
-          echo "snapshot overlays (allocated = changes held on that layer):"
-          while read -r sname; do
-            [ -n "$sname" ] || continue
-            while read -r f; do
-              [ -n "$f" ] || continue
-              if [ -f "$f" ]; then
-                sz=$(du -h "$f" 2>/dev/null | cut -f1)
-              else
-                sz="MISSING"
-              fi
-              echo "  [$sname] $f ($sz)"
-            done < <(virsh snapshot-dumpxml "$dom" "$sname" 2>/dev/null \
-              | xmlstarlet sel -t -m "/domainsnapshot/disks/disk[@snapshot='external']" -v "source/@file" -n 2>/dev/null || true)
-          done < <(virsh snapshot-list "$dom" --name 2>/dev/null)
-        fi
-        echo "live disks:"
-        while read -r ttype device tdev src; do
-          [ -n "$tdev" ] || continue
-          [ "$ttype" = "file" ] || continue
-          sz=""
-          if [ "$device" = "disk" ] && [ -f "$src" ]; then
-            sz="  ($(du -h "$src" 2>/dev/null | cut -f1))"
-          fi
-          echo "  $tdev  $src$sz"
-        done < <(virsh domblklist "$dom" --details 2>/dev/null | tail -n +3)
+        list_domain
         exit 0
       fi
 
