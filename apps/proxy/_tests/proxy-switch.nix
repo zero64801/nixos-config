@@ -153,9 +153,18 @@ pkgs.testers.runNixOSTest {
           tunnelDns = tunnelServer;
           idleTimeout = idle;
         };
-        my.apps.proxySwitch = {
-          enable = true;
-          idleTimeout = idle;
+        my.apps.proxySwitch.switches = {
+          main = {
+            port = 2082;
+            controlPort = 2083;
+            command = "test-route";
+            idleTimeout = idle;
+          };
+          other = {
+            port = 2084;
+            controlPort = 2085;
+            idleTimeout = idle;
+          };
         };
 
         # A service on the loopback of the machine the switch runs on, which no route may hand out.
@@ -171,11 +180,11 @@ pkgs.testers.runNixOSTest {
           binPrefix = "switcher-";
           appId = "com.test.Switcher";
           network = "isolated";
-          networkPorts.toHost = with config.my.apps.proxySwitch; [
+          networkPorts.toHost = with config.my.apps.proxySwitch.switches.main; [
             port
             controlPort
           ];
-          binds.ro = [ "xdg-run/proxy-switch" ];
+          binds.ro = [ "xdg-run/proxy-switch/main" ];
         };
       };
     };
@@ -185,7 +194,8 @@ pkgs.testers.runNixOSTest {
     { nodes, ... }:
     let
       apps = nodes.machine.my.apps;
-      switch = apps.proxySwitch;
+      switch = apps.proxySwitch.switches.main;
+      other = apps.proxySwitch.switches.other;
     in
     ''
       from datetime import timedelta
@@ -193,11 +203,13 @@ pkgs.testers.runNixOSTest {
       PAGE = "http://${serverAddress}:${toString ports.page}/"
       LOCAL = "http://127.0.0.1:${toString ports.local}/"
       SWITCH = "http://127.0.0.1:${toString switch.port}"
+      OTHER = "http://127.0.0.1:${toString other.port}"
       CONTROL = "http://127.0.0.1:${toString switch.controlPort}/configs"
       USER = "systemctl --user -M alice@"
       RUN = "systemd-run --user -M alice@ --quiet --collect --wait --pipe --"
       BIN = "/run/current-system/sw/bin"
-      ROUTE = f"{RUN} {BIN}/proxy-route"
+      ROUTE = f"{RUN} {BIN}/${switch.command}"
+      OTHER_ROUTE = f"{RUN} {BIN}/${other.command}"
       VLESS = "sing-box-vless-socks.service"
       WG = "sing-box-wg-proxy.service"
       RUNNING = "pgrep -f 'sing-box [r]un|systemd-socket-[p]roxyd'"
@@ -232,17 +244,17 @@ pkgs.testers.runNixOSTest {
       server.wait_for_open_port(${toString ports.page})
       machine.wait_for_open_port(${toString ports.local})
       # Not their ports, a connection to one would start what is behind it.
-      for unit in ["proxy-switch-relay", "proxy-switch-control", "sing-box-vless-socks-relay", "sing-box-wg-proxy-relay"]:
+      for unit in ["proxy-switch-main-relay", "proxy-switch-main-control", "proxy-switch-other-relay", "proxy-switch-other-control", "sing-box-vless-socks-relay", "sing-box-wg-proxy-relay"]:
           machine.wait_for_unit(f"{unit}.socket", "alice")
       own = machine.succeed("ip -4 -o addr show dev eth1 | awk '{print $4}' | cut -d/ -f1").strip()
 
       with subtest("nothing runs before the first connection"):
           machine.fail(RUNNING)
-          machine.succeed("test -s /run/user/1000/proxy-switch/secret")
+          machine.succeed("test -s /run/user/1000/proxy-switch/main/secret")
 
       with subtest("the first connection starts the switch and nothing else, on the default route"):
           assert seen() == own, seen()
-          assert active("proxy-switch.service")
+          assert active("proxy-switch-main.service")
           assert not active(VLESS) and not active(WG)
           assert route() == "off", route()
 
@@ -261,13 +273,24 @@ pkgs.testers.runNixOSTest {
           for host in ["127.0.0.1", "loop.test", "localhost", "0.0.0.0", "[::ffff:127.0.0.1]"]:
               assert status(f"http://{host}:${toString ports.local}/") != "200", host
 
-      with subtest("the control API refuses a request without the secret, proxy-route an unknown route"):
+      with subtest("the control API refuses a request without the secret, the route command an unknown route"):
           code = machine.succeed(
               f"curl -s -o /dev/null -w '%{{http_code}}' -X PATCH -d '{{\"mode\":\"vless\"}}' {CONTROL}"
           )
           assert code == "401", code
           machine.fail(f"{ROUTE} direct")
           assert route() == "off"
+
+      with subtest("a second switch keeps a route of its own, picked with its own command"):
+          route("vless")
+          assert "${other.command}" == "other-route"
+          assert machine.succeed(OTHER_ROUTE).strip() == "off"
+          assert machine.succeed(f"{OTHER_ROUTE} wg").strip() == "wg"
+          assert seen() == "${serverAddress}", seen()
+          assert seen(OTHER) == "${tunnelClient}", seen(OTHER)
+          assert route() == "vless"
+          machine.succeed(f"{OTHER_ROUTE} off")
+          assert seen(OTHER) == own
 
       with subtest("everything stops once idle, and comes back on the picked route"):
           route("vless")
@@ -280,7 +303,7 @@ pkgs.testers.runNixOSTest {
           route("off")
           machine.succeed(f"curl -s -o /tmp/held -m 30 -x {SWITCH} {PAGE}wait/9 >/dev/null 2>&1 &")
           machine.sleep(7)
-          assert active("proxy-switch.service") and active("proxy-switch-relay.service")
+          assert active("proxy-switch-main.service") and active("proxy-switch-main-relay.service")
           machine.wait_until_succeeds(f"test \"$(cat /tmp/held)\" = {own}", timeout=timedelta(seconds=15))
           wait_idle()
 
@@ -306,17 +329,18 @@ pkgs.testers.runNixOSTest {
           wait_idle()
           assert seen("socks5h://${apps.vlessProxy.socks.listen}:${toString apps.vlessProxy.socks.port}") == "${serverAddress}"
           assert seen("http://${apps.wgProxy.listen}:${toString apps.wgProxy.port}") == "${tunnelClient}"
-          assert not active("proxy-switch.service")
+          assert not active("proxy-switch-main.service")
 
       with subtest("a sandbox with the ports and the secret bound switches and uses the route, but not the loopback behind it"):
           out = machine.succeed(
-              f"{RUN} {BIN}/switcher-bash -c '{BIN}/proxy-route vless && {BIN}/curl -s -m 10 -x {SWITCH} {PAGE}'"
+              f"{RUN} {BIN}/switcher-bash -c '{BIN}/${switch.command} vless && {BIN}/curl -s -m 10 -x {SWITCH} {PAGE}'"
           )
           assert out.split() == ["vless", "${serverAddress}"], out
           out = machine.succeed(
-              f"{RUN} {BIN}/switcher-bash -c '{BIN}/proxy-route off && {BIN}/curl -s -o /dev/null -m 5 -w %{{http_code}} -x {SWITCH} {LOCAL}'"
+              f"{RUN} {BIN}/switcher-bash -c '{BIN}/${switch.command} off && {BIN}/curl -s -o /dev/null -m 5 -w %{{http_code}} -x {SWITCH} {LOCAL}'"
           )
           assert out.split()[0] == "off" and out.split()[1] != "200", out
+          machine.fail(f"{RUN} {BIN}/switcher-bash -c '{BIN}/${other.command}'")
 
       with subtest("a route whose proxy cannot start fails instead of going direct, and returns with it"):
           route("vless")
