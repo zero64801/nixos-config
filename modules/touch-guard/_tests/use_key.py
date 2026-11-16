@@ -1,4 +1,7 @@
-"""Opens the fake key and, by mode, holds it idle, asks through write, or asks through the output report ioctl."""
+"""Opens the fake key and, by mode, holds it idle, asks through write, or asks through the output report ioctl.
+
+use_key.py MODE [SECONDS_TO_STAY [SECONDS_THE_KEY_WAITS]]
+"""
 import fcntl
 import glob
 import os
@@ -16,7 +19,7 @@ def node():
 
 mode = sys.argv[1]
 fd = os.open(node(), os.O_RDWR)
-request = bytes([0, 0, 0, 0, 7, 0x90, 0, 1, 4]).ljust(65, b"\0")
+request = bytes([0, 0, 0, 0, 7, 0x90, 0, 2, 4, int(sys.argv[3]) if len(sys.argv) > 3 else 0]).ljust(65, b"\0")
 if mode == "write":
     os.write(fd, request)
 elif mode == "ioctl":

@@ -143,6 +143,23 @@ class Waits(unittest.TestCase):
         t.feed(TOUCHED, 30.1)
         self.assertTrue(t.feed(UPNEEDED, 30.15), "a second request right after a touch needs its own scan")
 
+    def test_cancel_goes_to_the_waiting_channel(self):
+        t = d.WaitTracker()
+        self.assertIsNone(t.cancel_report(), "nothing waits")
+        t.feed(frame(d.CTAPHID_KEEPALIVE, d.STATUS_UPNEEDED, cid=7), 40.0)
+        report = t.cancel_report()
+        self.assertEqual(len(report), 65, "hidraw takes the report number ahead of the 64 bytes")
+        self.assertEqual(report[:6], bytes([0, 0, 0, 0, 7, d.CTAPHID_CANCEL]))
+        self.assertEqual(set(report[6:]), {0})
+        t.feed(frame(d.CTAPHID_CBOR, 0x2D, cid=7), 40.1)
+        self.assertIsNone(t.cancel_report(), "an answered wait is over")
+        self.assertEqual(t.end(40.4), "cancelled")
+
+    def test_a_u2f_wait_has_nothing_to_cancel(self):
+        t = d.WaitTracker()
+        t.feed(frame(d.CTAPHID_MSG, 0x69, 0x85), 50.0)
+        self.assertIsNone(t.cancel_report(), "the program asks again by itself, the key holds no request")
+
 
 class Sudo(unittest.TestCase):
     def test_options(self):
@@ -410,6 +427,10 @@ class Senders(unittest.TestCase):
     def test_only_the_program_that_sent_is_a_sender(self):
         self.assertEqual(self.senders(sent(951, 11.0)), {951})
 
+    def test_the_daemons_own_cancel_is_not_a_request(self):
+        self.trace.own = 951
+        self.assertEqual(self.senders(sent(951, 11.0), sent(700, 11.1)), {700})
+
     def test_a_thread_counts_as_its_program(self):
         base = os.path.join(self.p.root, "952")
         os.makedirs(base)
@@ -587,9 +608,9 @@ class Notifier(unittest.TestCase):
 
 
 class Socket(unittest.TestCase):
-    def connect(self, allowed_uid, notifier=None, proc_root="/proc"):
+    def connect(self, allowed_uid, notifier=None, proc_root="/proc", cancel=None):
         tmp = tempfile.mkdtemp()
-        b = d.Broadcaster(os.path.join(tmp, "events.sock"), allowed_uid, notifier, proc_root)
+        b = d.Broadcaster(os.path.join(tmp, "events.sock"), allowed_uid, notifier, proc_root, cancel)
         b.active[7] = {"event": "waiting", "id": 7}
         threading.Thread(target=b.serve, daemon=True).start()
         for _ in range(50):
@@ -632,6 +653,15 @@ class Socket(unittest.TestCase):
         c.sendall(b'{"event": "shown", "id": 7}\n{"event": "failed", "id": 8}\n')
         self.assertTrue(b.wait_shown(7, 2))
         self.assertFalse(b.wait_shown(8, 2), "a notification that failed counts as not shown")
+
+    def test_a_pressed_cancel_is_passed_on(self):
+        asked = []
+        b, c = self.connect(os.getuid(), cancel=asked.append)
+        self.wait_for_client(b)
+        c.sendall(b'{"event": "cancel", "id": 7}\n{"event": "cancel", "id": "7"}\n{"event": "cancel", "id": true}\n'
+                  b'{"event": "cancel"}\n{"event": "shown", "id": 9}\n')
+        self.assertTrue(b.wait_shown(9, 2))
+        self.assertEqual(asked, [7], "only an event number is passed on")
 
     def test_no_notifier(self):
         b = d.Broadcaster("/nonexistent", os.getuid())
@@ -719,6 +749,21 @@ class Pam(unittest.TestCase):
         with open(os.path.join(self.p.root, "950", "stat"), "w") as f:
             f.write("950 (sudo) S 901 " + " ".join(["0"] * 17) + " 999 0\n")
         self.assertEqual(g.sweep(), [50], "a reused pid is another process")
+
+    def test_a_cancelled_program_is_refused_when_it_asks_again(self):
+        b = FakeBroadcaster()
+        g = self.guard(b)
+        g.decide(self.request())
+        g.cancelled(99)
+        self.assertTrue(g.decide(self.request())[0], "another event's cancel changes nothing")
+        g.cancelled(51)
+        self.assertEqual(g.decide(self.request()), (False, d.CANCELLED))
+        self.assertEqual(len(b.published), 2, "a refused request is not put on screen")
+        with mock.patch.object(d, "CANCEL_HOLD", 0.0):
+            self.assertTrue(g.decide(self.request())[0], "only for a while")
+        with open(os.path.join(self.p.root, "950", "stat"), "w") as f:
+            f.write("950 (sudo) S 901 " + " ".join(["0"] * 17) + " 999 0\n")
+        self.assertTrue(g.decide(self.request())[0], "a reused pid is another process")
 
     def test_request_validation(self):
         self.assertIsNone(d.pam_request({"pid": "950"}))
@@ -920,6 +965,66 @@ class Rendering(unittest.TestCase):
     def test_fixed_bus_address(self):
         command = n.Notifications("/nix/store/x-systemd/bin/busctl").command
         self.assertEqual(command[:2], ["/nix/store/x-systemd/bin/busctl", f"--address=unix:path=/run/user/{os.getuid()}/bus"])
+
+
+class ClosedNotification(unittest.TestCase):
+    @staticmethod
+    def signal(notification=4, reason=2, sender=":1.9", member="NotificationClosed"):
+        return json.dumps({"type": "signal", "sender": sender, "member": member,
+                           "payload": {"type": "uu", "data": [notification, reason]}})
+
+    def test_the_notification_can_be_put_aside_without_closing_it(self):
+        done = types.SimpleNamespace(returncode=0, stdout="u 12\n", stderr="")
+        with mock.patch.object(n.subprocess, "run", return_value=done) as run:
+            self.assertEqual(n.Notifications("busctl").notify("summary", "body"), 12)
+        command = run.call_args.args[0]
+        at = command.index("resident")
+        self.assertEqual(command[at:at + 3], ["resident", "b", "true"])
+
+    def test_a_close_by_the_user_counts(self):
+        self.assertEqual(n.dismissed_id(self.signal(), lambda: ":1.9"), 4)
+
+    def test_a_close_reported_by_anyone_else_does_not(self):
+        self.assertIsNone(n.dismissed_id(self.signal(sender=":1.66"), lambda: ":1.9"))
+        self.assertIsNone(n.dismissed_id(self.signal(sender=None), lambda: None), "no server means nobody to believe")
+
+    def test_other_messages_are_no_close_by_the_user(self):
+        for line in (self.signal(reason=3), self.signal(reason=1), self.signal(member="ActionInvoked"),
+                     self.signal(notification="4"), "not json", json.dumps({"payload": {"data": [4]}}), "[]"):
+            self.assertIsNone(n.dismissed_id(line, lambda: ":1.9"), line)
+
+    def test_a_close_by_the_user_reaches_the_daemon_as_a_cancel(self):
+        closing = threading.Event()
+
+        class Screen:
+            def notify(self, summary, body):
+                return 5
+
+            def close(self, notification_id):
+                pass
+
+            def dismissed(self):
+                closing.wait(5)
+                yield 99
+                yield 5
+                threading.Event().wait()
+
+        path = os.path.join(tempfile.mkdtemp(), "events.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(path)
+        server.listen(1)
+        server.settimeout(5)
+        threading.Thread(target=n.run, args=(path, Screen()), daemon=True).start()
+        conn, _ = server.accept()
+        self.addCleanup(conn.close)
+        conn.settimeout(5)
+        stream = conn.makefile("r")
+        conn.sendall(b'{"event": "waiting", "id": 3, "requesters": [], "warnings": []}\n')
+        self.assertEqual(json.loads(stream.readline()), {"event": "shown", "id": 3})
+        closing.set()
+        self.assertEqual(json.loads(stream.readline()), {"event": "cancel", "id": 3},
+                         "the close of a notification that is not ours is passed over")
 
 
 if __name__ == "__main__":

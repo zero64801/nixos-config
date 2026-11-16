@@ -12,24 +12,36 @@ let
     import json
 
     from dbus_fast.aio import MessageBus
-    from dbus_fast.service import ServiceInterface, method
+    from dbus_fast.service import ServiceInterface, method, signal
 
 
     class Notifications(ServiceInterface):
         def __init__(self):
             super().__init__("org.freedesktop.Notifications")
             self.count = 0
+            self.bodies = {}
 
         @method()
         def Notify(self, app: "s", replaces: "u", icon: "s", summary: "s", body: "s", actions: "as", hints: "a{sv}", timeout: "i") -> "u":
             self.count += 1
+            self.bodies[self.count] = body
             with open("/tmp/notifications.jsonl", "a") as f:
-                f.write(json.dumps({"summary": summary, "body": body}) + "\n")
+                f.write(json.dumps({"id": self.count, "summary": summary, "body": body}) + "\n")
             return self.count
 
         @method()
         def CloseNotification(self, notification: "u"):
-            pass
+            with open("/tmp/notifications-closed", "a") as f:
+                f.write(f"{notification}\n")
+            self.NotificationClosed(notification, 3)
+
+        @signal()
+        def NotificationClosed(self, notification: "u", reason: "u") -> "uu":
+            return [notification, reason]
+
+        @method()
+        def Dismiss(self, text: "s"):
+            self.NotificationClosed(max(n for n, body in self.bodies.items() if text in body), 2)
 
         @method()
         def GetCapabilities(self) -> "as":
@@ -149,9 +161,9 @@ pkgs.testers.runNixOSTest {
         notified("run0 (runs as root)")
         notified("/run/current-system/sw/bin/touch /tmp/run0-ok")
 
-    def use_key(name, mode, seconds):
+    def use_key(name, mode, seconds, key_waits=0):
         machine.succeed(f"cp /etc/touch-guard-test/use_key.py /tmp/{name}.py")
-        machine.succeed(f"python3 -I /tmp/{name}.py {mode} {seconds} >/dev/null 2>&1 &")
+        machine.succeed(f"python3 -I /tmp/{name}.py {mode} {seconds} {key_waits} >/dev/null 2>&1 &")
 
 
     with subtest("of two programs with the key open, only the one that sent to it is named"):
@@ -178,6 +190,24 @@ pkgs.testers.runNixOSTest {
         notified("late-sender.py")
         notified("sent to the key while it was already waiting")
         machine.fail("grep -F idle-holder.py /tmp/notifications.jsonl")
+
+    with subtest("closing the notification makes the key drop its wait, a close nobody made does not"):
+        machine.sleep(5)
+        bus = "busctl --address=unix:path=/run/user/1000/bus"
+        server = "org.freedesktop.Notifications /org/freedesktop/Notifications org.freedesktop.Notifications"
+        called_out = machine.succeed("grep -c 'already waiting' /tmp/notifications.jsonl").strip()
+        use_key("cancelled-asker", "write", 40, 30)
+        notified("cancelled-asker.py")
+        shown = machine.succeed("grep -F cancelled-asker.py /tmp/notifications.jsonl | tail -n 1")
+        number = shown.split('"id": ')[1].split(",")[0]
+        machine.succeed(as_alice(f"{bus} emit /org/freedesktop/Notifications org.freedesktop.Notifications NotificationClosed uu {number} 2"))
+        machine.sleep(3)
+        machine.fail("journalctl -u touch-guard | grep -q 'cancelled from the notification'")
+        machine.succeed(as_alice(f"{bus} call {server} Dismiss s cancelled-asker.py"))
+        machine.wait_until_succeeds("journalctl -u touch-guard | grep -q 'ended: cancelled'", timeout=10)
+        machine.wait_until_succeeds(f"grep -qx {number} /tmp/notifications-closed", timeout=10)
+        machine.sleep(3)
+        assert machine.succeed("grep -c 'already waiting' /tmp/notifications.jsonl").strip() == called_out, "the daemon's own cancel was taken for a request"
 
     with subtest("refused while no notifier runs"):
         machine.succeed("systemctl --user -M alice@ stop touch-guard-notify.service")

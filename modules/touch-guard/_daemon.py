@@ -22,6 +22,7 @@ import types
 TYPE_INIT = 0x80
 CTAPHID_MSG = TYPE_INIT | 0x03
 CTAPHID_CBOR = TYPE_INIT | 0x10
+CTAPHID_CANCEL = TYPE_INIT | 0x11
 CTAPHID_KEEPALIVE = TYPE_INIT | 0x3B
 CTAPHID_ERROR = TYPE_INIT | 0x3F
 STATUS_UPNEEDED = 0x02
@@ -54,6 +55,8 @@ NOTIFIER_WAIT = 5.0
 ACK_TIMEOUT = 3.0
 POLKIT_WAIT = 1.0
 PAM_MAX_AGE = 120.0
+# A program whose request was cancelled asks again at once, sudo three times in a row.
+CANCEL_HOLD = 10.0
 CONSOLE = re.compile(r"(/dev/)?tty[0-9]+")
 
 TRUSTED_PREFIXES = ("/nix/store/", "/run/wrappers/", "/run/current-system/")
@@ -108,6 +111,7 @@ SU_VALUE_OPTIONS = {"-c", "--command", "-s", "--shell", "-g", "--group", "-G", "
 NO_NOTIFIER = ("touch-guard: no notifier is running in your desktop session, so this root request was refused. "
                "Log in on a text console (Ctrl+Alt+F3) if the desktop cannot run one.")
 NOT_SHOWN = "touch-guard: the notification could not be shown, so this root request was refused."
+CANCELLED = "touch-guard: cancelled from the notification."
 
 
 def log(message):
@@ -191,6 +195,7 @@ class WaitTracker:
         self.outcome = None
         self.busy = {}
         self.since = 0.0
+        self.ctap2 = False
 
     def feed(self, report, now):
         """True when the report starts a new wait."""
@@ -205,6 +210,7 @@ class WaitTracker:
         if kind == "wait":
             started = cid != self.cid or self.outcome is not None
             self.cid, self.outcome, self.deadline = cid, None, now + WAIT_GRACE
+            self.ctap2 = report[4] == CTAPHID_KEEPALIVE
             if started:
                 self.since = self.busy.get(cid, now)
             return started
@@ -219,6 +225,23 @@ class WaitTracker:
             return None
         self.cid = None
         return self.outcome or "keepalives stopped"
+
+    def cancel_report(self):
+        """The report that makes the key drop the current wait, None when there is no wait a key can drop.
+
+        Only a CTAP2 request waits inside the key. A U2F one is sent again by its program until the key is touched.
+        """
+        if self.cid is None or self.outcome is not None or not self.ctap2:
+            return None
+        return (b"\0" + self.cid + bytes([CTAPHID_CANCEL])).ljust(65, b"\0")
+
+
+def send_report(device, report):
+    fd = os.open(device, os.O_WRONLY)
+    try:
+        os.write(fd, report)
+    finally:
+        os.close(fd)
 
 
 def read_text(path, default=""):
@@ -379,6 +402,7 @@ class SendTrace:
     def __init__(self, root=TRACING, proc_root="/proc"):
         self.root = root
         self.proc_root = proc_root
+        self.own = os.getpid()
         self.instance = os.path.join(root, "instances", "touch-guard")
         self.pipe = None
         self.pending = b""
@@ -480,7 +504,10 @@ class SendTrace:
             tid, stamp, name, rdev, cmd = event.groups()
             if name == "key_ioctl" and ((int(cmd) >> 8 & 0xFF) != ord("H") or int(cmd) & 0xFF in HIDRAW_READS):
                 continue
-            self.sent.append((float(stamp), int(rdev), self.tgid(int(tid))))
+            pid = self.tgid(int(tid))
+            # The daemon's own cancel asks the key for nothing.
+            if pid != self.own:
+                self.sent.append((float(stamp), int(rdev), pid))
         if now - self.checked >= 1.0:
             self.checked = now
             lost = self.losses()
@@ -1339,13 +1366,15 @@ class Broadcaster:
     """JSON-line event stream for the user's notifier, which answers whether each event made it on screen.
 
     Only the configured uid may connect, and with an expected command line only the system's own notifier.
+    `cancel` is called with the id of an event whose notification the user closed.
     """
 
-    def __init__(self, path, allowed_uid, notifier=None, proc_root="/proc"):
+    def __init__(self, path, allowed_uid, notifier=None, proc_root="/proc", cancel=None):
         self.path = path
         self.allowed_uid = allowed_uid
         self.notifier = notifier
         self.proc_root = proc_root
+        self.cancel = cancel
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
         self.clients = []
@@ -1413,10 +1442,14 @@ class Broadcaster:
                     answer = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(answer, dict) and answer.get("event") in ("shown", "failed"):
+                if not isinstance(answer, dict):
+                    continue
+                if answer.get("event") in ("shown", "failed"):
                     with self.lock:
                         self.outcomes[answer.get("id")] = answer["event"]
                         self.changed.notify_all()
+                elif answer.get("event") == "cancel" and type(answer.get("id")) is int and self.cancel:
+                    self.cancel(answer["id"])
         with self.lock:
             self.clients = [(c, p) for c, p in self.clients if c is not conn]
             self.changed.notify_all()
@@ -1483,6 +1516,7 @@ class Guard:
         self.proc_root = proc_root
         self.lock = threading.Lock()
         self.active = {}
+        self.dropped = {}
 
     def describe(self, request):
         chain = chain_of(request["pid"], self.proc_root)
@@ -1496,6 +1530,11 @@ class Guard:
     def decide(self, request):
         """(allow, message for the PAM conversation)."""
         pid = request["pid"]
+        with self.lock:
+            start, when = self.dropped.get(pid, (None, 0.0))
+        if start is not None and time.monotonic() - when < CANCEL_HOLD and start == start_time(pid, self.proc_root):
+            log(f"refused the {request['service']} request from pid {pid}: its last one was cancelled")
+            return False, CANCELLED
         report = self.describe(request)
         if report is None:
             return False, "touch-guard: the program asking for root is already gone"
@@ -1529,11 +1568,20 @@ class Guard:
         with self.lock:
             self.active = {pid: e for pid, e in self.active.items() if e["id"] != event_id}
 
+    def cancelled(self, event_id):
+        """Has the program behind a cancelled event refused for a while, since it would only ask again."""
+        now = time.monotonic()
+        with self.lock:
+            for pid, entry in self.active.items():
+                if entry["id"] == event_id:
+                    self.dropped[pid] = (entry["start"], now)
+
     def sweep(self):
         """Ids of PAM events whose program exited or that are too old to still wait."""
         now = time.monotonic()
         ended = []
         with self.lock:
+            self.dropped = {pid: d for pid, d in self.dropped.items() if now - d[1] < CANCEL_HOLD}
             for pid, entry in list(self.active.items()):
                 if now - entry["time"] > PAM_MAX_AGE or start_time(pid, self.proc_root) != entry["start"]:
                     ended.append(self.active.pop(pid)["id"])
@@ -1637,15 +1685,16 @@ def main():
         with counter_lock:
             return next(counter)
 
+    events = queue.Queue()
     polkit = PolkitWatcher()
     threading.Thread(target=polkit.run, daemon=True).start()
     context = types.SimpleNamespace(diff=SystemDiff(args.nix_store), transient=polkit.transient)
-    broadcaster = Broadcaster(args.socket, pwd.getpwnam(args.user).pw_uid, notifier)
+    broadcaster = Broadcaster(args.socket, pwd.getpwnam(args.user).pw_uid, notifier,
+                              cancel=lambda event_id: events.put(("cancel", None, event_id)))
     threading.Thread(target=broadcaster.serve, daemon=True).start()
     guard = Guard(broadcaster, polkit, context, next_id)
     threading.Thread(target=PamServer(args.pam_socket, guard).serve, daemon=True).start()
 
-    events = queue.Queue()
     trackers = {}
     current = {}
     asking = {}
@@ -1680,6 +1729,20 @@ def main():
             guard.forget(event_id)
             broadcaster.publish({"event": "done", "id": event_id})
 
+    def cancel(event_id):
+        device = next((dev for dev, shown in current.items() if shown == event_id), None)
+        report = trackers[device].cancel_report() if device in trackers else None
+        if report is None:
+            log(f"cancel asked for event {event_id}, which has no wait a key can drop")
+            return
+        try:
+            send_report(device, report)
+        except OSError as e:
+            log(f"could not tell {device} to drop its touch wait: {e}")
+            return
+        guard.cancelled(event_id)
+        log(f"told {device} to drop its touch wait, cancelled from the notification")
+
     while True:
         now = time.monotonic()
         if now >= next_scan:
@@ -1700,6 +1763,8 @@ def main():
             trackers.pop(device, None)
             trace.watch(list(trackers))
             finish(device, "key removed")
+        elif kind == "cancel":
+            cancel(report)
         elif kind == "report" and device in trackers and trackers[device].feed(report, now):
             finish(device, "a new request took over")
             since = trackers[device].since - SEND_WINDOW
