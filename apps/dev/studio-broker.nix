@@ -9,9 +9,10 @@ in
 {
   options.my.apps.studioBroker = {
     enable = mkEnableOption ''
-      a service of the user's session that launches, lists and stops Roblox Studio in Vinegar's Flatpak, and records
-      its sound, for a Lumen server whose sandbox can neither start nor see Studio. It listens on a socket in the
-      runtime directory and starts on the first connection. Whatever is given that socket can open and close Studio
+      a service of the user's session that launches, lists and stops Roblox Studio in Vinegar's Flatpak, records its
+      sound and reads its windows, for a Lumen server whose sandbox can neither start nor see Studio. It listens on a
+      socket in the runtime directory and starts on the first connection. Whatever is given that socket can open and
+      close Studio and see what its windows show, and no other window
     '';
 
     places = mkOption {
@@ -64,7 +65,7 @@ in
         ExecStart = lib.concatStringsSep " " (
           [
             (lib.getExe pkgs.nodejs-slim)
-            "${./_studio-broker/broker.mjs}"
+            "${./_studio-broker}/broker.mjs"
             (toString cfg.idleTimeout)
             "%S/studio-broker"
           ]

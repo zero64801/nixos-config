@@ -1,7 +1,8 @@
-// Launches, lists and stops Roblox Studio, and records its sound, for a Lumen server confined in a PID namespace of
-// its own. Studio runs in Vinegar's Flatpak, which the server can neither start nor see, so this runs in the user's
-// session, outside every sandbox, and answers the protocol of Lumen's ROBLOX_STUDIO_LAUNCH_BROKER: one JSON request
-// line per connection, one JSON reply, except for audio, which answers with a header line and then streams samples.
+// Launches, lists and stops Roblox Studio, records its sound and reads its windows, for a Lumen server confined in a
+// PID namespace of its own. Studio runs in Vinegar's Flatpak, which the server can neither start nor see, so this
+// runs in the user's session, outside every sandbox, and answers the protocol of Lumen's ROBLOX_STUDIO_LAUNCH_BROKER:
+// one JSON request line per connection, one JSON reply, except for audio and grab, which answer with a header line
+// and then send samples or pixels.
 // systemd holds the socket and starts this on the first connection. It leaves once idle, which loses nothing: Studio
 // runs in a scope of its own, and the next connection starts this again.
 // Whatever reaches the socket may ask, so every request is checked here. The state folder must be one no sandbox can
@@ -26,6 +27,7 @@ import {
 import { createServer } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { X11Connection, X11Error } from './x11.mjs';
 
 const [idleSeconds, stateDir, ...placesDirs] = process.argv.slice(2);
 const idleMs = Number(idleSeconds) * 1000;
@@ -64,6 +66,8 @@ const USER_HZ = 100n;
 const AUDIO_MAX_MS = 120000;
 const AUDIO_START_MS = 5000;
 const AUDIO_SESSIONS = 8;
+// Wine names a window's class after the executable, and the Proton builds Vinegar runs Studio on report steam_proton.
+const STUDIO_WINDOW_CLASSES = ['robloxstudiobeta.exe', 'steam_proton'];
 
 const uid = process.getuid();
 const execFileAsync = promisify(execFile);
@@ -439,6 +443,97 @@ async function streamAudio(socket, request) {
   child.stdout.pipe(socket);
 }
 
+// One connection serves every request. The display and its cookie are the session's, as for a launch.
+let display;
+function x11() {
+  const previous = display;
+  display = (async () => {
+    const open = await previous?.catch(() => undefined);
+    return open?.usable ? open : X11Connection.open(await sessionEnvironment());
+  })();
+  return display;
+}
+
+// The pids running Studios have in their own PID namespaces, which Wine puts on their windows.
+function studioWindowPids() {
+  const pids = new Set();
+  for (const studio of studioProcesses()) {
+    try {
+      pids.add(namespacePid(studio.pid));
+    } catch (error) {
+      if (!isGone(error)) throw error;
+    }
+  }
+  return pids;
+}
+
+// A window is Studio's by the class Wine gives it, its title and the pid it reports, which must be a running
+// Studio's. A sandbox given the socket has no X connection of its own, so it can neither dress a window up as
+// Studio's nor name any other, and never sees another program's pixels.
+async function studioWindow(connection, id, pids) {
+  try {
+    const className = await connection.className(id);
+    if (!STUDIO_WINDOW_CLASSES.some((name) => className.toLowerCase().includes(name))) return undefined;
+    const title = await connection.title(id);
+    if (title !== 'Roblox Studio' && !title.endsWith(' - Roblox Studio')) return undefined;
+    const pid = await connection.processId(id);
+    if (!pids.has(pid)) return undefined;
+    return { id, title, className, pid, ...await connection.getGeometry(id), shown: await connection.viewable(id) };
+  } catch (error) {
+    // A window can vanish between being named and being read.
+    if (error instanceof X11Error) return undefined;
+    throw error;
+  }
+}
+
+async function studioWindows() {
+  const connection = await x11();
+  const pids = studioWindowPids();
+  const windows = [];
+  for (const id of await connection.queryTree(connection.setup.root)) {
+    const window = await studioWindow(connection, id, pids);
+    if (window) windows.push(window);
+  }
+  return windows;
+}
+
+async function namedStudioWindow(connection, id) {
+  if (!Number.isSafeInteger(id) || id <= 0 || id > 0xffffffff) throw new Error('window must be an X11 window id.');
+  const window = await studioWindow(connection, id, studioWindowPids());
+  if (!window) throw new Error(`Window ${id} is not a window of a running Studio.`);
+  return window;
+}
+
+// Answers with a JSON header line that says where red, green and blue sit in each 4 byte pixel, then the pixels of a
+// rectangle of the window, row by row.
+async function grabWindow(socket, request) {
+  const { x, y, width, height } = request;
+  if (![x, y, width, height].every((n) => Number.isSafeInteger(n) && n >= 0 && n <= 0x7fff) || width === 0 || height === 0) {
+    throw new Error('x, y, width and height must name a rectangle of the window.');
+  }
+  const connection = await x11();
+  const window = await namedStudioWindow(connection, request.window);
+  const image = await connection.getWindowImage(window.id, x, y, width, height);
+  socket.write(`${JSON.stringify({ ok: true, layout: image.layout })}\n`);
+  socket.end(image.data);
+}
+
+async function restoreWindow(id) {
+  const connection = await x11();
+  await connection.mapWindow((await namedStudioWindow(connection, id)).id);
+  return {};
+}
+
+// Requests whose answer is more than one JSON line, which keep the connection for it.
+const STREAMS = new Map([['audio', streamAudio], ['grab', grabWindow]]);
+
+// What a failed request is answered with. An X server's refusal carries its code, so the server can tell a window
+// that stopped being shown from a failure.
+function refusal(error) {
+  log(`error: ${error.message}`);
+  return { ok: false, error: error.message, ...(error instanceof X11Error ? { x11: { code: error.code, opcode: error.opcode } } : {}) };
+}
+
 async function handle(line) {
   const request = JSON.parse(line);
   switch (request?.op) {
@@ -453,6 +548,10 @@ async function handle(line) {
       return stop(request.pid, request.startedAt);
     case 'audio-streams':
       return { streams: await studioAudioStreams(request.pid) };
+    case 'windows':
+      return { windows: await studioWindows() };
+    case 'restore':
+      return restoreWindow(request.window);
     default:
       throw new Error(`Unknown op ${JSON.stringify(request?.op)}.`);
   }
@@ -484,21 +583,15 @@ const server = createServer({ allowHalfOpen: true }, (socket) => {
     } catch {
       request = undefined;
     }
-    // A recording keeps the connection open for its samples instead of answering one line.
-    if (request?.op === 'audio') {
-      streamAudio(socket, request).catch((error) => {
-        log(`error: ${error.message}`);
-        if (!socket.destroyed) socket.end(`${JSON.stringify({ ok: false, error: error.message })}\n`);
+    const stream = STREAMS.get(request?.op);
+    if (stream) {
+      stream(socket, request).catch((error) => {
+        const reply = refusal(error);
+        if (!socket.destroyed) socket.end(`${JSON.stringify(reply)}\n`);
       });
       return;
     }
-    handle(line).then(
-      (reply) => ({ ok: true, ...reply }),
-      (error) => {
-        log(`error: ${error.message}`);
-        return { ok: false, error: error.message };
-      },
-    ).then((reply) => {
+    handle(line).then((reply) => ({ ok: true, ...reply }), refusal).then((reply) => {
       if (!socket.destroyed) socket.end(`${JSON.stringify(reply)}\n`);
     });
   };
