@@ -66,7 +66,10 @@ in
         endpointFile = "/mnt/vault/secrets/sing-box/ivpn-wg-endpoint.json";
         tunnelDns = "172.16.0.1";
       };
-      proxySwitch.enable = true;
+      proxySwitch.switches.claude = {
+        port = 2082;
+        controlPort = 2083;
+      };
       fish.enable = true;
       git = {
         enable = true;

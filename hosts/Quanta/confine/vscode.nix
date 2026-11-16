@@ -3,7 +3,7 @@
 let
   devHome = "/home/dx/Projects/dev/.home";
   vinegar = "/home/dx/.var/app/org.vinegarhq.Vinegar/data/vinegar";
-  proxySwitch = config.my.apps.proxySwitch;
+  proxySwitch = config.my.apps.proxySwitch.switches.claude or null;
   proxySwitchUrl = "http://127.0.0.1:${toString proxySwitch.port}";
 
   workspace = {
@@ -15,7 +15,7 @@ let
     home = "ephemeral";
     runtimeDir = "shared";
     network = "isolated";
-    networkPorts.toHost = lib.optionals proxySwitch.enable [
+    networkPorts.toHost = lib.optionals (proxySwitch != null) [
       proxySwitch.port
       proxySwitch.controlPort
     ];
@@ -63,7 +63,7 @@ let
       "/home/dx/Projects/dev/.envrc"
       "/home/dx/Projects/dev/shell.nix"
     ]
-    ++ lib.optional proxySwitch.enable "xdg-run/proxy-switch";
+    ++ lib.optional (proxySwitch != null) "xdg-run/proxy-switch/claude";
     gitGuard.enable = true;
 
     dbus.session = {
@@ -131,7 +131,7 @@ in
     };
   };
 
-  environment.etc."claude-code/managed-settings.d/proxy-switch.json" = lib.mkIf proxySwitch.enable {
+  environment.etc."claude-code/managed-settings.d/proxy-switch.json" = lib.mkIf (proxySwitch != null) {
     mode = "0444";
     text = builtins.toJSON {
       env = {
