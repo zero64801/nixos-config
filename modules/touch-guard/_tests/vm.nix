@@ -209,6 +209,26 @@ pkgs.testers.runNixOSTest {
         machine.sleep(3)
         assert machine.succeed("grep -c 'already waiting' /tmp/notifications.jsonl").strip() == called_out, "the daemon's own cancel was taken for a request"
 
+    def wakeups():
+        """How often the daemon's threads went to sleep and were woken again, since it started."""
+        return int(machine.succeed(
+            "pid=$(systemctl show -p MainPID --value touch-guard) && "
+            "cat /proc/$pid/task/*/status | awk '/^voluntary_ctxt_switches/ { n += $2 } END { print n }'"))
+
+
+    with subtest("with nothing asking, the daemon sleeps"):
+        machine.sleep(5)
+        before = wakeups()
+        machine.sleep(10)
+        woken = wakeups() - before
+        print(f"the idle daemon woke {woken} times in 10 seconds")
+        assert woken <= 5, f"the idle daemon woke {woken} times in 10 seconds"
+
+    with subtest("a key plugged in while the daemon sleeps is watched at once"):
+        machine.succeed("python3 -I /etc/touch-guard-test/fake_key.py 4 >/tmp/fake-key-2.log 2>&1 &")
+        machine.wait_until_succeeds("test $(journalctl -u touch-guard | grep -c 'watching /dev/hidraw') -ge 2", timeout=5)
+        machine.fail("journalctl -u touch-guard | grep -q 'no hotplug event'")
+
     with subtest("refused while no notifier runs"):
         machine.succeed("systemctl --user -M alice@ stop touch-guard-notify.service")
         assert "no notifier is running" in machine.fail(sudo("true"))

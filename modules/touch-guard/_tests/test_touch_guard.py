@@ -534,6 +534,21 @@ class Senders(unittest.TestCase):
         self.assertIsNone(blocked.senders(self.p.device, 0.0, 1.0))
 
 
+class Hotplug(unittest.TestCase):
+    ADDED = (b"add@/devices/virtual/misc/uhid/0003:1050:0407.0004/hidraw/hidraw3\0ACTION=add\0"
+             b"DEVPATH=/devices/virtual/misc/uhid/0003:1050:0407.0004/hidraw/hidraw3\0SUBSYSTEM=hidraw\0"
+             b"MAJOR=242\0MINOR=3\0DEVNAME=hidraw3\0SEQNUM=4711\0")
+
+    def test_a_new_hidraw_device_asks_for_a_scan(self):
+        self.assertTrue(d.announces_hidraw(self.ADDED))
+
+    def test_other_events_do_not(self):
+        self.assertFalse(d.announces_hidraw(self.ADDED.replace(b"add", b"remove")))
+        self.assertFalse(d.announces_hidraw(self.ADDED.replace(b"SUBSYSTEM=hidraw", b"SUBSYSTEM=hid")))
+        self.assertFalse(d.announces_hidraw(b"add@/devices/x\0ACTION=add\0SUBSYSTEM=input\0NAME=SUBSYSTEM=hidraw"))
+        self.assertFalse(d.announces_hidraw(b""))
+
+
 class Polkit(unittest.TestCase):
     @staticmethod
     def call(member, *data):
@@ -669,6 +684,21 @@ class Socket(unittest.TestCase):
         self.assertFalse(b.wait_for_notifier(0.2))
         self.assertGreaterEqual(time.monotonic() - start, 0.2, "a notifier that is restarting gets the whole wait")
 
+    def test_a_dropped_client_ends_its_listener_at_once(self):
+        b, c = self.connect(os.getuid())
+        self.wait_for_client(b)
+        (served, _), = b.clients
+        b.problem = lambda pid: "another process traces it"
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(b.wait_for_notifier(0))
+        stream = c.makefile("rb")
+        self.assertEqual(json.loads(stream.readline())["id"], 7)
+        self.assertEqual(stream.read(1), b"", "the notifier is told at once")
+        deadline = time.monotonic() + 0.5
+        while served.fileno() != -1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(served.fileno(), -1, "the listener must wake up on the drop, with no timer to do it")
+
     def test_stalled_client_is_dropped(self):
         b, _ = self.connect(os.getuid())
         self.wait_for_client(b)
@@ -741,6 +771,21 @@ class Pam(unittest.TestCase):
 
     def test_gone_process(self):
         self.assertEqual(self.guard(FakeBroadcaster()).decide(self.request(pid=4242))[0], False)
+
+    def test_an_open_event_wakes_the_main_loop_and_keeps_it_looking(self):
+        woken = []
+        g = d.Guard(FakeBroadcaster(), d.PolkitWatcher(), None, lambda: next(self.ids), self.p.root,
+                    wake=lambda: woken.append(g.busy()))
+        self.assertFalse(g.busy())
+        g.decide(self.request())
+        self.assertEqual(woken, [True], "the loop is woken once the event is there to look after")
+        g.forget(50)
+        self.assertFalse(g.busy(), "with no event open the loop may sleep")
+
+    def test_a_refused_request_leaves_nothing_to_look_after(self):
+        g = self.guard(FakeBroadcaster(shows=False))
+        g.decide(self.request())
+        self.assertFalse(g.busy())
 
     def test_sweep_ends_events_of_exited_programs(self):
         g = self.guard(FakeBroadcaster())

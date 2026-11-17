@@ -77,7 +77,8 @@ in
         PrivateNetwork = true;
         DevicePolicy = "closed";
         DeviceAllow = [ "char-hidraw rw" ];
-        RestrictAddressFamilies = [ "AF_UNIX" ];
+        # Netlink carries the kernel's hotplug events, which is how a newly plugged key is noticed.
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
         ProtectKernelModules = true;
         ProtectKernelLogs = true;
         ProtectControlGroups = true;

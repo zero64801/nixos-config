@@ -1,5 +1,6 @@
 import argparse
 import collections
+import errno
 import glob
 import hashlib
 import itertools
@@ -37,6 +38,12 @@ FIDO_USAGE_CTAPHID = 0x01
 WAIT_GRACE = 2.0
 REPLY_GRACE = 0.2
 MAX_CLIENTS = 4
+# How often the main loop looks around while a request is under way. With none it sleeps until something happens.
+TICK = 0.1
+SCAN_EVERY = 2.0
+# New keys are found on the kernel's hotplug events. This rescan only covers a kernel that sends none.
+IDLE_SCAN = 60.0
+NETLINK_KOBJECT_UEVENT = 15
 
 TRACING = "/sys/kernel/tracing"
 # A key answers a request with a first keepalive within ~100 ms, so whoever made it wait sent something shortly before.
@@ -1414,10 +1421,12 @@ class Broadcaster:
             conn.setblocking(False)
             with self.lock:
                 if len(self.clients) >= MAX_CLIENTS:
-                    self.clients.pop(0)[0].close()
+                    self.hang_up(self.clients.pop(0)[0])
                 if self.send(conn, self.active.values()):
                     self.clients.append((conn, pid))
                     threading.Thread(target=self.listen, args=(conn,), daemon=True).start()
+                else:
+                    conn.close()
                 self.changed.notify_all()
 
     def listen(self, conn):
@@ -1425,8 +1434,8 @@ class Broadcaster:
         buffer = b""
         while True:
             try:
-                ready, _, _ = select.select([conn], [], [], 1.0)
-                chunk = conn.recv(4096) if ready else None
+                select.select([conn], [], [])
+                chunk = conn.recv(4096)
             except (BlockingIOError, InterruptedError):
                 chunk = None
             except (OSError, ValueError):
@@ -1462,8 +1471,16 @@ class Broadcaster:
                 conn.sendall((json.dumps(event) + "\n").encode())
             return True
         except OSError:
-            conn.close()
             return False
+
+    @staticmethod
+    def hang_up(conn):
+        """Ends a client from another thread. That wakes its listener, which alone closes the socket, so the
+        listener never waits on a descriptor that was closed under it and given to something else."""
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def publish(self, event):
         with self.lock:
@@ -1472,7 +1489,13 @@ class Broadcaster:
             else:
                 self.active.pop(event["id"], None)
                 self.outcomes.pop(event["id"], None)
-            self.clients = [(c, p) for c, p in self.clients if self.send(c, [event])]
+            kept = []
+            for conn, pid in self.clients:
+                if self.send(conn, [event]):
+                    kept.append((conn, pid))
+                else:
+                    self.hang_up(conn)
+            self.clients = kept
             self.changed.notify_all()
 
     def wait_for_notifier(self, timeout):
@@ -1485,7 +1508,7 @@ class Broadcaster:
                     problem = self.problem(pid)
                     if problem:
                         log(f"dropped the notifier, pid {pid}: {problem}")
-                        conn.close()
+                        self.hang_up(conn)
                     else:
                         kept.append((conn, pid))
                 self.clients = kept
@@ -1508,12 +1531,13 @@ class Broadcaster:
 class Guard:
     """Answers touch-guard's PAM step: a root request goes ahead only once its description is on screen."""
 
-    def __init__(self, broadcaster, polkit, context, next_id, proc_root="/proc"):
+    def __init__(self, broadcaster, polkit, context, next_id, proc_root="/proc", wake=lambda: None):
         self.broadcaster = broadcaster
         self.polkit = polkit
         self.context = context
         self.next_id = next_id
         self.proc_root = proc_root
+        self.wake = wake
         self.lock = threading.Lock()
         self.active = {}
         self.dropped = {}
@@ -1547,6 +1571,7 @@ class Guard:
         event_id = self.next_id()
         with self.lock:
             self.active[pid] = {"id": event_id, "start": start_time(pid, self.proc_root), "time": time.monotonic()}
+        self.wake()
         self.broadcaster.publish({"event": "waiting", "id": event_id, **report})
         if self.broadcaster.wait_shown(event_id, ACK_TIMEOUT):
             return True, plain_text(report)
@@ -1575,6 +1600,11 @@ class Guard:
             for pid, entry in self.active.items():
                 if entry["id"] == event_id:
                     self.dropped[pid] = (entry["start"], now)
+
+    def busy(self):
+        """Whether a PAM event is open. It ends when its program does, which only looking again can tell."""
+        with self.lock:
+            return bool(self.active)
 
     def sweep(self):
         """Ids of PAM events whose program exited or that are too old to still wait."""
@@ -1664,6 +1694,31 @@ def watch_device(device, events):
     events.put(("gone", device, None))
 
 
+def announces_hidraw(uevent):
+    """Whether a kernel uevent says that a hidraw device was added."""
+    return uevent.startswith(b"add@") and b"\0SUBSYSTEM=hidraw\0" in uevent
+
+
+def watch_hotplug(events):
+    """Asks for a scan whenever the kernel announces a new hidraw device."""
+    try:
+        with socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, NETLINK_KOBJECT_UEVENT) as uevents:
+            # Group 1 carries the kernel's own events, which reach every network namespace of the host.
+            uevents.bind((0, 1))
+            while True:
+                try:
+                    plugged = announces_hidraw(uevents.recv(8192))
+                except OSError as e:
+                    if e.errno != errno.ENOBUFS:
+                        raise
+                    # Events were dropped, and one of them may have been a key.
+                    plugged = True
+                if plugged:
+                    events.put(("plugged", None, None))
+    except OSError as e:
+        log(f"no hotplug events from the kernel ({e}), a new key is found within {IDLE_SCAN:.0f} seconds")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--user", required=True)
@@ -1692,7 +1747,7 @@ def main():
     broadcaster = Broadcaster(args.socket, pwd.getpwnam(args.user).pw_uid, notifier,
                               cancel=lambda event_id: events.put(("cancel", None, event_id)))
     threading.Thread(target=broadcaster.serve, daemon=True).start()
-    guard = Guard(broadcaster, polkit, context, next_id)
+    guard = Guard(broadcaster, polkit, context, next_id, wake=lambda: events.put(("wake", None, None)))
     threading.Thread(target=PamServer(args.pam_socket, guard).serve, daemon=True).start()
 
     trackers = {}
@@ -1700,7 +1755,10 @@ def main():
     asking = {}
     trace = SendTrace()
     next_scan = 0.0
+    settle = 0.0
+    overslept = False
     exclude = {os.getpid()}
+    threading.Thread(target=watch_hotplug, args=(events,), daemon=True).start()
     log("watching for security key touches")
 
     def announce(device, since, senders, extra=None):
@@ -1750,16 +1808,25 @@ def main():
                 if device not in trackers:
                     trackers[device] = WaitTracker()
                     threading.Thread(target=watch_device, args=(device, events), daemon=True).start()
-                    log(f"watching {device}")
+                    log(f"watching {device}" + (", found by the slow rescan since no hotplug event announced it"
+                                                if overslept else ""))
             trace.watch(list(trackers))
-            next_scan = now + 2.0
+            next_scan = now + SCAN_EVERY
+        # Only a request under way has deadlines and late senders to look for between events. Whatever a program
+        # sends to a key, the key answers, and that answer is what gets the trace read while nothing else happens.
+        busy = bool(current or asking) or now < settle or guard.busy() \
+            or any(tracker.cid is not None for tracker in trackers.values())
         try:
-            kind, device, report = events.get(timeout=0.1)
+            kind, device, report = events.get(timeout=TICK if busy else IDLE_SCAN)
         except queue.Empty:
             kind = None
+        overslept = kind is None and not busy
         now = time.monotonic()
         trace.drain(now)
-        if kind == "gone":
+        if kind == "plugged":
+            # The node may not be ready for the scan this starts, so a second one follows.
+            next_scan, settle = now, now + SCAN_EVERY + TICK
+        elif kind == "gone":
             trackers.pop(device, None)
             trace.watch(list(trackers))
             finish(device, "key removed")
