@@ -92,6 +92,9 @@ in
       "jpn"
       "jpn_vert"
     ];
+    my.desktop.plasma6.spectacleVideoFormat = "mp4";
+    my.desktop.plasma6.spectacleVideoQuality = 72;
+    my.desktop.plasma6.spectacleVideoRegionScale = 2;
 
     hm.xdg.configFile."plasma-workspace/env/kwin-drm-devices.sh".text = ''
       KWIN_DRM_DEVICES=$(readlink -f /dev/dri/by-path/pci-${displayGpu}-card)
