@@ -31,10 +31,10 @@ let
 
     # Upstream ships no lock file.
     # Lets a process without network get its symbols from a gateway on a unix socket, named by PDBCRUST_SYMBOL_SOCKET.
-    patches = [ ./_memprocfs/symbol-socket.patch ];
+    patches = [ ./symbol-socket.patch ];
 
-    cargoLock.lockFile = ./_memprocfs/pdbcrust.Cargo.lock;
-    postPatch = "ln -s ${./_memprocfs/pdbcrust.Cargo.lock} Cargo.lock";
+    cargoLock.lockFile = ./pdbcrust.Cargo.lock;
+    postPatch = "ln -s ${./pdbcrust.Cargo.lock} Cargo.lock";
 
     nativeBuildInputs = [ pkg-config ];
     buildInputs = [ openssl ];
@@ -43,7 +43,7 @@ let
 
   symbolGateway = writeScriptBin "pdb-symbol-gateway" ''
     #!${python3}/bin/python3 -I
-    ${builtins.readFile ./_memprocfs/symbol-gateway.py}
+    ${builtins.readFile ./symbol-gateway.py}
   '';
 in
 stdenv.mkDerivation {
@@ -68,9 +68,9 @@ stdenv.mkDerivation {
   # The front end is written against FUSE 2, which nixpkgs no longer has. Downloaded symbols go beside the libraries,
   # which here is the read only store, so they go to the user's cache folder to be kept between runs.
   postPatch = ''
-    patch -p1 -d LeechCore-plugins < ${./_memprocfs/qemu-ram-socket.patch}
-    patch -p1 -d MemProcFS < ${./_memprocfs/fuse3.patch}
-    patch -p1 -d MemProcFS < ${./_memprocfs/symbol-cache.patch}
+    patch -p1 -d LeechCore-plugins < ${./qemu-ram-socket.patch}
+    patch -p1 -d MemProcFS < ${./fuse3.patch}
+    patch -p1 -d MemProcFS < ${./symbol-cache.patch}
     substituteInPlace LeechCore-plugins/leechcore_device_qemu/Makefile --replace-fail " -Werror" ""
   '';
 
@@ -106,7 +106,7 @@ stdenv.mkDerivation {
   passthru = {
     inherit symbolGateway;
     tests.symbolGateway = runCommand "memprocfs-symbol-gateway-test" { nativeBuildInputs = [ python3 ]; } ''
-      python3 -I ${./_memprocfs/symbol-gateway-test.py} ${symbolGateway}/bin/pdb-symbol-gateway ${pdbcrust}/lib/libpdbcrust.so
+      python3 -I ${./symbol-gateway-test.py} ${symbolGateway}/bin/pdb-symbol-gateway ${pdbcrust}/lib/libpdbcrust.so
       touch $out
     '';
   };
