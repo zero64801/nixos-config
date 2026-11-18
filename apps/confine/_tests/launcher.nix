@@ -408,11 +408,17 @@ pkgs.runCommand "confine-launcher-behaviour"
     mkfifo inner-args inner-info inner-status network-up
     printf 'filter' > filter.bpf
     bin=${pkgs.coreutils}/bin
+    # It speaks once more when the sandbox's side runs, and as pasta does it ignores SIGPIPE.
     printf '%s\n' "#!${pkgs.bash}/bin/bash" \
+      "trap \"\" PIPE" \
       "printf '%s\n' \"\$@\" > $PWD/pasta-args" \
       "{ $bin/readlink /proc/self/ns/net /proc/self/ns/user; $bin/id -u; } > $PWD/pasta-saw" \
       "echo \$\$ > $PWD/pasta-pid" \
+      "echo 'pasta while starting' >&2" \
       "echo \$\$ > \"\$5\"" \
+      "until [ -e $PWD/setup-saw ]; do $bin/sleep 0.05; done" \
+      "echo 'pasta once running' >&2" \
+      ": > $PWD/pasta-spoke" \
       "exec $bin/sleep 30" > fake-pasta
     printf '%s\n' "#!${pkgs.bash}/bin/bash" \
       "$bin/ls -l /proc/self/fd/ > $PWD/setup-fds" \
@@ -421,6 +427,7 @@ pkgs.runCommand "confine-launcher-behaviour"
       "printf '%s\n' \"\$@\" > $PWD/bwrap-args" \
       "$bin/readlink /proc/self/fd/\$2 /proc/self/fd/\$4 /proc/self/fd/12 > $PWD/bwrap-fds" \
       "echo \$\$ > $PWD/bwrap-pid" \
+      "for _ in {1..100}; do [ -e $PWD/pasta-spoke ] && break; $bin/sleep 0.05; done" \
       "exit 7" > fake-bwrap
     chmod +x fake-pasta setup fake-bwrap
     # Sets status. The readers stand in for the launcher, and a step that fails early never opens their FIFOs.
@@ -432,12 +439,13 @@ pkgs.runCommand "confine-launcher-behaviour"
       status_reader=$!
       (
         ulimit -Sn 256
-        exec timeout 30 "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" "$PWD/network-up" "$PWD/fake-pasta" --quiet
+        exec timeout 30 "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" "$PWD/network-up" "$PWD/fake-pasta" --quiet 2> inner-stderr
       ) &
       inner=$!
       printf -- '--ro-bind\0/a\0/b\0' > inner-args
       status=0
       wait "$inner" || status=$?
+      cat inner-stderr >&2
       kill "$info_reader" "$status_reader" 2>/dev/null || true
     }
 
@@ -450,6 +458,9 @@ pkgs.runCommand "confine-launcher-behaviour"
     [ "$(sed -n 2p pasta-saw)" != "$(readlink /proc/self/ns/user)" ] || fail "pasta is not in the user namespace that owns the sandbox's network"
     [ "$(sed -n 3p pasta-saw)" = 0 ] || fail "pasta is not root of that namespace: $(cat pasta-saw)"
     kill -0 "$(cat pasta-pid)" 2>/dev/null && fail "pasta outlived the sandbox it served"
+    grep -q 'pasta while starting' inner-stderr || fail "what pasta says while it starts is lost: $(cat inner-stderr)"
+    [ -e pasta-spoke ] || fail "the stand in for pasta never spoke once the sandbox's side ran"
+    grep -q 'pasta once running' inner-stderr && fail "pasta keeps writing to the app's terminal once the network is up"
     # The setup runs before the filter, info and status descriptors open, so nothing it leaves running holds them.
     grep -q 'filter.bpf\|inner-info\|inner-status' setup-fds && fail "the network setup ran with a sandbox descriptor open: $(cat setup-fds)"
     [ "$(sed -n 1p setup-saw)" = 0 ] || fail "the network setup is not root of the network's namespace: $(cat setup-saw)"

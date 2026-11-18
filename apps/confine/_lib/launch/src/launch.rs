@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -1870,6 +1870,19 @@ impl<'a> Launch<'a> {
 /// How long pasta may take to bring the network up before the launch gives up.
 const NETWORK_UP: Duration = Duration::from_secs(10);
 
+/// Passes on what pasta has written to its terminal so far.
+fn relay_pasta(mut said: &fs::File) {
+    let mut buf = [0u8; 4096];
+    while sys::poll_readable(&[said.as_raw_fd()], 0).is_ok_and(|ready| ready[0]) {
+        match said.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let _ = std::io::stderr().write_all(&buf[..n]);
+            }
+            _ => break,
+        }
+    }
+}
+
 /// Makes the sandbox's network: a user namespace with the caller as its root, the network, pid, mount, IPC and UTS
 /// namespaces under it, and pasta attached to that network. Carries on as their first process once the network is
 /// up. The process that called this stays between the launcher and the sandbox and gets the status to leave with.
@@ -1882,11 +1895,17 @@ fn own_namespaces(up: &OsStr, program: &OsStr, options: &[OsString]) -> Res<Opti
 
     // pasta forwards to the network this process is about to leave, so it is forked before that and waits for the new one.
     let (go_read, go_write) = sys::pipe().map_err(|e| e.to_string())?;
+    // pasta leaves the terminal alone once it has started a command, and attached to a network it would not. What it
+    // writes is passed on until the network is up, then this closes. It ignores SIGPIPE and still has the system log.
+    let (said_read, said_write) = sys::pipe().map_err(|e| e.to_string())?;
     let pasta_pid = match sys::fork().map_err(|e| format!("fork: {e}"))? {
         0 => {
             drop(go_write);
             let mut byte = [0u8; 1];
-            if sys::die_with_parent().is_err() || fs::File::from(go_read).read(&mut byte).ok() != Some(1) {
+            if sys::die_with_parent().is_err()
+                || fs::File::from(go_read).read(&mut byte).ok() != Some(1)
+                || sys::move_fd(said_write.into_raw_fd(), libc::STDERR_FILENO).is_err()
+            {
                 std::process::exit(1);
             }
             // Root of the namespace that owns the network, so it joins that alone. Without a path to watch it would
@@ -1900,7 +1919,8 @@ fn own_namespaces(up: &OsStr, program: &OsStr, options: &[OsString]) -> Res<Opti
         }
         pid => pid,
     };
-    drop(go_read);
+    drop((go_read, said_write));
+    let said = fs::File::from(said_read);
     let stop_pasta = || {
         sys::kill(pasta_pid as u32, libc::SIGTERM);
         let _ = sys::waitpid(pasta_pid, 0);
@@ -1915,7 +1935,8 @@ fn own_namespaces(up: &OsStr, program: &OsStr, options: &[OsString]) -> Res<Opti
     let deadline = Instant::now() + NETWORK_UP;
     loop {
         let left = deadline.saturating_duration_since(Instant::now()).as_millis() as i32;
-        let ready = sys::poll_readable(&[up_read.as_raw_fd(), pasta_fd.as_raw_fd()], left).map_err(|e| e.to_string())?;
+        let ready = sys::poll_readable(&[up_read.as_raw_fd(), pasta_fd.as_raw_fd(), said.as_raw_fd()], left).map_err(|e| e.to_string())?;
+        relay_pasta(&said);
         let mut pid = [0u8; 16];
         if ready[0] && (&up_read).read(&mut pid).is_ok_and(|n| n > 0) {
             break;
@@ -1926,10 +1947,11 @@ fn own_namespaces(up: &OsStr, program: &OsStr, options: &[OsString]) -> Res<Opti
         }
         if left == 0 {
             stop_pasta();
+            relay_pasta(&said);
             fail!("pasta never brought the network up");
         }
     }
-    drop((up_read, pasta_fd));
+    drop((up_read, pasta_fd, said));
 
     match sys::fork().map_err(|e| format!("fork: {e}"))? {
         0 => {
