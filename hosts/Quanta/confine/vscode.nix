@@ -24,6 +24,7 @@ let
       nesting = true;
       devel = true;
     };
+    devices = [ "/dev/net/tun" ];
 
     extraBwrapArgs =
       lib.concatMap (node: [ "--ro-bind" "/dev/null" node ]) [
@@ -53,6 +54,7 @@ let
     binds.rw = [
       "/home/dx/nixos"
       "/home/dx/Projects"
+      "/home/dx/.local/state/confined-terminal"
     ];
     binds.ro = [
       "/nix/var/nix/daemon-socket"
@@ -93,7 +95,7 @@ in
 {
   confine.apps = {
     vscode = workspace // gitAccess // {
-      devices = lib.optional withGit "/dev/input/by-id/*-fido" ++ lib.optional withInspect "/dev/fuse";
+      devices = workspace.devices ++ lib.optional withGit "/dev/input/by-id/*-fido" ++ lib.optional withInspect "/dev/fuse";
       binds = workspace.binds // {
         rw = workspace.binds.rw ++ [ "/home/dx/Downloads" ] ++ lib.optional studio.enable "/home/dx/${studio.places}";
         ro =
