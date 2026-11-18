@@ -1,0 +1,12 @@
+--- a/src/pipewireproduce.cpp
++++ b/src/pipewireproduce.cpp
+@@ -721,7 +721,8 @@
+             return;
+         }
+ 
+-        auto frameTime = 1000.0 / (m_maxFramerate.numerator / m_maxFramerate.denominator);
++        // Local: timestamps are whole milliseconds, so frames a frame time apart come 16 or 17 ms apart at 60 fps.
++        auto frameTime = std::floor(1000.0 / (m_maxFramerate.numerator / m_maxFramerate.denominator));
+         if ((pts - m_previousPts) < frameTime) {
+             return;
+         }

@@ -1,0 +1,30 @@
+--- a/src/Platforms/VideoPlatformWayland.cpp
++++ b/src/Platforms/VideoPlatformWayland.cpp
+@@ -246,8 +246,15 @@
+             // the final rect valid.
+             int w = std::max(1.0, std::floor(rect.right()) - x);
+             int h = std::max(1.0, std::floor(rect.bottom()) - y);
++            // Local: encoding halves the colour detail, which shows on a small region, and an enlarged one keeps it.
++            // The factor is read from spectaclerc and used while the result stays within 3840x2160.
++            const int enlarge = Settings::self()->config()->group(u"VideoSave"_s).readEntry("videoRegionScale", 1);
++            const bool enlarged = enlarge > 1 && w * scaling * enlarge <= 3840 && h * scaling * enlarge <= 2160;
++            if (enlarged) {
++                scaling *= enlarge;
++            }
+             m_frameBytes = frameBytes(QSize{w, h} * scaling);
+-            scaling = m_screencasting->isRegionAutoScaleSupported() ? 0 : scaling;
++            scaling = m_screencasting->isRegionAutoScaleSupported() && !enlarged ? 0 : scaling;
+             stream = m_screencasting->createRegionStream({x, y, w, h}, scaling, mode);
+             break;
+         }
+@@ -257,6 +264,10 @@
+ 
+         m_recorder->setMaxPendingFrames(availableFrames(m_frameBytes));
+         m_recorder->setNodeId(0);
++        // Local: without a quality every encoder runs at its low default. From 0 to 100, read from spectaclerc.
++        if (const int quality = Settings::self()->config()->group(u"VideoSave"_s).readEntry("videoQuality", -1); quality >= 0) {
++            m_recorder->setQuality(qMin(quality, 100));
++        }
+ 
+         Q_ASSERT(stream);
+         connect(stream, &ScreencastingStream::created, this, [this, stream, recordingMode] {
