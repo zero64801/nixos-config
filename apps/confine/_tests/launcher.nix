@@ -404,32 +404,71 @@ pkgs.runCommand "confine-launcher-behaviour"
     [ "$(jq .securityKeys "$devicesConfig")" = false ] || fail "device wildcards no longer leave security keys out"
     [ "$(jq .securityKeys "$keysConfig")" = true ] || fail "securityKeys = true still filters security keys"
 
-    # pasta's far side runs the network setup before it opens the filter and info descriptors, so nothing the setup
-    # leaves running holds them.
-    mkfifo inner-args inner-info inner-status
-    printf '#!%s\n%s/ls -l /proc/self/fd/ > %s/setup-fds\n' ${pkgs.bash}/bin/bash ${pkgs.coreutils}/bin "$PWD" > setup
-    printf '#!%s\nprintf "%%s\\n" "$@" > %s/bwrap-args\n%s/readlink /proc/self/fd/$2 /proc/self/fd/$4 /proc/self/fd/12 > %s/bwrap-fds\n' \
-      ${pkgs.bash}/bin/bash "$PWD" ${pkgs.coreutils}/bin "$PWD" > fake-bwrap
-    chmod +x setup fake-bwrap
+    # The sandbox's side of an isolated network, with a stand in for pasta that reports the network as up at once.
+    mkfifo inner-args inner-info inner-status network-up
     printf 'filter' > filter.bpf
-    cat inner-info > /dev/null &
-    cat inner-status > /dev/null &
-    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" &
-    inner=$!
-    printf -- '--ro-bind\0/a\0/b\0' > inner-args
-    wait "$inner" || fail "the inner step failed"
+    bin=${pkgs.coreutils}/bin
+    printf '%s\n' "#!${pkgs.bash}/bin/bash" \
+      "printf '%s\n' \"\$@\" > $PWD/pasta-args" \
+      "{ $bin/readlink /proc/self/ns/net /proc/self/ns/user; $bin/id -u; } > $PWD/pasta-saw" \
+      "echo \$\$ > $PWD/pasta-pid" \
+      "echo \$\$ > \"\$5\"" \
+      "exec $bin/sleep 30" > fake-pasta
+    printf '%s\n' "#!${pkgs.bash}/bin/bash" \
+      "$bin/ls -l /proc/self/fd/ > $PWD/setup-fds" \
+      "{ $bin/id -u; $bin/cat /proc/sys/kernel/hostname; $bin/tr '\\t' ' ' < /proc/sys/net/ipv4/ping_group_range; $bin/readlink /proc/self/ns/net; ulimit -Sn; } > $PWD/setup-saw" > setup
+    printf '%s\n' "#!${pkgs.bash}/bin/bash" \
+      "printf '%s\n' \"\$@\" > $PWD/bwrap-args" \
+      "$bin/readlink /proc/self/fd/\$2 /proc/self/fd/\$4 /proc/self/fd/12 > $PWD/bwrap-fds" \
+      "echo \$\$ > $PWD/bwrap-pid" \
+      "exit 7" > fake-bwrap
+    chmod +x fake-pasta setup fake-bwrap
+    # Sets status. The readers stand in for the launcher, and a step that fails early never opens their FIFOs.
+    inner_step() {
+      local info_reader status_reader inner
+      cat inner-info > /dev/null &
+      info_reader=$!
+      cat inner-status > /dev/null &
+      status_reader=$!
+      (
+        ulimit -Sn 256
+        exec timeout 30 "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" "$PWD/network-up" "$PWD/fake-pasta" --quiet
+      ) &
+      inner=$!
+      printf -- '--ro-bind\0/a\0/b\0' > inner-args
+      status=0
+      wait "$inner" || status=$?
+      kill "$info_reader" "$status_reader" 2>/dev/null || true
+    }
+
+    inner_step
+    [ "$status" = 7 ] || fail "the process between the launcher and the sandbox does not pass the sandbox's status on: $status"
+    [ "$(sed -n '1,5p' pasta-args | tr '\n' ' ')" = "--quiet --foreground --no-netns-quit --pid $PWD/network-up " ] \
+      || fail "pasta is not started attached and in the foreground: $(tr '\n' ' ' < pasta-args)"
+    [ "$(sed -n 6p pasta-args)" = --netns ] || fail "pasta is not pointed at the network the inner step made: $(tr '\n' ' ' < pasta-args)"
+    [ "$(sed -n 1p pasta-saw)" = "$(readlink /proc/self/ns/net)" ] || fail "pasta does not stay in the network it forwards to: $(cat pasta-saw)"
+    [ "$(sed -n 2p pasta-saw)" != "$(readlink /proc/self/ns/user)" ] || fail "pasta is not in the user namespace that owns the sandbox's network"
+    [ "$(sed -n 3p pasta-saw)" = 0 ] || fail "pasta is not root of that namespace: $(cat pasta-saw)"
+    kill -0 "$(cat pasta-pid)" 2>/dev/null && fail "pasta outlived the sandbox it served"
+    # The setup runs before the filter, info and status descriptors open, so nothing it leaves running holds them.
     grep -q 'filter.bpf\|inner-info\|inner-status' setup-fds && fail "the network setup ran with a sandbox descriptor open: $(cat setup-fds)"
+    [ "$(sed -n 1p setup-saw)" = 0 ] || fail "the network setup is not root of the network's namespace: $(cat setup-saw)"
+    [ "$(sed -n 2p setup-saw)" = "pasta-$(cat /proc/sys/kernel/hostname)" ] || fail "the sandbox's side lost the name it has always had: $(cat setup-saw)"
+    [ "$(sed -n 3p setup-saw)" = "0 0" ] || fail "ping is not open to the namespace's root group: $(cat setup-saw)"
+    [ "$(sed -n 4p setup-saw)" != "$(readlink /proc/self/ns/net)" ] || fail "the network setup ran in the caller's network"
+    [ "$(sed -n 5p setup-saw)" = "$(ulimit -Hn)" ] || fail "the sandbox's side does not raise its open file limit: $(sed -n 5p setup-saw) of $(ulimit -Hn)"
     [ "$(sed -n '1p;3p;5,7p' bwrap-args | tr '\n' ' ')" = "--seccomp --info-fd --ro-bind /a /b " ] \
       || fail "the inner step passed bwrap the wrong arguments: $(tr '\n' ' ' < bwrap-args)"
     [ "$(tr '\n' ' ' < bwrap-fds)" = "$PWD/filter.bpf $PWD/inner-info $PWD/inner-status " ] \
       || fail "the inner step's descriptors point elsewhere: $(cat bwrap-fds)"
-    rm bwrap-args
+    [ "$(cat bwrap-pid)" = 1 ] || fail "bwrap is not the first process of its pid namespace, so what a setup leaves running would outlive it: $(cat bwrap-pid)"
+
+    rm bwrap-args pasta-pid
     printf '#!%s\nexit 1\n' ${pkgs.bash}/bin/bash > setup
-    "$launchBin" --inner "$PWD/setup" "$PWD/filter.bpf" "$PWD/inner-info" "$PWD/inner-status" "$PWD/fake-bwrap" "$PWD/inner-args" "" "" &
-    inner=$!
-    printf -- '--ro-bind\0/a\0/b\0' > inner-args
-    wait "$inner" && fail "a failed network setup did not stop the sandbox"
+    inner_step
+    [ "$status" != 0 ] || fail "a failed network setup did not stop the sandbox"
     [ -e bwrap-args ] && fail "bwrap ran after the network setup failed"
+    kill -0 "$(cat pasta-pid)" 2>/dev/null && fail "pasta outlived a sandbox whose network setup failed"
 
     for f in share/dbus-1/services/com.test.Svc.service \
              share/systemd/user/svcapp.service \

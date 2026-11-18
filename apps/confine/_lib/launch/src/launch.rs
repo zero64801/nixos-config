@@ -100,11 +100,11 @@ struct Scope {
 #[derive(Default)]
 struct SlowHelpers {
     proxy_ready: Option<OwnedFd>,
-    pasta: Option<(Child, PathBuf, Option<fs::File>)>,
+    network: Option<(Child, PathBuf, Option<fs::File>)>,
     pids: Vec<u32>,
 }
 
-/// Where the reaper finds the descriptor it reports the app's end on, fixed since pasta's far side opens it.
+/// Where the reaper finds the descriptor it reports the app's end on, fixed since the sandbox's side opens it.
 const STATUS_FD: i32 = 12;
 
 /// Where the reaper finds the caller's stdin, stdout and stderr, which bwrap and pasta must not hold themselves.
@@ -112,6 +112,9 @@ pub const STDIO_FD: i32 = 13;
 
 /// Where the reaper finds the socket its namespace guard reports on.
 const GUARD_FD: i32 = 16;
+
+/// The longest name a host can have, which the sandbox's own must still fit after its prefix.
+const HOST_NAME_MAX: usize = 64;
 
 /// Where the host's /etc sits in the sandbox, behind the links in the sandbox's own /etc.
 const HOST_ETC: &str = "/run/confine/etc";
@@ -813,7 +816,7 @@ impl<'a> Launch<'a> {
         }
 
         if cfg.network == Network::Isolated {
-            // pasta maps the caller to uid 0 and Chromium refuses to run as root.
+            // The network's user namespace maps the caller to uid 0 and Chromium refuses to run as root.
             self.push3("--uid", self.uid.to_string(), "--gid");
             self.push(self.gid.to_string());
         }
@@ -839,13 +842,13 @@ impl<'a> Launch<'a> {
         }
     }
 
-    /// pasta closes what it inherits, so its far side asks for the caller's stdin, stdout and stderr here once the network setup is done.
+    /// The sandbox's side asks for the caller's stdin, stdout and stderr here once the network setup is done, so neither pasta nor the setup holds them.
     fn pass_stdio(&mut self) {
         let (Some(listener), Some(stdio)) = (&self.stdio_socket, &self.stdio) else { return };
         let Ok((conn, _)) = listener.accept() else { return };
         let _ = sys::send_fds(conn.as_raw_fd(), &[stdio[0].as_raw_fd(), stdio[1].as_raw_fd(), stdio[2].as_raw_fd()]);
         self.stdio_socket = None;
-        // The far side keeps its end for the reaper, the one descriptor of the launcher's that gets past pasta.
+        // The sandbox's side keeps its end for the reaper, the one descriptor of the launcher's it holds on to.
         if self.cfg.namespace_guard {
             std::thread::spawn(move || guard::serve(conn.into()));
         }
@@ -1034,19 +1037,22 @@ impl<'a> Launch<'a> {
         Ok(true)
     }
 
-    /// pasta sets its namespace up while the command line is built, and its far side waits for the arguments on a FIFO.
-    /// pasta closes inherited descriptors, so the filter, info and status descriptors open on that side, after any network setup.
-    fn spawn_pasta(&mut self) -> Res<(Child, PathBuf, Option<fs::File>)> {
+    /// The sandbox's side makes the network's namespaces and runs pasta attached to them, as a container runtime does.
+    /// It starts while the command line is built and opens the FIFO for its arguments once the network is up, so the
+    /// app is held until then, and a pasta that fails ends it with pasta's own words. The filter, info and status
+    /// descriptors open on that side after any network setup, so nothing the setup leaves running holds them.
+    fn spawn_network(&mut self) -> Res<(Child, PathBuf, Option<fs::File>)> {
         let cfg = self.cfg;
         let args_fifo = self.instance_path("args");
         let info_fifo = self.instance_path("info");
-        for fifo in [&args_fifo, &info_fifo] {
+        let up = self.instance_path("network");
+        for fifo in [&args_fifo, &info_fifo, &up] {
             sys::mkfifo(fifo).map_err(|e| e.to_string())?;
         }
         let (status, status_fifo) = if cfg.linger {
             let fifo = self.instance_path("status");
             sys::mkfifo(&fifo).map_err(|e| e.to_string())?;
-            // Open before the far side's writer, so its open does not wait and no end of file comes before it.
+            // Open before that side's writer, so its open does not wait and no end of file comes before it.
             let status = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&fifo).map_err(|e| e.to_string())?;
             (Some(status), fifo.into_os_string())
         } else {
@@ -1055,15 +1061,16 @@ impl<'a> Launch<'a> {
         let stdio_socket = self.instance_path("stdio");
         self.stdio_socket = Some(UnixListener::bind(&stdio_socket).map_err(|e| format!("{}: {e}", stdio_socket.display()))?);
         let me = env::current_exe().map_err(|e| e.to_string())?;
-        let mut c = self.sandbox_command(cfg.tools.pasta.as_deref().ok_or("no pasta in the config")?);
+        let mut c = self.sandbox_command(&me.to_string_lossy());
         unsafe { c.pre_exec(sys::die_with_parent) };
-        c.args(&self.pasta_args).arg("--").arg(me).arg("--inner");
+        c.arg("--inner");
         c.arg(self.setup.as_deref().unwrap_or("")).arg(cfg.filter.as_deref().unwrap_or("")).arg(&info_fifo).arg(&status_fifo);
         c.arg(&cfg.tools.bwrap).arg(&args_fifo).arg(&stdio_socket).arg(if cfg.namespace_guard { "guard" } else { "" });
+        c.arg(&up).arg(cfg.tools.pasta.as_deref().ok_or("no pasta in the config")?).args(&self.pasta_args);
         if self.setup.is_some() {
             c.env("CONFINE_INSTANCE", &self.instance);
         }
-        let child = c.spawn().map_err(|e| format!("pasta: {e}"))?;
+        let child = c.spawn().map_err(|e| format!("{}: {e}", me.display()))?;
         Ok((child, args_fifo, status))
     }
 
@@ -1074,9 +1081,9 @@ impl<'a> Launch<'a> {
             h.pids.push(pid);
         }
         if self.cfg.network == Network::Isolated {
-            let (child, fifo, status) = self.spawn_pasta()?;
+            let (child, fifo, status) = self.spawn_network()?;
             h.pids.push(child.id());
-            h.pasta = Some((child, fifo, status));
+            h.network = Some((child, fifo, status));
         }
         Ok(h)
     }
@@ -1388,7 +1395,7 @@ fn adopt(conn: &zbus::blocking::Connection, unit: &str, roots: &[u32]) -> Res<()
     Err(error)
 }
 
-/// Hands pasta's far side its bwrap arguments. Opened without blocking, so a far side that died instead of reading
+/// Hands the sandbox's side its bwrap arguments. Opened without blocking, so one that died instead of reading
 /// cannot hang the launcher.
 fn send_args(fifo: &Path, args: &[OsString], child: &mut Child) -> Res<()> {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1420,7 +1427,7 @@ fn send_args(fifo: &Path, args: &[OsString], child: &mut Child) -> Res<()> {
 /// bwrap writes its pid and namespaces once the sandbox stands. Reading them on the side records the instance for
 /// confine ps and enter, and for the portal, without holding up the app.
 fn record_instance(info: Info, launch_pid: u32, state: PathBuf, flatpak_dir: Option<PathBuf>) {
-    // A FIFO opened before its writer would read end-of-file at once, so this open waits for pasta's far side.
+    // A FIFO opened before its writer would read end-of-file at once, so this open waits for the sandbox's side.
     let file = match info {
         Info::Pipe(fd) => fs::File::from(fd),
         Info::Path(path) | Info::Fifo(path, _, _) => match fs::File::open(&path) {
@@ -1456,7 +1463,7 @@ fn record_instance(info: Info, launch_pid: u32, state: PathBuf, flatpak_dir: Opt
     }
 }
 
-/// bwrap names its first sandboxed process, but pasta puts a pid namespace in between, so the host pid is the first
+/// bwrap names its first sandboxed process, but the network's pid namespace sits in between, so the host pid is the first
 /// descendant of the launch whose mount namespace is the sandbox's.
 fn sandbox_pid(launch_pid: u32, want: u64) -> Option<u32> {
     let mut frontier = vec![launch_pid];
@@ -1708,7 +1715,7 @@ impl<'a> Launch<'a> {
 
         // The D-Bus proxy and pasta take a few milliseconds to come up, as does systemd to move this process into the
         // scope, so they start at once and the command line is built meanwhile. They join the scope once this process
-        // is in it, and pasta's far side waits for its arguments until then, so the app lands there too.
+        // is in it, and the sandbox's side waits for its arguments until then, so the app lands there too.
         let early = !self.dry && scope.as_ref().is_none_or(|s| s.adopt);
         let mut slow = if early { self.spawn_slow_helpers()? } else { SlowHelpers::default() };
         self.build()?;
@@ -1749,7 +1756,7 @@ impl<'a> Launch<'a> {
         bwrap_args.extend(["--reap".into(), fd_or_none(cfg.linger, STATUS_FD), fd_or_none(cfg.namespace_guard, GUARD_FD), target]);
         bwrap_args.extend(rest);
 
-        let (mut child, info, status) = if let Some((child, args_fifo, status)) = slow.pasta.take() {
+        let (mut child, info, status) = if let Some((child, args_fifo, status)) = slow.network.take() {
             (child, Info::Fifo(self.instance_path("info"), args_fifo, bwrap_args), status)
         } else {
             let (info_read, info_write) = sys::pipe().map_err(|e| e.to_string())?;
@@ -1802,7 +1809,7 @@ impl<'a> Launch<'a> {
 
     /// SIGINT and SIGQUIT come from the terminal, which sends them to the app too, so the launcher only outlives them.
     /// SIGTERM and SIGHUP go to the launcher alone and are passed on, and the launcher then ends as the signal would
-    /// have ended it, since pasta, the child for an isolated network, exits cleanly on SIGTERM.
+    /// have ended it, whatever status the child leaves with.
     /// A status byte from the reaper means the app ended while others run on, which the caller hears of at once.
     fn wait(&mut self, mut child: Child, mut status: Option<fs::File>, mask: &libc::sigset_t) -> Res<i32> {
         let pidfd = sys::pidfd_open(child.id()).map_err(|e| e.to_string())?;
@@ -1860,9 +1867,119 @@ impl<'a> Launch<'a> {
     }
 }
 
-/// Runs on pasta's far side: Usage: confine-launch --inner SETUP FILTER INFO STATUS BWRAP ARGS_FIFO STDIO_SOCKET GUARD
+/// How long pasta may take to bring the network up before the launch gives up.
+const NETWORK_UP: Duration = Duration::from_secs(10);
+
+/// Makes the sandbox's network: a user namespace with the caller as its root, the network, pid, mount, IPC and UTS
+/// namespaces under it, and pasta attached to that network. Carries on as their first process once the network is
+/// up. The process that called this stays between the launcher and the sandbox and gets the status to leave with.
+/// A signal that ends it ends both children with it.
+fn own_namespaces(up: &OsStr, program: &OsStr, options: &[OsString]) -> Res<Option<i32>> {
+    let network = format!("/proc/{}/ns/net", sys::pid());
+    sys::unshare_user_as_root(sys::uid(), sys::gid()).map_err(|e| format!("making the network's user namespace: {e}"))?;
+    // Open before pasta opens it to write, so that finds a reader and what it writes is seen.
+    let up_read = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(up).map_err(|e| format!("{}: {e}", Path::new(up).display()))?;
+
+    // pasta forwards to the network this process is about to leave, so it is forked before that and waits for the new one.
+    let (go_read, go_write) = sys::pipe().map_err(|e| e.to_string())?;
+    let pasta_pid = match sys::fork().map_err(|e| format!("fork: {e}"))? {
+        0 => {
+            drop(go_write);
+            let mut byte = [0u8; 1];
+            if sys::die_with_parent().is_err() || fs::File::from(go_read).read(&mut byte).ok() != Some(1) {
+                std::process::exit(1);
+            }
+            // Root of the namespace that owns the network, so it joins that alone. Without a path to watch it would
+            // poll for this process once a second, and it ends with it instead.
+            let mut args: Vec<OsString> = options.to_vec();
+            args.extend(["--foreground", "--no-netns-quit", "--pid"].map(OsString::from));
+            args.extend([up.to_os_string(), "--netns".into(), network.into()]);
+            let e = sys::exec(program, &args);
+            warn!("confine: {}: {e}", Path::new(program).display());
+            std::process::exit(127);
+        }
+        pid => pid,
+    };
+    drop(go_read);
+    let stop_pasta = || {
+        sys::kill(pasta_pid as u32, libc::SIGTERM);
+        let _ = sys::waitpid(pasta_pid, 0);
+    };
+    if let Err(e) = sys::unshare_network_side().and_then(|()| (&fs::File::from(go_write)).write_all(b"1")) {
+        stop_pasta();
+        fail!("making the network's namespaces: {e}");
+    }
+
+    // pasta writes its pid once the network is configured, and ends with its reason when it cannot be.
+    let pasta_fd = sys::pidfd_open(pasta_pid as u32).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + NETWORK_UP;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now()).as_millis() as i32;
+        let ready = sys::poll_readable(&[up_read.as_raw_fd(), pasta_fd.as_raw_fd()], left).map_err(|e| e.to_string())?;
+        let mut pid = [0u8; 16];
+        if ready[0] && (&up_read).read(&mut pid).is_ok_and(|n| n > 0) {
+            break;
+        }
+        if ready[1] {
+            let _ = sys::waitpid(pasta_pid, 0);
+            fail!("pasta ended before the network was up");
+        }
+        if left == 0 {
+            stop_pasta();
+            fail!("pasta never brought the network up");
+        }
+    }
+    drop((up_read, pasta_fd));
+
+    match sys::fork().map_err(|e| format!("fork: {e}"))? {
+        0 => {
+            sys::die_with_parent().map_err(|e| e.to_string())?;
+            // Only warned about, since the sandbox mounts a /proc of its own.
+            if let Err(e) = sys::mount_proc() {
+                warn!("confine: mounting /proc for the sandbox's side: {e}");
+            }
+            // Ping without a raw socket, for the group that is root's in this namespace and the app's own outside it.
+            if let Err(e) = fs::write("/proc/sys/net/ipv4/ping_group_range", "0 0") {
+                warn!("confine: allowing ping in the sandbox: {e}");
+            }
+            // Apps with a network of their own have always run with this, from when pasta started them and raised
+            // its own limit first, and some open more files than the session's limit allows.
+            if let Err(e) = sys::raise_open_files() {
+                warn!("confine: raising the sandbox's open file limit: {e}");
+            }
+            // The name sandboxes with a network of their own have had. A browser's profile lock records it, and one
+            // locked under another name asks before it starts.
+            if let Ok(name) = sys::hostname() {
+                let mut prefixed = b"pasta-".to_vec();
+                prefixed.extend_from_slice(name.as_bytes());
+                prefixed.truncate(HOST_NAME_MAX);
+                if let Err(e) = sys::set_hostname(OsStr::from_bytes(&prefixed)) {
+                    warn!("confine: naming the sandbox's side: {e}");
+                }
+            }
+            Ok(None)
+        }
+        far => loop {
+            let (ended, status) = sys::waitpid(-1, 0).map_err(|e| e.to_string())?;
+            if ended == far {
+                stop_pasta();
+                return Ok(Some(sys::exit_code(status)));
+            }
+            if ended == pasta_pid {
+                // Left running, the app would have no network and no sign of why.
+                warn!("confine: pasta ended, so the sandbox it gave a network is stopped");
+                sys::kill(far as u32, libc::SIGKILL);
+                let _ = sys::waitpid(far, 0);
+                return Ok(Some(1));
+            }
+        },
+    }
+}
+
+/// Runs on the sandbox's side of an isolated network: makes its namespaces, starts pasta, then the network setup and bwrap.
+/// Usage: confine-launch --inner SETUP FILTER INFO STATUS BWRAP ARGS_FIFO STDIO_SOCKET GUARD UP PASTA [PASTA ARGS...]
 pub fn inner(args: &[OsString]) -> i32 {
-    if args.len() != 8 {
+    if args.len() < 10 {
         warn!("confine: bad --inner call");
         return 2;
     }
@@ -1876,6 +1993,14 @@ pub fn inner(args: &[OsString]) -> i32 {
     if let Err(e) = sys::die_with_parent() {
         warn!("confine: {e}");
         return 1;
+    }
+    match own_namespaces(&args[8], &args[9], &args[10..]) {
+        Ok(None) => {}
+        Ok(Some(code)) => return code,
+        Err(e) => {
+            warn!("confine: {e}");
+            return 1;
+        }
     }
     // The arguments arrive once the launcher moved this process into the app's scope, so the setup below runs in it too.
     let mut raw = Vec::new();

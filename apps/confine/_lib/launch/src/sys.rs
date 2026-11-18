@@ -266,6 +266,47 @@ pub fn set_child_subreaper() -> io::Result<()> {
     cvt(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }).map(drop)
 }
 
+/// A user namespace with the caller as its root, so that a network namespace made next is the caller's to
+/// configure. Only sound while a single thread runs.
+pub fn unshare_user_as_root(uid: u32, gid: u32) -> io::Result<()> {
+    cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) })?;
+    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))?;
+    std::fs::write("/proc/self/setgroups", "deny")?;
+    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))?;
+    Ok(())
+}
+
+/// The network namespace of an isolated sandbox and the pid, mount, IPC and UTS namespaces that go with it. The
+/// pid namespace starts with the caller's next child.
+pub fn unshare_network_side() -> io::Result<()> {
+    let all = libc::CLONE_NEWNET | libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
+    cvt(unsafe { libc::unshare(all) }).map(drop)
+}
+
+/// For the first process of a new pid namespace, whose mount namespace still shows the old one's processes.
+pub fn mount_proc() -> io::Result<()> {
+    cvt(unsafe { libc::mount(c"proc".as_ptr(), c"/proc".as_ptr(), c"proc".as_ptr(), 0, std::ptr::null()) }).map(drop)
+}
+
+/// Lets a process open as many files as its hard limit allows.
+pub fn raise_open_files() -> io::Result<()> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    cvt(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) })?;
+    limit.rlim_cur = limit.rlim_max;
+    cvt(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }).map(drop)
+}
+
+pub fn hostname() -> io::Result<OsString> {
+    let mut buf = [0u8; 256];
+    cvt(unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) })?;
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    Ok(OsStr::from_bytes(&buf[..len]).to_os_string())
+}
+
+pub fn set_hostname(name: &OsStr) -> io::Result<()> {
+    cvt(unsafe { libc::sethostname(name.as_bytes().as_ptr().cast(), name.len()) }).map(drop)
+}
+
 /// Only sound while a single thread runs, which lets the child carry on as an ordinary program.
 pub fn fork() -> io::Result<libc::pid_t> {
     cvt(unsafe { libc::fork() })

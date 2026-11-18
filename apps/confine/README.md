@@ -33,7 +33,7 @@ Everything is closed unless an app or one of its profiles opens it.
 | Setting | Default | Meaning |
 |---|---|---|
 | `profile` | `[ ]` | Presets merged under the app's own settings: `gui`, `gpu`, `audio`, `alsa`, `compute`, `tray`, `mpris`, `a11y`, `printing`, `chromium`, `steam`. |
-| `network` | `"none"` | `"isolated"` gives the app its own network through pasta, without access to services on the host's loopback. `"host"` shares the host's network. |
+| `network` | `"none"` | `"isolated"` gives the app its own network through pasta, without access to services on the host's loopback. `"host"` shares the host's network. A sandbox started inside another one can be isolated too, with a loopback of its own, once the outer sandbox has `seccomp.nesting` and `/dev/net/tun` among its `devices`. An isolated app starts with its soft limit on open files raised to the hard one. |
 | `networkPorts.toHost`, `.fromHost` | `[ ]` | Ports forwarded between the host's loopback and an isolated app. A `fromHost` port listens on `127.0.0.1` unless it names an address, as in `"0.0.0.0/8000"`. The first running instance of an app holds its `fromHost` ports, and a later one starts without them. |
 | `networkSetups` | `{ }` | Named programs run inside the isolated network before the app, such as a VPN tunnel, chosen with `CONFINE_NETWORK_SETUP`. |
 | `wayland` | `false` | Wayland access, through a security context so the compositor withholds screen capture, fake input, window management and background clipboard reads. |
@@ -90,7 +90,7 @@ With `scope = false` the sandbox stays in its caller's systemd unit, so a servic
 
 ## Startup
 
-The launcher starts the D-Bus proxy and pasta at once and builds the bwrap command line while systemd moves it into the app's scope, then moves those helpers in after it.
+The launcher starts the D-Bus proxy and the app's network, its namespaces with pasta attached to them, at once and builds the bwrap command line while systemd moves it into the app's scope, then moves those helpers in after it.
 Measured on a desktop, an app starts in about 8 ms, or 15 ms with its scope, where `flatpak run` of a similar app took about 70 ms.
 Most of the scope's share is the kernel moving the launcher between cgroups, which waits for an RCU grace period.
 Mounting cgroup2 with `favordynmods` removes that wait, at a small cost to every fork and exit on the system.

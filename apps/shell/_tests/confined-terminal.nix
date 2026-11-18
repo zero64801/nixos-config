@@ -1,5 +1,6 @@
 # nix build --impure --no-link -L --expr 'import ./apps/shell/_tests/confined-terminal.nix { }'
-# The confined command in a real session, where a compositor and a sound server exist to be withheld or handed over.
+# The confined command in a real session, where a compositor and a sound server exist to be withheld or handed over,
+# and inside another sandbox, as an editor's terminal would start it, with a second machine to reach.
 {
   pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
 }:
@@ -16,8 +17,19 @@ in
 pkgs.testers.runNixOSTest {
   name = "confined-terminal";
 
+  nodes.server = {
+    networking.firewall.allowedTCPPorts = [ 80 ];
+    services.nginx = {
+      enable = true;
+      virtualHosts.default = {
+        default = true;
+        locations."/".return = "200 reached";
+      };
+    };
+  };
+
   nodes.machine =
-    { config, pkgs, ... }:
+    { config, lib, pkgs, ... }:
     {
       imports = [ ../../confine/default.nix ];
 
@@ -53,11 +65,36 @@ pkgs.testers.runNixOSTest {
       environment.systemPackages = [
         pkgs.foot
         pkgs.pulseaudio
+        pkgs.curl
+        pkgs.python3
         (pkgs.callPackage ../_confined-terminal.nix { inherit (config.confine.lib) wrap; } {
           scratchDir = "Sandbox";
           tint = null;
         })
-      ];
+      ]
+      # Sandboxes to start the command from: confine-editor without the tun device and confine-editor-with-tun with it.
+      ++ lib.mapAttrsToList
+        (
+          name: settings:
+          (config.confine.lib.wrap (
+            {
+              package = pkgs.runCommand "editor-env" { } "mkdir -p $out/bin";
+              inherit name;
+              appId = "app.test.Editor";
+              home = "ephemeral";
+              linger = false;
+              network = "isolated";
+              workdir = "rw";
+              seccomp.nesting = true;
+              devices = [ "/dev/net/tun" ];
+            }
+            // settings
+          )).launcher
+        )
+        {
+          editor.devices = [ ];
+          editor-with-tun = { };
+        };
     };
 
   testScript = ''
@@ -102,5 +139,29 @@ pkgs.testers.runNixOSTest {
         assert status != 0, (status, out)
         status, out = alice("confined --audio -- pactl info 2>&1")
         assert status == 0 and "Server Name" in out, (status, out)
+
+    with subtest("started inside another sandbox, the command gets a network once that sandbox has the tun device"):
+        server.wait_for_open_port(80)
+        fetch = "curl -sS --max-time 10 http://server/"
+        status, out = alice(f"confine-editor confined -- {fetch} 2>&1")
+        assert status != 0 and "/dev/net/tun" in out, (status, out)
+        status, out = alice(f"confine-editor-with-tun confined -- {fetch}")
+        assert (status, out) == (0, "reached"), (status, out)
+
+    with subtest("that network is its own, so local services of the outer sandbox stay out of reach"):
+        local = "curl -s -o /dev/null --max-time 3 http://127.0.0.1:8123/"
+        status, out = alice("confine-editor-with-tun sh -c " + shlex.quote(
+            "python3 -m http.server 8123 --bind 127.0.0.1 >/dev/null 2>&1 & sleep 2; "
+            f"{local} && echo outer-reaches; confined -- {local} || echo inner-cannot"))
+        assert out.split() == ["outer-reaches", "inner-cannot"], (status, out)
+
+    with subtest("the command keeps the name, the user and the ping setup a sandbox with a network has had"):
+        # The window opened above still runs, with a pasta of its own.
+        helpers = "pgrep -c -u alice '^pas(st|ta)' || true"
+        before = machine.succeed(helpers)
+        status, out = alice("confined -- sh -c 'cat /proc/sys/kernel/hostname; id -u; cat /proc/sys/net/ipv4/ping_group_range; curl -sS --max-time 10 http://server/'")
+        # Ping is open to the group that is root's in the network's namespace, which is the user's own group here.
+        assert status == 0 and out.split() == ["pasta-machine", "1000", "100", "100", "reached"], (status, out)
+        assert machine.succeed(helpers) == before, "pasta outlived the command it gave a network"
   '';
 }
