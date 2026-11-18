@@ -7,7 +7,6 @@
   flatpak-xdg-utils,
   passt,
   wayland-proxy-virtwl,
-  xdg-dbus-proxy,
   xwayland-satellite,
   shared ? { },
 }:
@@ -17,10 +16,13 @@ let
   launch = callPackage ./launch.nix { };
   profiles = import ./profiles.nix;
 
-  # Stock, a service in the sandbox cannot signal the caller it answers when that caller is in the sandbox too.
-  busProxy = xdg-dbus-proxy.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [ ./dbus-proxy-siblings.patch ];
-  });
+  busProxy =
+    let
+      proxy = callPackage ./bus-proxy.nix { };
+    in
+    lib.warnIf (!proxy.patchChecked)
+      "confine: xdg-dbus-proxy ${proxy.version} has not been checked with confine's bus patch, last checked with ${proxy.lastChecked}. The patch is used only if it still fits, so programs of one sandbox may have stopped reaching each other on the bus. Run confine's launcher test and add the release to _lib/bus-proxy.nix."
+      proxy;
 
   defaults = {
     name = null;
