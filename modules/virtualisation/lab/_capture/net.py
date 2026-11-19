@@ -405,6 +405,9 @@ def passthrough(capture, args, file=NET):
     for line in process.stdout:
         print(plain(line.decode("utf-8", "replace").rstrip("\n"), 4000))
     process.wait()
+    if process.returncode:
+        for line in process.stderr.read().decode("utf-8", "replace").splitlines()[-5:]:
+            print(plain(line, 400), file=sys.stderr)
     sys.exit(process.returncode)
 
 
