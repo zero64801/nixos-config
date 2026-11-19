@@ -18,9 +18,6 @@
       useGlobalPkgs = true;
       useUserPackages = true;
       backupCommand = "${pkgs.coreutils}/bin/mv --backup=numbered";
-      sharedModules = [
-        inputs.plasma-manager.homeModules.plasma-manager
-      ];
 
       extraSpecialArgs = {
         inherit inputs;

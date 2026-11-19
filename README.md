@@ -10,7 +10,6 @@ nixos/
 ├── core/       Always-on system fundamentals (boot, audio, networking, etc.)
 ├── modules/    Feature modules with my.* options (impermanence, stylix, etc.)
 ├── hosts/      Per-host configuration (hardware, user, host-specific settings)
-├── lib/        Helper functions (recursivelyImport)
 ├── flake.nix   Flake entry point
 └── hosts.nix   Host builder (auto-discovers hosts/ subdirectories)
 ```
@@ -23,6 +22,12 @@ nixos/
 - **`my.persistence`** - Unified system + home persistence (used with impermanence)
 - **`hm.*`** - Alias for `home-manager.users.<primary user>` via `mkAliasOptionModule`
 - **`pkgs.util.importPins`** - Load content pins from a module's `sources.json` (managed by `pin sources`)
+
+## Hosts
+
+A folder under `hosts/` is a host, found by `hosts.nix`, and gets every shared module of `core/`, `apps/` and `modules/` with its options off until the host turns them on.
+A host that wants some of them not loaded at all lists them in `hosts/NAME/_without.nix`, as `[ "modules/stylix" "apps/social" ]`.
+Such a host is then built as a fork would be that deleted those folders, and whatever they depend on is never fetched for it.
 
 ## Host: Quanta
 

@@ -30,11 +30,8 @@ let
     nixpkgs.hostPlatform = system;
   };
 
-  modules =
-    without:
-    builtins.filter (
-      file: !lib.any (gone: toString file == "${flake}/${gone}" || lib.hasPrefix "${flake}/${gone}/" (toString file)) without
-    ) repo.shared;
+  # The shared modules without those of the folders named, by the rule a host leaves folders out with.
+  modules = repo.keep;
 
   plain = repo.system name (modules [ ] ++ [ identity machine ]);
 
@@ -98,6 +95,9 @@ in
 
   # The modules, with those of the folders named left out.
   inherit modules;
+
+  # What a host's _without.nix leaves out, read as the hosts' own are.
+  inherit (repo) leftOut;
 
   # The made up host as a system to look at.
   # without: folders or module files below the repository's root, as "apps/confine", whose modules are left out.

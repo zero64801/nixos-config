@@ -1,4 +1,4 @@
-{ pkgs, lib, config, ... }:
+{ pkgs, lib, config, inputs, ... }:
 
 let
   cfg = config.my.desktop.plasma6;
@@ -51,6 +51,9 @@ in
       displayManager.sddm.enable = true;
       desktopManager.plasma6.enable = true;
     };
+
+    # Handed to home-manager here, so that only a system with Plasma reads it.
+    home-manager.sharedModules = [ inputs.plasma-manager.homeModules.plasma-manager ];
 
     environment.systemPackages = with pkgs; [
       kdePackages.discover
