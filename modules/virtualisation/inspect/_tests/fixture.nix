@@ -50,13 +50,14 @@ let
   loaded =
     lib.optionalString network " virtio_net"
     + lib.optionalString usb " xhci_pci usbhid hid_generic input_leds";
-  # With curl, for a client of TLS that writes its keys where SSLKEYLOGFILE says.
+  # With curl and openssl, clients of TLS that write their keys where SSLKEYLOGFILE and -keylogfile say.
   connected = lib.optionalString network ''
     ip link set lo up
     ip link set eth0 up
     ip addr add 10.9.9.50/24 dev eth0
     echo "nameserver ${site}" > /etc/resolv.conf
     ln -s ${pkgs.curl.bin}/bin/curl /bin/curl
+    ln -s ${pkgs.openssl.bin}/bin/openssl /bin/openssl
   '';
   init = pkgs.writeScript "init" ''
     #!${pkgs.busybox}/bin/sh

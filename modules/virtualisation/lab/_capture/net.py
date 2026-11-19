@@ -12,6 +12,7 @@ import time
 
 import capture as shared
 import owners
+import scan
 import schannel
 from capture import KEYLOG, common, fail, finished, first, plain, size, tell, timed
 
@@ -487,6 +488,9 @@ def keys(capture, args):
     if args.action == "schannel":
         schannel.run(capture, args)
         return
+    if args.action == "scan":
+        scan.run(capture, args, flows(capture, args))
+        return
     if args.action == "list":
         found = capture.keylog(None)
         if not found:
@@ -573,15 +577,35 @@ def build(parser):
     sub.add_argument("--every", type=float, default=1.0, help="seconds between looks, 1 by default")
     sub.add_argument("--from", dest="source", choices=["memory", "agent"], help="memory for a Windows guest, agent elsewhere, found out otherwise")
     sub.set_defaults(run=owners.run)
-    sub = actions.add_parser("keys", help="TLS secrets for the capture: add a key log, pull one from the guest, read Windows' own from lsass, or list them",
+    sub = actions.add_parser("keys", help="TLS secrets for the capture: add a key log, pull one from the guest, read Windows' own from lsass, "
+                                          "find any program's in its memory, or list them",
                              description="TLS secrets for the capture, which every reader decrypts with. add takes a key log of this side, pull "
                                          "one a program in the guest wrote, as one with SSLKEYLOGFILE does. schannel follows lsass of a Windows "
                                          "guest from outside, with the CPU's debug registers, and adds the secrets of every handshake of "
-                                         "Windows' own TLS as it happens: start it before the connections. lsass stops for a moment at each.")
+                                         "Windows' own TLS as it happens: start it before the connections. lsass stops for a moment at each. "
+                                         "scan finds the secrets of the capture's TLS flows in the memory of the programs that made them, "
+                                         "while they run, and adds only those that open the flow's own records.")
     common(sub)
-    sub.add_argument("action", choices=["add", "pull", "schannel", "list"])
+    timed(sub)
+    sub.add_argument("action", choices=["add", "pull", "schannel", "scan", "list"])
     sub.add_argument("path", nargs="?", help="the key log, of this side for add and of the guest for pull")
     sub.add_argument("--seconds", type=float, help="for schannel: stop after this long, otherwise on Ctrl-C")
+    sub.add_argument("--flow", action="append", metavar="ID", help="for scan: only this flow, as t12, more than once for several")
+    sub.add_argument("--process", action="append", metavar="NAME", help="for scan: search this process, by name or number, for every flow")
+    sub.add_argument("--physical", action="store_true", help="for scan: search the guest's whole RAM around the client randoms, for any guest")
+    sub.add_argument("--deep", action="store_true", help="for scan with --physical: then all of the RAM, which takes long")
+    sub.add_argument("--step", type=int, help="for scan: try windows that start at multiples of this, by default every one in up to "
+                                                     "32 MiB and every eighth beyond")
+    sub.add_argument("--around", type=int, default=65536, help="for scan: bytes searched each side of a client random, 64 KiB by default")
+    sub.add_argument("--max-memory", type=int, default=4096, metavar="MIB", help="for scan: memory read of a process at most, 4096 MiB by default")
+    sub.add_argument("--again", action="store_true", help="for scan: also flows the capture has keys for")
+    sub.add_argument("--follow", action="store_true", help="for scan: copy the memory of each new TLS flow's program as it begins, "
+                                                            "which catches programs that close their connections at once")
+    sub.add_argument("--pause", action="store_true", help="for scan --follow: hold the whole guest still while copying, through the "
+                                                           "debug stub, which keys schannel and guest-gdb then cannot use")
+    sub.add_argument("--keep", type=int, default=64, metavar="MIB", help="for scan --follow: keep a program's whole memory when it "
+                                                                           "is no larger than this, 64 MiB by default, otherwise only "
+                                                                           "around the client random")
     sub.set_defaults(run=keys)
     sub = reader("export", export, "copy the capture, or a part of it, to ./out, with --decrypted with its TLS secrets in it")
     sub.add_argument("file", nargs="?", help="the name in ./out")
