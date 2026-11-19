@@ -44,6 +44,14 @@
   };
 
   outputs = inputs: {
-    nixosConfigurations = import ./hosts.nix { inherit inputs; };
+    inherit (import ./hosts.nix { inherit inputs; }) nixosConfigurations;
+
+    # nix build .#tests.FOLDER.NAME runs one test, and .#tests.all every one.
+    legacyPackages = inputs.nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
+      tests = import ./core/_tests/index.nix {
+        flake = inputs.self;
+        inherit system;
+      };
+    });
   };
 }

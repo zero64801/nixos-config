@@ -1,6 +1,7 @@
-# nix build --impure --no-link -L --expr 'import ./modules/virtualisation/_tests/vm-isolation.nix { }'
+# nix build --no-link -L .#tests.virtualisation.vm-isolation
 {
-  flake ? builtins.getFlake (toString ../../..),
+  flake,
+  pkgs,
 }:
 
 let
@@ -21,8 +22,7 @@ let
       inherit (system) pkgs config;
 
       isolation = config.my.virtualisation.base.networkIsolation;
-      bridge = isolation.bridge;
-      nixvirt = config.my.virtualisation.nixvirt;
+      inherit (isolation) bridge;
 
       # Ports any module opened globally. The firewall applies those to every interface, so each one a guest must not reach has to be dropped by the isolation table.
       globalTcp = config.networking.firewall.allowedTCPPorts;
@@ -168,6 +168,6 @@ let
         touch $out
       '';
 in
-flake.inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.linkFarm "vm-isolation-test" (
+pkgs.linkFarm "vm-isolation-test" (
   lib.mapAttrs check isolating
 )

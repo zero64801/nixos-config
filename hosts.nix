@@ -15,20 +15,24 @@ let
       ) allFiles;
     in nixFiles;
 
+  shared = importDir ./core ++ importDir ./apps ++ importDir ./modules;
+
   hostnames = builtins.attrNames (
     lib.filterAttrs (_: type: type == "directory") (builtins.readDir ./hosts)
   );
 
-  mkSystem = hostname:
-    lib.nixosSystem {
-      specialArgs = { inherit inputs; hostName = hostname; };
+  specialArgs = hostName: { inherit inputs hostName; };
 
-      modules =
-        importDir ./core
-        ++ importDir ./apps
-        ++ importDir ./modules
-        ++ importDir ./hosts/${hostname};
+  system = hostName: modules:
+    lib.nixosSystem {
+      specialArgs = specialArgs hostName;
+      inherit modules;
     };
 
 in
-  lib.genAttrs hostnames mkSystem
+{
+  # The modules every host gets and how a system is made of them, for whatever builds a system that is no host here, as the tests do.
+  inherit shared specialArgs system;
+
+  nixosConfigurations = lib.genAttrs hostnames (hostname: system hostname (shared ++ importDir ./hosts/${hostname}));
+}
