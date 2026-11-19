@@ -68,6 +68,7 @@ The idea is that of X-Ray-TLS (Moriconi et al., 2024) and of DRAKVUF's tlsmon, h
 - `--physical` searches the guest's whole RAM instead of one program's memory, for a guest that is not Windows, around each client random.
   `--deep` searches all of it, for secrets kept apart from the client random, as OpenSSL's of TLS 1.2 are.
 
+It finds the secrets of OpenSSL, BoringSSL, GnuTLS, NSS, mbedTLS, Go's crypto/tls and rustls, whatever the program is written in, since it looks for the secrets and not for a library's structures.
 The libraries most programs use keep the client random beside the secrets, OpenSSL and BoringSSL among them, and its places are searched first at every offset.
 The rest is searched at every offset where it is up to 32 MiB and at every eighth beyond, which `--step` changes.
 The search itself is in C, `tlsscan/tlsscan.c`, and tries some millions of windows a second.
@@ -108,6 +109,7 @@ nix build --no-link -L .#tests.lab.guest-usb
 nix build --no-link -L .#tests.lab.schannel
 nix build --no-link -L .#tests.lab.owners
 nix build --no-link -L .#tests.lab.tlsscan
+nix build --no-link -L .#tests.lab.tlsscan-libraries
 nix build --no-link -L .#tests.lab.keys-scan
 ```
 
@@ -116,5 +118,6 @@ The second passes a USB keyboard of the test machine to the guest and lights its
 The third runs the reading of SChannel's keys on a made up stretch of `lsass`' memory, since there is no Windows here.
 The fourth reads what Windows' and Linux' own tools say of their connections.
 The fifth runs OpenSSL's client and server in every suite `keys scan` knows, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
-The sixth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote.
+The sixth has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
+The seventh has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
