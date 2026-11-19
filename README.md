@@ -54,6 +54,7 @@ Deleting a folder deletes what it declared, and a host's own folder may declare 
 - `nix run .#inputs -- list` lists them with their folder, revision and date.
 - `nix run .#inputs -- lock` writes the locks that are missing or no longer fit, and moves nothing that is locked.
 - `nix run .#inputs -- update [NAME...]` moves the named ones, or all, to what their source has now.
+- `nix run .#inputs -- set NAME REF` locks one to a revision, as `github:owner/repo/REVISION`, where it stays until it is updated by name.
 - `nix flake update` moves the two of `flake.nix` and nothing else.
 
 `pin` works on both kinds, so `pin update` updates everything that is not pinned or frozen.

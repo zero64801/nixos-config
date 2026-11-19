@@ -8,7 +8,7 @@ and the _inputs.lock beside it holds the revisions. flake.lock is left alone.
   list              every such input, with its folder, revision and date
   lock [FOLDER...]  write the locks that are missing or no longer fit, and move nothing that is locked
   update [NAME...]  move the inputs named, or all of them, to what their source has now
-  set NAME REF      lock NAME to REF, as github:owner/repo/REVISION
+  set NAME REF      lock NAME to REF, as github:owner/repo/REVISION, where it stays until it is updated by name
 END
 }
 

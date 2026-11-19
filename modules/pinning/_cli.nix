@@ -141,7 +141,7 @@ writeShellApplication {
       local input="$1"
       local rev="$2"
       local node
-      node=$(get_locked_node "$input") || die "Input '$input' not found in flake.lock"
+      node=$(get_locked_node "$input") || die "Input '$input' is in no lock, neither flake.lock nor a folder's _inputs.lock"
 
       local type owner repo host dir ref_str
       type=$(echo "$node" | jq -r '.original.type // empty')
@@ -399,7 +399,7 @@ writeShellApplication {
         input=$(get_direct_inputs | fzf --prompt="Select input to pin: " --height=~20) || exit 0
       fi
 
-      get_locked_node "$input" > /dev/null || die "Input '$input' not found in flake.lock"
+      get_locked_node "$input" > /dev/null || die "Input '$input' is in no lock, neither flake.lock nor a folder's _inputs.lock"
 
       if [[ -z "$rev" ]]; then
         local current_rev
@@ -584,7 +584,7 @@ writeShellApplication {
       local locked_rev
       locked_rev=$(get_locked_rev "$input")
       if [[ -z "$locked_rev" ]]; then
-        echo -e "\n  ''${yellow}⚠ Not in flake.lock''${reset} (input removed from the flake?)"
+        echo -e "\n  ''${yellow}⚠ In no lock''${reset} (input removed from the flake, or its folder deleted?)"
         echo -e "  ''${DIM}Run 'pin unpin $input' to drop the stale pin.''${NC}"
       elif [[ "$locked_rev" != "$rev" ]]; then
         echo -e "\n  ''${yellow}⚠ Lock file rev differs:''${reset} ''${locked_rev:0:12}"
@@ -673,7 +673,7 @@ writeShellApplication {
       local locked_rev
       locked_rev=$(get_locked_rev "$input")
       if [[ -z "$locked_rev" ]]; then
-        warn "'$input' is not in flake.lock (input removed from the flake?)."
+        warn "'$input' is in no lock (input removed from the flake, or its folder deleted?)."
         echo -e "  ''${DIM}Run 'pin unpin $input' to drop the stale pin.''${NC}"
         return 1
       fi
@@ -726,7 +726,7 @@ writeShellApplication {
         locked_rev=$(get_locked_rev "$input")
 
         if [[ -z "$locked_rev" ]]; then
-          echo -e "  ''${red}✗''${reset} ''${bold}$input''${reset} - not found in flake.lock (stale pin?)"
+          echo -e "  ''${red}✗''${reset} ''${bold}$input''${reset} - found in no lock (stale pin?)"
           all_ok=false
           continue
         fi
@@ -741,7 +741,7 @@ writeShellApplication {
 
       echo
       if [[ "$all_ok" == "true" ]]; then
-        ok "All pins are in sync with flake.lock"
+        ok "All pins are in sync with the locks"
       else
         warn "Some pins are out of sync. Run ''${bold}pin update''${reset} to reconcile."
       fi
@@ -906,13 +906,13 @@ writeShellApplication {
   ''${yellow}pin <input> [rev]''${reset}               Pin an input to a specific git revision.
                                    Omit [rev] to be prompted (defaults to current).
   ''${yellow}unpin <input>''${reset}                   Remove a pin/freeze. Omit <input> for fzf selection.
-  ''${yellow}update [inputs...]''${reset}              Update flake inputs, respecting all pins/freezes.
+  ''${yellow}update [inputs...]''${reset}              Update the inputs of flake.nix and of the folders, respecting all pins/freezes.
                                    If specific inputs are given, update only those.
     ''${DIM}--force, -f''${NC}                   Force-update even pinned/frozen inputs.
     ''${DIM}--dry-run, -n''${NC}                 Show what would happen without making changes.
   ''${yellow}restore [input]''${reset}                 Re-lock pinned/frozen inputs to their target revs.
                                    Useful after a manual 'nix flake update'.
-  ''${yellow}check''${reset}                           Verify all pins match their flake.lock entries.
+  ''${yellow}check''${reset}                           Verify all pins match what is locked.
   ''${yellow}diff [input]''${reset}                    Compare pinned rev vs locked rev for an input.
   ''${yellow}why [input]''${reset}                     Show detailed info about why an input is pinned.
   ''${yellow}set-reason <input> [reason]''${reset}     Set or update the reason annotation for a pin.
