@@ -8,7 +8,7 @@ A guest that is never opened is not changed by any of this.
 ## A session
 
 ```
-vm-inspect [--gdb] [--control] DOMAIN -- COMMAND...
+vm-inspect [--gdb] [--control] [--net] [--usb] [--plug DEVICE]... DOMAIN -- COMMAND...
 vm-inspect --join DOMAIN -- COMMAND...
 ```
 
@@ -23,6 +23,30 @@ Only the domains listed in `my.virtualisation.inspect.domains` can be opened, an
 What a session did to its guest is written to `~/.local/state/vm-inspect/DOMAIN.log`, one line a request.
 The line holds what was sent, with PowerShell scripts and their values decoded, and whether it was done or refused.
 The session writes it, so no tool can leave a line out.
+
+## Recording the network and USB
+
+`--net` records what the guest sends and gets over each network device that has a tap on this side, which is how libvirt connects a guest to a network or a bridge.
+`--usb` records the traffic of the USB devices passed to the guest.
+`--plug DEVICE` passes a USB device of this system to the guest for the length of the session, by vendor and product as `046d:c52b` or by its place as `3-1.4`, and gives it back at the end.
+A plugged device is gone from this system meanwhile.
+
+Both are read on this side, so the guest sees nothing and nothing is added to it.
+QEMU's own network filters would miss what vhost moves past it, so frames are taken from the tap.
+The root helper reads them and passes on the guest's alone: a packet socket can be bound again to any device by whoever holds it, and the kernel's USB monitor shows every device of a bus, this system's keyboard among them.
+
+A capture goes to `~/.local/state/vm-inspect/captures/DOMAIN/DATE-TIME/`, written by the session alone:
+
+- `net.pcapng`, one interface for each tap, times in nanoseconds, and each frame's direction seen from the guest, outbound for what it sent.
+- `usb.pcapng`, in the format of Wireshark's USB captures on Linux.
+- `capture.json`, what was recorded, the devices with what the kernel says of them, the counts, what the kernel dropped and why recording stopped.
+- `notes.jsonl`, the moments `guest-mark LABEL` marked.
+- `owners.jsonl` and `keys.log`, which programs connections belong to and TLS secrets, as tools find them.
+
+Tools add to a capture only through the session's control socket, which takes a mark, lines of a TLS key log and plain fields about connections, and nothing else.
+`$VM_INSPECT_CAPTURE` names the folder, in a program that joins the session too.
+A session writes at most `my.virtualisation.inspect.capture.limit` bytes, 4 GiB by default, and stops recording when less than 512 MiB are left on the disk.
+Captures are kept until they are deleted.
 
 ## The guest tools
 
@@ -49,6 +73,7 @@ A module can build another tool on a session from `my.virtualisation.inspect.gue
 | `guest-push`, `guest-pull` | A file into or out of the guest, compared by SHA-256 on both sides | yes |
 | `guest-status` | Agent, system, name, users, clock and free space | yes |
 | `guest-agent` | One raw command for the agent, from a fixed list | yes |
+| `guest-mark` | Marks a moment in what the session records | no, but `--net` or `--usb` |
 
 ## Two kinds of picture
 
@@ -132,15 +157,21 @@ That is for the reader to resist, and the reason the tools belong in a sandbox.
 - In a Linux guest `--as-user` sets `XDG_RUNTIME_DIR` and nothing else of a desktop.
 - A job in a Linux guest is a child of the agent's service and ends when that service is stopped.
 - The USB way for a transfer's disk has not been tried.
+- A network device of the guest without a tap here, as user mode networking or a card passed through, cannot be recorded, and the session says which.
+- A USB device the guest gets through spice's redirection is not recorded. `--plug` passes it in a way that is.
+- A device that comes back under another identity, as one that restarts for a firmware update does, is gone from the guest and from the capture.
 - Text is typed on a US keyboard layout.
 
 ## Tests
 
 ```
 nix build --no-link -L .#tests.inspect.vm-inspect
+nix build --no-link -L .#tests.inspect.capture
 ```
 
 It opens nested guests and drives a small Linux one through every tool.
 The machine it boots is the made up host of `core/_tests/system.nix`, with every shared module on it as a fork has them.
 `_tests/fixture.nix` holds that machine and the small guest, for the test of a module that builds on a session: it gives its tools and its script, and boots the guest alone.
+The second gives the small guest a network with vhost and a tap named as nixvirt names them, and the test machine a USB keyboard and tablet of its own.
+It downloads through the guest and checks what was recorded, its limit and what tools may add, then passes the keyboard to the guest and checks that only it is recorded while this side uses the tablet on the same bus.
 The Windows side has no test here and was tried by hand on a real guest.

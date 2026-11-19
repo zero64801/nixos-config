@@ -198,7 +198,7 @@ let
 
   vmLab = pkgs.writeShellScriptBin "vm-lab" ''
     usage() {
-      echo "usage: vm-lab ${lib.optionalString sandboxed "[--online] [--x11] [--full] "}[--control] [--join] [--tool INSTALLABLE]... DOMAIN [COMMAND...]"
+      echo "usage: vm-lab ${lib.optionalString sandboxed "[--online] [--x11] [--full] "}[--control] [--net] [--usb] [--plug DEVICE]... [--join] [--tool INSTALLABLE]... DOMAIN [COMMAND...]"
       ${lib.concatMapStrings (name: ''
         echo "       vm-lab --${name} [--join] DOMAIN [ARGUMENT...]"
       '') (lib.attrNames modes)}
@@ -218,6 +218,9 @@ let
           ''
       }
       echo "  --control  let the session send keys and pointer events to the guest and talk to the agent in it"
+      echo "  --net      record what the guest sends and gets over its network"
+      echo "  --usb      record the traffic of the USB devices passed to the guest"
+      echo "  --plug     pass a USB device of this system to the guest for the session, as 046d:c52b or by its place as 3-1.4"
       echo "  --join     only enter a session that is open already, and open none"
       ${lib.concatStrings (lib.mapAttrsToList (name: mode: ''
         printf '%s\n' ${lib.escapeShellArg (entry 13 "--${name}" mode.summary)}
@@ -234,6 +237,7 @@ let
       echo "                or with --window of one window as the guest draws it, and with --crop a part of either"
       echo "  guest-input   keys and pointer events for the guest, in a session opened with --control"
       echo "  guest-agent   one command for the agent in the guest, in a session opened with --control"
+      echo "  guest-mark    mark a moment in what the session records"
       echo "  guest-exec    a program in the guest, as its logged in user with --as-user, left to run with --job"
       echo "  guest-py      a Python script of this side with the Python the guest has, with the same options"
       echo "  guest-job, guest-wait, guest-windows"
@@ -246,7 +250,7 @@ let
       echo "  lab-box       run a program without the guest, the network or your files"
       exit "''${1:-2}"
     }
-    online=- x11=- full=- mode=- control= join= extra=()
+    online=- x11=- full=- mode=- control= join= extra=() recording=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         ${lib.optionalString sandboxed ''
@@ -255,6 +259,12 @@ let
           --full) full=f ;;
         ''}
         --control) control=1 ;;
+        --net | --usb) recording+=("$1") ;;
+        --plug)
+          [ "$#" -ge 2 ] || usage
+          recording+=("--plug=$2")
+          shift
+          ;;
         --join) join=1 ;;
         ${lib.concatMapStrings (name: ''
           --${name}) mode=${name} ;;
@@ -285,6 +295,9 @@ let
       exit 1
     fi
     export VM_LAB_TOOLS=${toolsOut}
+
+    # Shared with the sandbox before any session records into it.
+    ${pkgs.coreutils}/bin/mkdir -p "''${XDG_STATE_HOME:-$HOME/.local/state}/vm-inspect/captures"
 
     sockets="''${XDG_RUNTIME_DIR:?}/vm-lab"
     symbols="$links/symbols"
@@ -408,7 +421,11 @@ let
     inspect=${inspect.package}/bin/vm-inspect
     session=(--gdb)
     if [ -n "$control" ]; then session+=(--control); fi
+    session+=("''${recording[@]}")
     if "$inspect" --join "$domain" -- ${pkgs.coreutils}/bin/true 2>/dev/null; then
+      if [ "''${#recording[@]}" -gt 0 ]; then
+        echo "vm-lab: $domain is open already, so it records only what that session was opened to record" >&2
+      fi
       session=(--join)
     elif [ -n "$join" ]; then
       echo "vm-lab: $domain is not open, and with --join none is opened" >&2

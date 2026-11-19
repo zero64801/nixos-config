@@ -24,10 +24,12 @@ let
         to = "cache";
       }
     ];
+    # Captures are written by the session alone, and tools add to one through its control socket.
     binds.ro = [
       "xdg-run/vm-inspect"
       "xdg-run/vm-lab"
       "/run/vm-inspect"
+      "xdg-state/vm-inspect/captures"
     ];
     env.__NIXOS_SET_ENVIRONMENT_DONE = "1";
     envPassthrough = [
@@ -36,6 +38,7 @@ let
       "VM_INSPECT_DIR"
       "VM_INSPECT_DEVICE"
       "VM_INSPECT_GDB"
+      "VM_INSPECT_CAPTURE"
       "VM_LAB_TOOLS"
       "VM_LAB_PATH"
       "VM_LAB_ENV"

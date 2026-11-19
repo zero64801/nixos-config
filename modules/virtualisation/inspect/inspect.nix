@@ -16,6 +16,8 @@ let
           inherit (cfg) domains;
           virsh = "${config.virtualisation.libvirtd.package}/bin/virsh";
           setfacl = "${pkgs.acl}/bin/setfacl";
+          # For the kernel's USB monitor, which is loaded when a session first records USB.
+          modprobe = "${pkgs.kmod}/bin/modprobe";
         }
       )
     } "$@"
@@ -28,6 +30,7 @@ let
           inherit (cfg) domains;
           inherit helper;
           pkexec = "${config.security.wrapperDir}/pkexec";
+          capture_limit = cfg.capture.limit;
         }
       )
     } "$@"
@@ -60,6 +63,7 @@ let
       "grep"
       "find"
       "status"
+      "mark"
     ];
   };
 in
@@ -72,7 +76,8 @@ in
       administrator through pkexec, and hands over everything in the guest's memory, to read and to change. A session
       also gives pictures of the guest's screen (guest-shot) and, when opened with --control, takes keys and pointer
       events for the guest (guest-input) and plugs in a channel to the agent that runs in it (guest-agent), which
-      it takes out again at its end
+      it takes out again at its end. Opened with --net or --usb, it records what the guest sends and gets over its
+      network devices and the USB devices passed to it, read from this side, into ~/.local/state/vm-inspect/captures
     '';
 
     domains = mkOption {
@@ -80,6 +85,17 @@ in
       default = [ ];
       example = [ "malware-lab" ];
       description = "Libvirt domains that may be opened.";
+    };
+
+    capture.limit = mkOption {
+      type = types.ints.positive;
+      default = 4 * 1024 * 1024 * 1024;
+      defaultText = lib.literalExpression "4 * 1024 * 1024 * 1024";
+      description = ''
+        Bytes a session that records the guest writes at most, network and USB together. It stops recording when it
+        gets there, or when less than 512 MiB are left on the disk, and says so. Older captures are kept until
+        they are deleted.
+      '';
     };
 
     package = mkOption {

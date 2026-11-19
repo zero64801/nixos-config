@@ -5,7 +5,28 @@
 
 let
   inherit (host) pkgs;
+  inherit (pkgs) lib;
 
+  # The network the guest gets when a test asks for one: the address of this side, which also answers for site.test.
+  site = "10.9.9.1";
+in
+{
+  name,
+  # More tools for the path of a session, made of what the machine's inspect module offers, as its guestLibrary and its memprocfs.
+  tools ? _: [ ],
+  # What the test says of the machine beyond what is here.
+  machine ? { },
+  # A network device for the guest, on a network of libvirt's with this machine at the other end.
+  network ? false,
+  # A USB keyboard and a USB tablet of this machine's own, on a controller of their own, for a test to pass to the guest.
+  usb ? false,
+  # The lab's tools on the path of a session, instead of the guest tools alone.
+  lab ? false,
+  # Runs after the script below, and calls start_driven() where it wants the guest. A function of the nodes, or text.
+  testScript,
+}:
+
+let
   # A guest with a screen and a keyboard that says on its serial port what was typed on its console, and that runs the agent whenever a channel for it is there.
   modules = pkgs.makeModulesClosure {
     rootModules = [
@@ -15,10 +36,28 @@ let
       "virtio_console"
       "virtio_scsi"
       "sd_mod"
+    ]
+    ++ lib.optional network "virtio_net"
+    ++ lib.optionals usb [
+      "xhci_pci"
+      "usbhid"
+      "hid_generic"
+      "input_leds"
     ];
     kernel = pkgs.linux.modules;
     firmware = pkgs.linux.modules;
   };
+  loaded =
+    lib.optionalString network " virtio_net"
+    + lib.optionalString usb " xhci_pci usbhid hid_generic input_leds";
+  # With curl, for a client of TLS that writes its keys where SSLKEYLOGFILE says.
+  connected = lib.optionalString network ''
+    ip link set lo up
+    ip link set eth0 up
+    ip addr add 10.9.9.50/24 dev eth0
+    echo "nameserver ${site}" > /etc/resolv.conf
+    ln -s ${pkgs.curl.bin}/bin/curl /bin/curl
+  '';
   init = pkgs.writeScript "init" ''
     #!${pkgs.busybox}/bin/sh
     export PATH=${pkgs.busybox}/bin:/bin
@@ -31,8 +70,8 @@ let
     printf 'root:x:0:0:root:/:/bin/sh\ntester:x:1000:1000:tester:/tmp:/bin/sh\n' > /etc/passwd
     printf 'root:x:0:\ntester:x:1000:\n' > /etc/group
     printf '#!/bin/sh\nexec /bin/sh "$@"\n' > /bin/stands-in-for-python && chmod +x /bin/stands-in-for-python
-    ${pkgs.kmod}/bin/modprobe -d ${modules} -a i8042 atkbd virtio_pci virtio_console virtio_scsi sd_mod
-    (
+    ${pkgs.kmod}/bin/modprobe -d ${modules} -a i8042 atkbd virtio_pci virtio_console virtio_scsi sd_mod${loaded}
+    ${connected}(
       while :; do
         for port in /sys/class/virtio-ports/*; do
           if [ "$(cat "$port/name" 2>/dev/null)" = org.qemu.guest_agent.0 ]; then
@@ -76,33 +115,49 @@ let
         <controller type="scsi" model="virtio-scsi"/>
         <video><model type="vga"/></video>
         <input type="tablet" bus="usb"/>
-        <memballoon model="none"/>
+        <memballoon model="none"/>${
+          lib.optionalString usb ''
+
+            <controller type="usb" model="qemu-xhci"/>''
+          + lib.optionalString network ''
+
+            <interface type="network">
+              <source network="lab"/>
+              <mac address="52:54:00:00:00:32"/>
+              <model type="virtio"/>
+              <driver name="vhost" queues="2"/>
+              <target dev="vm-driven"/>
+            </interface>''
+        }
       </devices>
     </domain>
   '';
-in
-{
-  name,
-  # More tools for the path of a session, made of what the machine's inspect module offers, as its guestLibrary and its memprocfs.
-  tools ? _: [ ],
-  # What the test says of the machine beyond what is here.
-  machine ? { },
-  # Runs after the script below, and calls start_driven() where it wants the guest.
-  testScript,
-}:
 
+  # Isolated, with this machine at 10.9.9.1 and dnsmasq answering for site.test, as libvirt's networks are set up.
+  labNetwork = pkgs.writeText "lab.xml" ''
+    <network>
+      <name>lab</name>
+      <bridge name="virbr9"/>
+      <ip address="${site}" netmask="255.255.255.0"/>
+      <dns><host ip="${site}"><hostname>site.test</hostname></host></dns>
+    </network>
+  '';
+in
 host.boot {
   inherit name;
 
   machines.machine = {
-    imports = [ machine ];
+    # Set only when asked, since the lab is optional and its option may not exist.
+    imports = [ machine ] ++ lib.optional lab { my.virtualisation.lab.enable = true; };
 
     virtualisation.memorySize = pkgs.lib.mkDefault 3072;
     virtualisation.cores = 2;
+    # vhost, as the guests this is for have, moves frames past QEMU, which is what a capture has to cope with.
     boot.kernelModules = [
       "kvm-amd"
       "kvm-intel"
-    ];
+    ]
+    ++ lib.optional network "vhost_net";
 
     virtualisation.libvirtd.enable = true;
     security.polkit.enable = true;
@@ -132,6 +187,13 @@ host.boot {
       };
     };
     users.groups.vm-guest = { };
+
+    networking.firewall.trustedInterfaces = lib.mkIf network [ "virbr9" ];
+    virtualisation.qemu.options = lib.mkIf usb [
+      "-device qemu-xhci,id=labxhci"
+      "-device usb-kbd,bus=labxhci.0,id=labkbd"
+      "-device usb-tablet,bus=labxhci.0,id=labtablet"
+    ];
   };
 
   testScript =
@@ -153,7 +215,15 @@ host.boot {
       def lab(command):
           return alice(f"export PATH=${
             pkgs.lib.makeBinPath (
-              [ nodes.machine.my.virtualisation.inspect.guestTools ] ++ tools nodes.machine.my.virtualisation.inspect
+              [
+                (
+                  if lab then
+                    nodes.machine.system.build.vmLabTools
+                  else
+                    nodes.machine.my.virtualisation.inspect.guestTools
+                )
+              ]
+              ++ tools nodes.machine.my.virtualisation.inspect
             )
           }:$PATH; {command}")
 
@@ -172,9 +242,11 @@ host.boot {
 
       machine.wait_for_unit("libvirtd.service")
       machine.wait_for_unit("user@1000.service")
-      kvm = machine.execute("test -e /dev/kvm")[0] == 0
+      kvm = machine.execute("test -e /dev/kvm")[0] == 0${lib.optionalString network ''
+
+        machine.succeed("virsh net-define ${labNetwork} && virsh net-start lab")''}
       print("nested KVM:", kvm)
 
     ''
-    + testScript;
+    + (if lib.isFunction testScript then testScript { inherit nodes; } else testScript);
 }

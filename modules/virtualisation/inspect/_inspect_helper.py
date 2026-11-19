@@ -20,22 +20,31 @@ A large file does not go through the agent at all. For the length of one transfe
 push as it is, read only, or an empty one of the right size for the guest to write into. It holds bytes and no file
 system, so nothing here has to make sense of what a guest wrote, and QEMU gets the file as a descriptor, which is all
 it can then reach.
+
+A session opened to record the guest gets what goes over its network devices and its USB devices as a stream of
+records. Both are read here and never handed over as they are: a packet socket can be bound again to any device by
+whoever holds it, and the kernel's USB monitor shows every device of a bus, the host's keyboard among them. So this
+side reads them and passes on what belongs to the guest, with nothing in it looked into.
 """
 import argparse
 import base64
+import ctypes
 import fcntl
 import itertools
 import json
 import os
 import pwd
 import re
+import select
 import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import xml.etree.ElementTree
 
@@ -78,6 +87,22 @@ BUTTONS = ("left", "middle", "right", "wheel-up", "wheel-down", "side", "extra",
 NOT_SHARED = ("its memory is private to QEMU. Back it with <source type=\"memfd\"/> or give it "
               "<access mode=\"shared\"/> in <memoryBacking>, then start it again")
 
+# Network devices whose other end is a tap on this side, which is where what the guest sends and gets can be read.
+# QEMU's own filters would miss it, since with vhost the kernel moves the frames past QEMU.
+TAPPED = ("network", "bridge", "ethernet")
+IFNAME = re.compile(r"[A-Za-z0-9._-]{1,15}")
+# Constants of the kernel's headers that Python does not have.
+ETH_P_ALL, SOL_PACKET, PACKET_STATISTICS, SO_RCVBUFFORCE, SO_TIMESTAMPNS = 3, 263, 6, 33, 35
+PACKET_OUTGOING, FRAME, SOCKET_BUFFER = 4, 256 * 1024, 64 * 1024 * 1024
+# The binary interface of the kernel's USB monitor, from drivers/usb/mon/mon_bin.c. A record is a header of 64 bytes and
+# what it says it captured, which is also how a capture file of Wireshark's USB link type stores it.
+USB_DEVICES, MONITOR = "/sys/bus/usb/devices", "/dev/usbmon{}"
+MON_GETX, MON_STATS, MON_RING, USB_HEADER, USB_RING = 0x4018920A, 0x80089203, 0x9204, 64, 16 * 1024 * 1024
+# A host device passed to the guest for one session, by its place or by vendor and product, and the alias it gets there.
+PLUG = re.compile(r"[0-9a-f]{4}:[0-9a-f]{4}|[0-9]{1,3}-[0-9]{1,3}(?:\.[0-9]{1,3}){0,6}")
+PLUGGED = '<hostdev mode="subsystem" type="usb"><source><address bus="{bus}" device="{dev}"/></source><alias name="{alias}"/></hostdev>'
+PLUG_ALIAS = "ua-vm-inspect-usb-"
+
 
 def fail(message):
     print(f"vm-inspect: {message}", file=sys.stderr)
@@ -117,20 +142,7 @@ class Agent:
         self.connection = self.guest = None
 
     def run(self, *arguments, device=None, output=subprocess.PIPE):
-        """A virsh call that may take a device description, which goes in as a descriptor and not as a file."""
-        passed = []
-        if device is not None:
-            passed.append(os.memfd_create("vm-inspect-device"))
-            os.write(passed[0], device.encode())
-            arguments = (*arguments, f"/proc/self/fd/{passed[0]}", "--live")
-        try:
-            return subprocess.run([*self.virsh, *arguments], check=False, stdout=output, stderr=subprocess.PIPE, text=True,
-                                  timeout=45, pass_fds=passed)
-        except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(arguments, 1, "", "libvirt did not answer")
-        finally:
-            for descriptor in passed:
-                os.close(descriptor)
+        return virsh_call(self.virsh, arguments, device, output)
 
     def channel(self):
         """Whose agent channel the running guest has: a session's, its own, or none."""
@@ -272,6 +284,257 @@ class Agent:
             _, why = self.command(json.dumps({"execute": "guest-file-write", "arguments": arguments}))
             if why:
                 return why
+
+
+def virsh_call(virsh, arguments, device=None, output=subprocess.PIPE):
+    """A virsh call that may take a device description, which goes in as a descriptor and not as a file."""
+    passed = []
+    if device is not None:
+        passed.append(os.memfd_create("vm-inspect-device"))
+        os.write(passed[0], device.encode())
+        arguments = (*arguments, f"/proc/self/fd/{passed[0]}", "--live")
+    try:
+        return subprocess.run([*virsh, *arguments], check=False, stdout=output, stderr=subprocess.PIPE, text=True,
+                              timeout=45, pass_fds=passed)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(arguments, 1, "", "libvirt did not answer")
+    finally:
+        for descriptor in passed:
+            os.close(descriptor)
+
+
+def description(virsh, domain):
+    """The running guest's definition as libvirt has it now, or None."""
+    done = virsh_call([virsh, "-c", "qemu:///system"], ("dumpxml", domain))
+    try:
+        return xml.etree.ElementTree.fromstring(done.stdout) if done.returncode == 0 else None
+    except xml.etree.ElementTree.ParseError:
+        return None
+
+
+def taps(defined):
+    """The guest's network devices that have a tap on this side, and why any other one is not recorded."""
+    found, left = [], []
+    for interface in defined.find("devices").iter("interface"):
+        target, mac = interface.find("target"), interface.find("mac")
+        name = target.get("dev") if target is not None else None
+        address = mac.get("address", "?") if mac is not None else "?"
+        if interface.get("type") not in TAPPED or not name:
+            left.append(f"the device {address} is a {interface.get('type')} device, which has nothing on this side to record from")
+        elif not IFNAME.fullmatch(name) or not os.path.exists(f"/sys/class/net/{name}/tun_flags"):
+            left.append(f"the device {address} is attached to {name!r}, which is no tap")
+        else:
+            found.append({"name": name, "mac": address})
+    return found, left
+
+
+def packet_socket(name):
+    """A socket that gets every frame of one network device, with the kernel's time of each."""
+    # Made for no protocol, so that it takes nothing from any other device before it is bound to this one.
+    tap = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0)
+    tap.setsockopt(socket.SOL_SOCKET, SO_RCVBUFFORCE, SOCKET_BUFFER)
+    tap.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
+    tap.bind((name, ETH_P_ALL))
+    return tap
+
+
+def sysfs(folder, name):
+    try:
+        with open(f"{folder}/{name}", errors="replace") as f:
+            return f.read(256).strip()
+    except OSError:
+        return ""
+
+
+def usb_devices():
+    """The host's USB devices as the kernel lists them, root hubs left out."""
+    found = []
+    for place in sorted(os.listdir(USB_DEVICES)):
+        folder = f"{USB_DEVICES}/{place}"
+        if not PLUG.fullmatch(place) or ":" in place or not os.path.exists(f"{folder}/devnum"):
+            continue
+        try:
+            bus, dev = int(sysfs(folder, "busnum")), int(sysfs(folder, "devnum"))
+        except ValueError:
+            continue
+        found.append({"place": place, "bus": bus, "dev": dev, "id": f"{sysfs(folder, 'idVendor')}:{sysfs(folder, 'idProduct')}",
+                      "manufacturer": sysfs(folder, "manufacturer"), "product": sysfs(folder, "product"),
+                      "serial": sysfs(folder, "serial"), "speed": sysfs(folder, "speed")})
+    return found
+
+
+def hex_id(element):
+    try:
+        return f"{int(element.get('id'), 16):04x}"
+    except (TypeError, ValueError):
+        return None
+
+
+def guest_usb(defined, devices):
+    """The host devices the guest has been given, as libvirt names them: by bus and number, or by vendor and product when that is one device."""
+    mine = []
+    for hostdev in defined.find("devices").iter("hostdev"):
+        source = hostdev.find("source") if hostdev.get("type") == "usb" else None
+        if source is None:
+            continue
+        address, vendor, product = source.find("address"), source.find("vendor"), source.find("product")
+        named = []
+        if address is not None and address.get("bus") and address.get("device"):
+            try:
+                named = [d for d in devices if (d["bus"], d["dev"]) == (int(address.get("bus")), int(address.get("device")))]
+            except ValueError:
+                named = []
+        elif vendor is not None and product is not None:
+            named = [d for d in devices if d["id"] == f"{hex_id(vendor)}:{hex_id(product)}"]
+        if len(named) == 1:
+            mine.append(named[0])
+    return mine
+
+
+class Plugs:
+    """Host USB devices passed to the guest for the length of a session, and taken back at its end, by the alias they get."""
+
+    def __init__(self, virsh, domain):
+        self.virsh, self.domain, self.aliases = [virsh, "-c", "qemu:///system"], domain, []
+
+    def leftovers(self, defined):
+        """Takes back what a session that was killed left in the guest. The lock says none is running."""
+        for alias in defined.iter("alias"):
+            if alias.get("name", "").startswith(PLUG_ALIAS):
+                virsh_call(self.virsh, ("detach-device-alias", self.domain, alias.get("name"), "--live"))
+
+    def plug(self, wanted, defined):
+        devices = usb_devices()
+        named = [d for d in devices if wanted in (d["place"], d["id"])]
+        if len(named) != 1:
+            fail(f"{wanted} names {len(named)} USB devices of this system, so it cannot be passed to the guest. "
+                 + ("Name it by its place instead, one of: " + ", ".join(f"{d['place']} ({d['id']} {d['product']!r})" for d in named) if named
+                    else "Name one by its vendor and product, as 046d:c52b, or by its place, as 3-1.4"))
+        device = named[0]
+        if device in guest_usb(defined, devices):
+            return None
+        alias = f"{PLUG_ALIAS}{len(self.aliases)}"
+        done = virsh_call(self.virsh, ("attach-device", self.domain), PLUGGED.format(bus=device["bus"], dev=device["dev"], alias=alias))
+        if done.returncode != 0:
+            fail(f"{wanted} could not be passed to the guest: {done.stderr.strip()}")
+        self.aliases.append(alias)
+        return device
+
+    def unplug(self):
+        for alias in self.aliases:
+            done = virsh_call(self.virsh, ("detach-device-alias", self.domain, alias, "--live"))
+            if done.returncode != 0:
+                print(f"vm-inspect: a USB device passed to the guest for the session is still there: {done.stderr.strip()}", file=sys.stderr)
+
+
+class Recorder(threading.Thread):
+    """Reads the guest's frames and USB records and passes them on, each as a kind, a length and the bytes.
+
+    N is a frame: the device's place in the list, whether the guest sent it, the time in nanoseconds and the frame.
+    U is a record of the USB monitor as it is. S is a count of what was passed on and of what the kernel had to drop.
+    """
+
+    def __init__(self, out, sockets, usb, virsh, domain, modprobe):
+        super().__init__(daemon=True)
+        self.out, self.sockets, self.usb = out, sockets, usb
+        self.virsh, self.domain, self.modprobe = virsh, domain, modprobe
+        self.stop, self.monitors, self.watched = threading.Event(), {}, set()
+        self.counts = {"frames": 0, "frames_dropped": 0, "usb_records": 0, "usb_dropped": 0}
+        self.header, self.data = ctypes.create_string_buffer(USB_HEADER), ctypes.create_string_buffer(USB_RING)
+        self.fetch = struct.pack("QQQ", ctypes.addressof(self.header), ctypes.addressof(self.data), USB_RING)
+
+    def send(self, kind, payload):
+        self.out.sendall(kind + struct.pack("<I", len(payload)) + payload)
+
+    def watch(self):
+        """Which devices are the guest's now, with a monitor open on each bus they are on. A device that came back under a new number is followed."""
+        defined = description(self.virsh, self.domain)
+        if defined is None:
+            return
+        mine = guest_usb(defined, usb_devices())
+        self.watched = {(d["bus"], d["dev"]) for d in mine}
+        for bus in {d["bus"] for d in mine} - set(self.monitors):
+            if not os.path.exists(MONITOR.format(bus)):
+                subprocess.run([self.modprobe, "usbmon"], check=False, capture_output=True, timeout=30)
+                for _ in range(20):
+                    if os.path.exists(MONITOR.format(bus)):
+                        break
+                    time.sleep(0.1)
+            try:
+                monitor = os.open(MONITOR.format(bus), os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            except OSError as e:
+                print(f"vm-inspect: the USB monitor of bus {bus} could not be opened: {e}", file=sys.stderr)
+                continue
+            fcntl.ioctl(monitor, MON_RING, USB_RING)
+            self.monitors[bus] = monitor
+
+    def frame(self, index, tap):
+        data, ancillary, _, address = tap.recvmsg(FRAME, socket.CMSG_SPACE(16))
+        stamp = time.time_ns()
+        for level, kind, value in ancillary:
+            if level == socket.SOL_SOCKET and kind == SO_TIMESTAMPNS and len(value) >= 16:
+                seconds, nanoseconds = struct.unpack_from("qq", value)
+                stamp = seconds * 1_000_000_000 + nanoseconds
+        sent = address[2] != PACKET_OUTGOING
+        self.send(b"N", struct.pack("<BBQI", index, sent, stamp, len(data)) + data)
+        self.counts["frames"] += 1
+
+    def records(self, monitor):
+        while True:
+            try:
+                fcntl.ioctl(monitor, MON_GETX, self.fetch)
+            except BlockingIOError:
+                return
+            header = self.header.raw
+            devnum, busnum = header[11], struct.unpack_from("<H", header, 12)[0]
+            if (busnum, devnum) not in self.watched:
+                continue
+            delivered = min(struct.unpack_from("<I", header, 36)[0], USB_RING)
+            self.send(b"U", header[:36] + struct.pack("<I", delivered) + header[40:] + self.data.raw[:delivered])
+            self.counts["usb_records"] += 1
+
+    def tally(self):
+        for tap in self.sockets:
+            _, dropped = struct.unpack("II", tap.getsockopt(SOL_PACKET, PACKET_STATISTICS, 8))
+            self.counts["frames_dropped"] += dropped
+        # Both counts are reset when they are read, and the monitor's counts drops of every device on its bus.
+        for monitor in self.monitors.values():
+            self.counts["usb_dropped"] += struct.unpack("II", fcntl.ioctl(monitor, MON_STATS, bytes(8)))[1]
+        self.send(b"S", json.dumps(self.counts).encode())
+
+    def pass_on(self, wait):
+        """Passes on what is ready within the time given. False when nothing was."""
+        readable, _, _ = select.select([*self.sockets, *self.monitors.values()], [], [], wait)
+        for ready in readable:
+            if isinstance(ready, socket.socket):
+                self.frame(self.sockets.index(ready), ready)
+            else:
+                self.records(ready)
+        return bool(readable)
+
+    def run(self):
+        last = 0.0
+        try:
+            while not self.stop.is_set():
+                if time.monotonic() - last > 2:
+                    if self.usb:
+                        self.watch()
+                    self.tally()
+                    last = time.monotonic()
+                self.pass_on(1)
+            # The kernel still holds what came in while the session ended, as much as a second of a fast transfer.
+            until = time.monotonic() + 10
+            while time.monotonic() < until and self.pass_on(0.3):
+                pass
+            self.tally()
+        except OSError:
+            pass
+        finally:
+            self.out.close()
+            for monitor in self.monitors.values():
+                os.close(monitor)
+            for tap in self.sockets:
+                tap.close()
 
 
 def agent_arguments(wanted):
@@ -510,12 +773,18 @@ def main():
     parser.add_argument("domain")
     parser.add_argument("--gdb", action="store_true")
     parser.add_argument("--control", action="store_true")
+    parser.add_argument("--net", action="store_true")
+    parser.add_argument("--usb", action="store_true")
+    parser.add_argument("--plug", action="append", default=[])
     args = parser.parse_args()
     with open(args.settings) as f:
         settings = json.load(f)
 
     if args.domain not in settings["domains"] or not DOMAIN.fullmatch(args.domain):
         fail(f"{args.domain} is not among the domains that may be inspected")
+    wanted = [plug.lower() for plug in args.plug]
+    if len(wanted) > 8 or not all(PLUG.fullmatch(plug) for plug in wanted):
+        fail("--plug names up to 8 USB devices, each by vendor and product, as 046d:c52b, or by its place, as 3-1.4")
     try:
         uid = pwd.getpwuid(int(os.environ["PKEXEC_UID"])).pw_uid
     except (KeyError, ValueError):
@@ -545,20 +814,48 @@ def main():
         if re.fullmatch(re.escape(args.domain) + r"\.[a-z0-9_]{8}", name):
             remove(f"{RUN}/{name}")
 
+    defined = description(settings["virsh"], args.domain)
+    if defined is None:
+        fail(f"libvirt gave no definition of {args.domain}")
+    plugs = Plugs(settings["virsh"], args.domain)
+    plugs.leftovers(defined)
+
     # So that a session ended from outside still takes its debug socket along.
     for number in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, lambda *_: sys.exit(1))
     folder, gdb = debug_socket(monitor, settings["setfacl"], args.domain, pid, uid) if args.gdb else (None, None)
-    agent = Agent(settings["virsh"], args.domain)
+    agent, recorder = Agent(settings["virsh"], args.domain), None
     try:
         if args.control:
             agent.open()
-        socket.send_fds(caller, [b"F"], [ram] if frames is None else [ram, frames])
-        caller.sendall(json.dumps({"mtree": mtree, "gdb": gdb}).encode() + b"\n")
+        handed, names, recorded = [ram], ["ram"], None
+        if frames is not None:
+            handed.append(frames)
+            names.append("frames")
+        if args.net or args.usb or wanted:
+            plugged = [device for device in (plugs.plug(plug, description(settings["virsh"], args.domain)) for plug in wanted) if device]
+            defined = description(settings["virsh"], args.domain)
+            tapped, left = taps(defined) if args.net else ([], [])
+            recorded = {"net": tapped, "left": left, "usb": guest_usb(defined, usb_devices()) if args.usb else None, "plugged": plugged}
+        if args.net or args.usb:
+            ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            recorder = Recorder(ours, [packet_socket(t["name"]) for t in recorded["net"]], args.usb,
+                                settings["virsh"], args.domain, settings["modprobe"])
+            recorder.start()
+            handed.append(theirs.fileno())
+            names.append("recorder")
+        socket.send_fds(caller, [b"F"], handed)
+        caller.sendall(json.dumps({"mtree": mtree, "gdb": gdb, "descriptors": names, "recorded": recorded}).encode() + b"\n")
+        if recorder:
+            theirs.close()
         serve(caller, monitor, settings["virsh"], args.domain, args.control, agent)
     except OSError:
         pass
     finally:
+        if recorder:
+            recorder.stop.set()
+            recorder.join(20)
+        plugs.unplug()
         agent.close()
         if folder:
             # The guest may have gone in the meantime, which closes the stub by itself.

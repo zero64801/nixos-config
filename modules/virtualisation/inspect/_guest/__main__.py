@@ -6,7 +6,7 @@ import agent
 import keys
 import programs
 import screen
-from session import Refused, fail
+from session import Refused, ask, control_socket, fail
 
 
 def size(text):
@@ -204,6 +204,17 @@ def main():
         parser.add_argument("name", help="what to ask, such as ping, info, get-osinfo, exec or file-open")
         parser.add_argument("arguments", nargs="?", help="its arguments as one JSON object")
         agent.agent(parser.parse_args(sys.argv[2:]))
+    elif tool == "mark":
+        parser = argparse.ArgumentParser(prog="guest-mark",
+                                         description="Mark this moment in what the session records, so that a reader of it can show what happened "
+                                                     "before, after or between marks. The session has to be opened with --net or --usb.")
+        parser.add_argument("label", help="a name for the moment, up to 120 plain characters")
+        args = parser.parse_args(sys.argv[2:])
+        try:
+            reply, _ = ask(control_socket(), {"do": "mark", "label": args.label})
+        except Refused as e:
+            fail(str(e))
+        print(f"marked {args.label} in {reply.get('folder')}")
     elif tool in AGENT_TOOLS:
         build, run = AGENT_TOOLS[tool]
         parser = argparse.ArgumentParser(prog=f"guest-{tool}", description=build.__doc__,
@@ -215,7 +226,7 @@ def main():
         except Refused as e:
             fail(str(e))
     else:
-        fail("this is started as guest-NAME, with NAME one of shot, input, agent, " + ", ".join(AGENT_TOOLS))
+        fail("this is started as guest-NAME, with NAME one of shot, input, agent, mark, " + ", ".join(AGENT_TOOLS))
 
 
 if __name__ == "__main__":
