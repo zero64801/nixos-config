@@ -6,6 +6,9 @@ final:
     path:
     final.lib.mapAttrs (_: pin: final.fetchFromGitHub { inherit (pin) owner repo rev hash; }) (builtins.fromJSON (builtins.readFile path));
 
+  # The command that locks what folders declare for themselves, for a tool that wraps it.
+  flakeInputs = final.callPackage ../inputs/_lock.nix { };
+
   # The head of this repository's command line tools: their colours and the four ways they speak.
   cliPrelude = ''
     # shellcheck disable=SC2034,SC2329

@@ -17,12 +17,34 @@ let
 
   shared = importDir ./core ++ importDir ./apps ++ importDir ./modules;
 
-  # The shared modules without those of the folders or module files named, as "modules/stylix".
-  keep =
+  # Files without those that lie in the folders named or are the module files named, as "modules/stylix".
+  drop =
     without:
     builtins.filter (
       file: !lib.any (gone: toString file == "${toString ./.}/${gone}" || lib.hasPrefix "${toString ./.}/${gone}/" (toString file)) without
-    ) shared;
+    );
+
+  keep = without: drop without shared;
+
+  # The _inputs.nix files below a folder, in which a folder says what it needs beyond the inputs of flake.nix.
+  declaredIn =
+    dir:
+    builtins.filter (
+      file:
+      baseNameOf (toString file) == "_inputs.nix"
+      && !lib.any (lib.hasPrefix "_") (lib.init (lib.splitString "/" (lib.removePrefix (toString dir + "/") (toString file))))
+    ) (lib.optionals (builtins.pathExists dir) (lib.filesystem.listFilesRecursive dir));
+
+  declared = declaredIn ./core ++ declaredIn ./apps ++ declaredIn ./modules;
+
+  folders = import ./core/inputs/_folders.nix {
+    inherit lib;
+    core = removeAttrs inputs [ "self" ];
+  };
+
+  # What the modules of a host are handed as inputs: those of flake.nix, those of the shared folders it loads, and those its own folder declares.
+  inputsOf =
+    hostName: inputs // folders.from (drop (leftOut ./hosts/${hostName}/_without.nix) declared ++ declaredIn ./hosts/${hostName});
 
   # What a host leaves out of the shared modules: the list in the file given, its _without.nix, and nothing where it has no such file.
   # A name there that leaves nothing out is a mistake and is said, since nothing else would show it.
@@ -40,7 +62,10 @@ let
     lib.filterAttrs (_: type: type == "directory") (builtins.readDir ./hosts)
   );
 
-  specialArgs = hostName: { inherit inputs hostName; };
+  specialArgs = hostName: {
+    inputs = inputsOf hostName;
+    inherit hostName;
+  };
 
   system = hostName: modules:
     lib.nixosSystem {

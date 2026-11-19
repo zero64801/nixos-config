@@ -10,7 +10,7 @@ nixos/
 ├── core/       Always-on system fundamentals (boot, audio, networking, etc.)
 ├── modules/    Feature modules with my.* options (impermanence, stylix, etc.)
 ├── hosts/      Per-host configuration (hardware, user, host-specific settings)
-├── flake.nix   Flake entry point
+├── flake.nix   Flake entry point, with the two inputs every host is built on
 └── hosts.nix   Host builder (auto-discovers hosts/ subdirectories)
 ```
 
@@ -28,6 +28,35 @@ nixos/
 A folder under `hosts/` is a host, found by `hosts.nix`, and gets every shared module of `core/`, `apps/` and `modules/` with its options off until the host turns them on.
 A host that wants some of them not loaded at all lists them in `hosts/NAME/_without.nix`, as `[ "modules/stylix" "apps/social" ]`.
 Such a host is then built as a fork would be that deleted those folders, and whatever they depend on is never fetched for it.
+
+## Inputs
+
+`flake.nix` holds only nixpkgs and home-manager.
+Whatever else a folder needs it declares itself, in an `_inputs.nix` written as the entry would stand in `flake.nix`, and the `_inputs.lock` beside it holds the revisions:
+
+```nix
+# apps/browsers/zen/_inputs.nix
+{
+  zen-browser = {
+    url = "github:0xc000022070/zen-browser-flake";
+    inputs = {
+      nixpkgs.follows = "nixpkgs";
+      home-manager.follows = "home-manager";
+    };
+  };
+}
+```
+
+Modules read such an input as any other, as `inputs.zen-browser`, and it is fetched only once one of them does.
+A `follows` may point at an input of `flake.nix` or at one of the same folder, and a name is declared by one folder only.
+Deleting a folder deletes what it declared, and a host's own folder may declare inputs that only it gets.
+
+- `nix run .#inputs -- list` lists them with their folder, revision and date.
+- `nix run .#inputs -- lock` writes the locks that are missing or no longer fit, and moves nothing that is locked.
+- `nix run .#inputs -- update [NAME...]` moves the named ones, or all, to what their source has now.
+- `nix flake update` moves the two of `flake.nix` and nothing else.
+
+`pin` works on both kinds, so `pin update` updates everything that is not pinned or frozen.
 
 ## Host: Quanta
 

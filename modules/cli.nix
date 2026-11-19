@@ -135,12 +135,18 @@ in
     ];
 
     environment.etc."nixos-sources.json".text = builtins.toJSON {
-      inputs = builtins.hashFile "sha256" "${inputs.self}/flake.lock";
+      # Every lock counts as inputs: flake.lock, and the _inputs.lock of each folder that declares its own.
+      inputs = builtins.hashString "sha256" (
+        lib.concatMapStrings (lock: builtins.hashFile "sha256" lock) (
+          [ "${inputs.self}/flake.lock" ]
+          ++ builtins.filter (file: baseNameOf (toString file) == "_inputs.lock") (lib.filesystem.listFilesRecursive inputs.self)
+        )
+      );
       config = builtins.unsafeDiscardStringContext "${
         builtins.path {
           path = inputs.self;
           name = "config-source";
-          filter = path: _: !(lib.elem (baseNameOf path) [ "flake.lock" "pins.json" ]);
+          filter = path: _: !(lib.elem (baseNameOf path) [ "flake.lock" "_inputs.lock" "pins.json" ]);
         }
       }";
     };

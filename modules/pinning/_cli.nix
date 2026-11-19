@@ -28,6 +28,7 @@ writeShellApplication {
     nix
     fzf
     git
+    util.flakeInputs
   ];
 
   text = ''
@@ -53,18 +54,73 @@ writeShellApplication {
       fi
     }
 
-    lock_file() { cat "$FLAKE_PATH/flake.lock"; }
+    # The inputs of flake.nix are locked in flake.lock. What a folder declares for itself, in its _inputs.nix, is locked in the _inputs.lock beside it.
+    core_inputs() {
+      jq -r '.nodes[.root].inputs | keys[]' "$FLAKE_PATH/flake.lock"
+    }
+
+    is_core_input() {
+      core_inputs | grep -qxF -- "$1"
+    }
+
+    folder_locks() {
+      git -C "$FLAKE_PATH" ls-files --cached --others --exclude-standard -- '_inputs.lock' '*/_inputs.lock' 2>/dev/null \
+        | while IFS= read -r f; do echo "$FLAKE_PATH/$f"; done
+    }
+
+    # A folder's lock names the inputs of flake.nix too, for what follows them, and those are not its own.
+    folder_inputs() {
+      local core lock
+      core=$(core_inputs | jq -R . | jq -s .)
+      while IFS= read -r lock; do
+        jq -r --argjson core "$core" '.nodes[.root].inputs | keys - $core | .[]' "$lock"
+      done < <(folder_locks)
+    }
+
+    lock_of() {
+      local input="$1" lock
+      if is_core_input "$input"; then
+        echo "$FLAKE_PATH/flake.lock"
+        return 0
+      fi
+      while IFS= read -r lock; do
+        if jq -e --arg i "$input" '.nodes[.root].inputs | has($i)' "$lock" > /dev/null; then
+          echo "$lock"
+          return 0
+        fi
+      done < <(folder_locks)
+      return 1
+    }
 
     get_direct_inputs() {
-      lock_file | jq -r '.nodes[.root].inputs | keys[]' | sort
+      { core_inputs; folder_inputs; } | sort -u
     }
 
     get_locked_node() {
       local input="$1"
-      local node_key
-      node_key=$(lock_file | jq -r --arg i "$input" '.nodes[.root].inputs[$i] // empty | strings')
+      local lock node_key
+      lock=$(lock_of "$input") || return 1
+      node_key=$(jq -r --arg i "$input" '.nodes[.root].inputs[$i] // empty | strings' "$lock")
       [[ -n "$node_key" ]] || return 1
-      lock_file | jq --arg k "$node_key" '.nodes[$k]'
+      jq --arg k "$node_key" '.nodes[$k]' "$lock"
+    }
+
+    lock_input_to() {
+      local input="$1" ref="$2"
+      if is_core_input "$input"; then
+        nix flake lock "$FLAKE_PATH" --override-input "$input" "$ref"
+      else
+        flake-inputs --flake "$FLAKE_PATH" set "$input" "$ref"
+      fi
+    }
+
+    update_input() {
+      local input="$1"
+      if is_core_input "$input"; then
+        nix flake update "$input" --flake "$FLAKE_PATH"
+      else
+        flake-inputs --flake "$FLAKE_PATH" update "$input"
+      fi
     }
 
     get_locked_rev() {
@@ -208,7 +264,7 @@ writeShellApplication {
           warn "Skipping ''${bold}$pi''${reset}: could not construct a locked ref (stale pin?)"
           continue
         fi
-        nix flake lock "$FLAKE_PATH" --override-input "$pi" "$ref"
+        lock_input_to "$pi" "$ref"
         ok "Restored ''${bold}$pi''${reset} ($pt @ ''${pr:0:12})"
       done <<< "$pinned_inputs"
     }
@@ -366,7 +422,7 @@ writeShellApplication {
       info "Locking ''${bold}$input''${reset} to rev ''${cyan}''${rev:0:12}''${reset}..."
       local ref
       ref=$(get_input_ref_with_rev "$input" "$rev")
-      nix flake lock "$FLAKE_PATH" --override-input "$input" "$ref"
+      lock_input_to "$input" "$ref"
 
       set_pin "$input" "pinned" "$rev" "$reason"
 
@@ -429,7 +485,7 @@ writeShellApplication {
             info "[dry-run] Would update: $inp"
           else
             info "Updating ''${bold}$inp''${reset}..."
-            nix flake update "$inp" --flake "$FLAKE_PATH"
+            update_input "$inp"
             ok "Updated $inp"
           fi
         done
@@ -451,12 +507,32 @@ writeShellApplication {
 
         info "Updating all flake inputs..."
         nix flake update --flake "$FLAKE_PATH"
+
+        # A folder's inputs are updated by name, so one that is pinned or frozen is simply not among them.
+        local moving=() fi_name
+        while IFS= read -r fi_name; do
+          [[ -n "$fi_name" ]] || continue
+          if [[ -z "$(get_pin_type "$fi_name")" ]]; then
+            moving+=("$fi_name")
+          fi
+        done < <(folder_inputs)
+        if [[ ''${#moving[@]} -gt 0 ]]; then
+          flake-inputs --flake "$FLAKE_PATH" update "''${moving[@]}"
+        fi
         ok "Flake inputs updated"
 
-        if [[ -n "$pinned_inputs" ]]; then
+        # The update of flake.lock moves every input of flake.nix, so the pinned ones among those are put back.
+        local pinned_core="" pc
+        while IFS= read -r pc; do
+          if [[ -n "$pc" ]] && is_core_input "$pc"; then
+            pinned_core+="$pc"$'\n'
+          fi
+        done <<< "$pinned_inputs"
+        pinned_core="''${pinned_core%$'\n'}"
+        if [[ -n "$pinned_core" ]]; then
           echo
           info "Restoring pinned/frozen inputs..."
-          restore_pinned_inputs "$pinned_inputs"
+          restore_pinned_inputs "$pinned_core"
         fi
       fi
 
@@ -711,7 +787,7 @@ writeShellApplication {
         info "Restoring ''${bold}$input''${reset} to $pin_type rev ''${cyan}''${pin_rev:0:12}''${reset}..."
         local ref
         ref=$(get_input_ref_with_rev "$input" "$pin_rev")
-        nix flake lock "$FLAKE_PATH" --override-input "$input" "$ref"
+        lock_input_to "$input" "$ref"
         ok "Restored $input"
       else
         local pinned_inputs

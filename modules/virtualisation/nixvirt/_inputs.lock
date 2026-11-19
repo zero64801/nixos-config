@@ -1,0 +1,33 @@
+{
+  "nodes": {
+    "nixvirt": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1791744226,
+        "narHash": "sha256-zQk2GSBO4hkq75PbtpgJHwupFHD0qaQDJiP15GTmstQ=",
+        "owner": "AshleyYakeley",
+        "repo": "NixVirt",
+        "rev": "11e2b2c0492aeff3fe3dea9000832d7694c47dfe",
+        "type": "github"
+      },
+      "original": {
+        "owner": "AshleyYakeley",
+        "repo": "NixVirt",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "home-manager": "home-manager",
+        "nixpkgs": "nixpkgs",
+        "nixvirt": "nixvirt"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

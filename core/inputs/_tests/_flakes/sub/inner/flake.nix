@@ -1,0 +1,5 @@
+{
+  outputs = _: {
+    name = "inner";
+  };
+}
