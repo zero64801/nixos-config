@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  inherit (lib) mkEnableOption mkIf mkOption types concatStringsSep concatMapStringsSep escapeShellArg;
+  inherit (lib) mkEnableOption mkIf mkOption types concatStringsSep escapeShellArg;
 
   cfg = config.my.virtualisation.gpuMode;
   vfioCfg = config.my.virtualisation.desktop.vfio;
@@ -48,7 +48,7 @@ let
   effectiveMode = dom: name:
     let
       base = cfg.modes.${name};
-      o = (cfg.domains.${dom}.modes.${name} or { });
+      o = cfg.domains.${dom}.modes.${name} or { };
       pick = field: if (o.${field} or null) == null then base.${field} else o.${field};
     in {
       stripHostdevs = pick "stripHostdevs";
