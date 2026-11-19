@@ -5,6 +5,7 @@ usage: pdb-symbol-gateway SOCKET CACHE [SERVER]
 A request is one line, "NAME.pdb GUIDAGE". The answer is the length in bytes on a line, then the file, or 0 for none.
 Nothing but a file name and an identifier of the expected shape leaves through here, and nothing but that file comes back.
 """
+import http.client
 import os
 import re
 import socketserver
@@ -44,7 +45,7 @@ class Request(socketserver.StreamRequestHandler):
             name, identifier = match.group(1).decode(), match.group(2).decode().upper()
             try:
                 data = symbol(name, identifier)
-            except Exception as error:
+            except (OSError, ValueError, http.client.HTTPException) as error:
                 print(f"symbol gateway: {name} {identifier}: {error}", file=sys.stderr)
         self.wfile.write(b"%d\n" % len(data) + data)
 
