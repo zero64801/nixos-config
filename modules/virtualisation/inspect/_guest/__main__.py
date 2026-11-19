@@ -206,7 +206,7 @@ def main():
         agent.agent(parser.parse_args(sys.argv[2:]))
     elif tool == "mark":
         parser = argparse.ArgumentParser(prog="guest-mark",
-                                         description="Mark this moment in what the session records, so that a reader of it can show what happened "
+                                         description="Mark this moment in what the session records, for guest-net and guest-usb to show what happened "
                                                      "before, after or between marks. The session has to be opened with --net or --usb.")
         parser.add_argument("label", help="a name for the moment, up to 120 plain characters")
         args = parser.parse_args(sys.argv[2:])

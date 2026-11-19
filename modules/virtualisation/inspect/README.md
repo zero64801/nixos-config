@@ -47,6 +47,7 @@ Tools add to a capture only through the session's control socket, which takes a 
 `$VM_INSPECT_CAPTURE` names the folder, in a program that joins the session too.
 A session writes at most `my.virtualisation.inspect.capture.limit` bytes, 4 GiB by default, and stops recording when less than 512 MiB are left on the disk.
 Captures are kept until they are deleted.
+`guest-net` and `guest-usb` of `../lab` read them.
 
 ## The guest tools
 

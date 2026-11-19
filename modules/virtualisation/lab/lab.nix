@@ -141,6 +141,10 @@ let
       guestGdb
       guestPs
       (pkgs.callPackage ./_guest-dbg/guest-dbg.nix { inherit (inspect) memprocfs; })
+      (pkgs.callPackage ./_capture/capture.nix {
+        inherit labBox;
+        inherit (inspect) memprocfs;
+      })
       labBox
       inspect.guestTools
     ]
@@ -218,8 +222,8 @@ let
           ''
       }
       echo "  --control  let the session send keys and pointer events to the guest and talk to the agent in it"
-      echo "  --net      record what the guest sends and gets over its network"
-      echo "  --usb      record the traffic of the USB devices passed to the guest"
+      echo "  --net      record what the guest sends and gets over its network, read with guest-net"
+      echo "  --usb      record the traffic of the USB devices passed to the guest, read with guest-usb"
       echo "  --plug     pass a USB device of this system to the guest for the session, as 046d:c52b or by its place as 3-1.4"
       echo "  --join     only enter a session that is open already, and open none"
       ${lib.concatStrings (lib.mapAttrsToList (name: mode: ''
@@ -237,7 +241,11 @@ let
       echo "                or with --window of one window as the guest draws it, and with --crop a part of either"
       echo "  guest-input   keys and pointer events for the guest, in a session opened with --control"
       echo "  guest-agent   one command for the agent in the guest, in a session opened with --control"
-      echo "  guest-mark    mark a moment in what the session records"
+      echo "  guest-net     what the guest sent and got over its network, in a session opened with --net: flows, names,"
+      echo "                HTTP, TLS, streams, which program each connection was, decrypted with the TLS keys it has"
+      echo "  guest-usb     what passed between the guest and its USB devices, in a session opened with --usb: transfers,"
+      echo "                control requests, reports, HID descriptors, what changed between two marks"
+      echo "  guest-mark    mark a moment in what the session records, for guest-net and guest-usb"
       echo "  guest-exec    a program in the guest, as its logged in user with --as-user, left to run with --job"
       echo "  guest-py      a Python script of this side with the Python the guest has, with the same options"
       echo "  guest-job, guest-wait, guest-windows"

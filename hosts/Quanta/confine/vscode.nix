@@ -109,6 +109,7 @@ in
           ++ lib.optionals withInspect [
             "xdg-run/vm-inspect"
             "/run/vm-inspect"
+            "xdg-state/vm-inspect/captures"
           ]
           ++ lib.optional studio.enable "xdg-run/${dirOf studio.socket}";
       };
