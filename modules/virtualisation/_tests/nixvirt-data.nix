@@ -1,9 +1,11 @@
-# nix build --impure --no-link -L --expr 'import ./modules/virtualisation/_tests/nixvirt-data.nix { }'
+# nix build --no-link -L .#tests.virtualisation.nixvirt-data
 {
-  pkgs ? import <nixpkgs> { },
+  host,
 }:
 
 let
+  inherit (host) pkgs;
+
   # Each part builds its own disks, so the three run side by side.
   part =
     name:

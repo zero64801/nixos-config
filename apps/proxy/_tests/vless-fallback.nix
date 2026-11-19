@@ -1,10 +1,11 @@
-# nix build --impure --no-link -L --expr 'import ./apps/proxy/_tests/vless-fallback.nix { }'
+# nix build --no-link -L .#tests.proxy.vless-fallback
 # The tunnelled launcher against two real VLESS servers, which needs a tun device and a second machine.
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
   inherit (pkgs) lib;
 
   uuid = "11111111-2222-4333-8444-555555555555";
@@ -42,21 +43,12 @@ let
       inherit uuid;
     };
 
-  # What the module expects from the rest of a host, and an app standing in for Discord.
+  # An app standing in for Discord, whose own module is left out.
   client =
     fallbacks:
     { pkgs, ... }:
     {
-      imports = [
-        ../../confine/default.nix
-        ../vless-proxy.nix
-      ];
-
       options.my.apps.discord.enable = lib.mkEnableOption "the app the tunnelled launcher is added to";
-      options.hm = lib.mkOption {
-        type = lib.types.attrsOf lib.types.anything;
-        default = { };
-      };
 
       config = {
         boot.kernelModules = [ "tun" ];
@@ -65,10 +57,7 @@ let
           interface = "eth1";
         };
 
-        users.users.alice = {
-          isNormalUser = true;
-          linger = true;
-        };
+        users.users.alice.linger = true;
         environment.systemPackages = [ pkgs.curl ];
 
         environment.etc."vless/primary.json".text = outbound ports.primary;
@@ -95,8 +84,13 @@ let
       };
     };
 in
-pkgs.testers.runNixOSTest {
+host.boot {
   name = "vless-fallback";
+  needs = [
+    "apps/confine"
+    "apps/proxy/vless-proxy.nix"
+  ];
+  without = [ "apps/social/discord" ];
 
   nodes.server =
     { pkgs, ... }:
@@ -120,8 +114,8 @@ pkgs.testers.runNixOSTest {
         });
     };
 
-  nodes.machine = client [ "/etc/vless/fallback.json" ];
-  nodes.single = client [ ];
+  machines.machine = client [ "/etc/vless/fallback.json" ];
+  machines.single = client [ ];
 
   testScript = ''
     PAGE = "http://${serverAddress}:${toString ports.page}/"

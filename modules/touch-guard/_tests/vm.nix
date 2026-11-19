@@ -1,9 +1,11 @@
-# nix build --impure --no-link -L --expr 'import ./modules/touch-guard/_tests/vm.nix { }'
+# nix build --no-link -L .#tests.touch-guard.vm
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
+
   notifications = pkgs.writers.writePython3 "fake-notifications" {
     libraries = [ pkgs.python3Packages.dbus-fast ];
     flakeIgnore = [ "E501" "F821" "F722" ];
@@ -62,24 +64,13 @@ let
     asyncio.run(main())
   '';
 in
-pkgs.testers.runNixOSTest {
+host.boot {
   name = "touch-guard";
 
-  nodes.machine = {
-    imports = [
-      ../../../core/options.nix
-      ../../../core/sudo.nix
-      ../../../core/polkit.nix
-      ../default.nix
-    ];
-
-    my.security.touchGuard = {
-      enable = true;
-      user = "alice";
-    };
+  machines.machine = {
+    my.security.touchGuard.enable = true;
 
     users.users.alice = {
-      isNormalUser = true;
       extraGroups = [ "wheel" ];
       password = "pw";
       linger = true;

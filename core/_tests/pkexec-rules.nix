@@ -1,35 +1,29 @@
-# nix build --impure --no-link -L --expr 'import ./core/_tests/pkexec-rules.nix { }'
+# nix build --no-link -L .#tests.core.pkexec-rules
 {
-  pkgs ? (builtins.getFlake (toString ../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
   inherit (pkgs) lib;
 
   anyArgs = "${pkgs.hello}/bin/hello";
   listed = "${pkgs.coreutils}/bin/true";
 
   inherit
-    ((import (pkgs.path + "/nixos/lib/eval-config.nix") {
-      inherit (pkgs.stdenv.hostPlatform) system;
-      modules = [
-        ../pkexec.nix
+    (host.evaluate {
+      config.my.security.pkexecNoAuth = [
+        { program = anyArgs; }
         {
-          nixpkgs.pkgs = pkgs;
-          my.security.pkexecNoAuth = [
-            { program = anyArgs; }
-            {
-              program = listed;
-              args = [
-                [ "apply" "one" ]
-                [ "apply" "two" "--flag" ]
-                [ "stop" ]
-              ];
-            }
+          program = listed;
+          args = [
+            [ "apply" "one" ]
+            [ "apply" "two" "--flag" ]
+            [ "stop" ]
           ];
         }
       ];
-    }))
+    })
     config
     ;
 

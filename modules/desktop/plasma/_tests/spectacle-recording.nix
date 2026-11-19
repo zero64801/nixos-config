@@ -1,17 +1,16 @@
-# nix build --impure --no-link -L --expr 'import ./modules/desktop/plasma/_tests/spectacle-recording.nix { }'
+# nix build --no-link -L .#tests.plasma.spectacle-recording
 {
-  pkgs ? (builtins.getFlake (toString ../../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
-  recording ? true,
+  host,
 }:
 
-pkgs.testers.runNixOSTest {
+let
+  inherit (host) pkgs;
+in
+host.boot {
   name = "spectacle-recording";
 
-  nodes.machine = {
-    users.users.alice = {
-      isNormalUser = true;
-      uid = 1000;
-    };
+  machines.machine = {
+    users.users.alice.uid = 1000;
 
     services.getty.autologinUser = "alice";
     services.pipewire.enable = true;
@@ -24,7 +23,8 @@ pkgs.testers.runNixOSTest {
     '';
 
     environment.systemPackages = [
-      (pkgs.callPackage ../_spectacle.nix { inherit recording; })
+      # With false it is Spectacle as it comes, which this test fails on.
+      (pkgs.callPackage ../_spectacle.nix { recording = true; })
       pkgs.kdePackages.kwin
       pkgs.ffmpeg-headless
       pkgs.foot

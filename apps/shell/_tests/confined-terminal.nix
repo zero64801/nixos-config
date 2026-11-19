@@ -1,11 +1,12 @@
-# nix build --impure --no-link -L --expr 'import ./apps/shell/_tests/confined-terminal.nix { }'
-# The confined command in a real session, where a compositor and a sound server exist to be withheld or handed over,
-# and inside another sandbox, as an editor's terminal would start it, with a second machine to reach.
+# nix build --no-link -L .#tests.shell.confined-terminal
+# The confined command in a real session, where a compositor and a sound server exist to be withheld or handed over, and inside another sandbox, as an editor's terminal would start it, with a second machine to reach.
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
+
   swayConfig = pkgs.writeText "sway-config" ''
     output HEADLESS-1 resolution 1280x720
   '';
@@ -14,8 +15,12 @@ let
     ${pkgs.sway-unwrapped}/bin/swaymsg -t get_tree | ${pkgs.jq}/bin/jq -r '.. | .app_id? | strings'
   '';
 in
-pkgs.testers.runNixOSTest {
+host.boot {
   name = "confined-terminal";
+  needs = [
+    "apps/confine"
+    "apps/shell/confined-terminal.nix"
+  ];
 
   nodes.server = {
     networking.firewall.allowedTCPPorts = [ 80 ];
@@ -28,11 +33,9 @@ pkgs.testers.runNixOSTest {
     };
   };
 
-  nodes.machine =
+  machines.machine =
     { config, lib, pkgs, ... }:
     {
-      imports = [ ../../confine/default.nix ];
-
       virtualisation.memorySize = 2048;
       hardware.graphics.enable = true;
       boot.kernelModules = [ "tun" ];
@@ -42,9 +45,13 @@ pkgs.testers.runNixOSTest {
       };
 
       users.users.alice = {
-        isNormalUser = true;
         uid = 1000;
         linger = true;
+      };
+
+      my.apps.confinedTerminal = {
+        enable = true;
+        tint = null;
       };
 
       services.pipewire = {
@@ -67,10 +74,6 @@ pkgs.testers.runNixOSTest {
         pkgs.pulseaudio
         pkgs.curl
         pkgs.python3
-        (pkgs.callPackage ../_confined-terminal.nix { inherit (config.confine.lib) wrap; } {
-          scratchDir = "Sandbox";
-          tint = null;
-        })
       ]
       # Sandboxes to start the command from: confine-editor without the tun device and confine-editor-with-tun with it.
       ++ lib.mapAttrsToList

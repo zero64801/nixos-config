@@ -1,31 +1,29 @@
-# nix build --impure --no-link -L --expr 'import ./core/_tests/kernel.nix { }'
+# nix build --no-link -L .#tests.core.kernel
 {
-  pkgs ? (builtins.getFlake (toString ../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
+
   # N_HDLC, a line discipline no terminal starts with.
   switchDiscipline = pkgs.writeText "switch-discipline.py" ''
     import fcntl, pty, struct, termios
     fcntl.ioctl(pty.openpty()[1], termios.TIOCSETD, struct.pack("i", 13))
   '';
 in
-pkgs.testers.runNixOSTest {
+host.boot {
   name = "kernel-restrictions";
 
-  defaults = {
-    imports = [ ../kernel.nix ];
-    users.users.alice.isNormalUser = true;
-    environment.systemPackages = [
-      pkgs.iproute2
-      pkgs.python3
-    ];
-  };
+  defaults.environment.systemPackages = [
+    pkgs.iproute2
+    pkgs.python3
+  ];
 
   # The kernel as it comes, to show that what the other machine refuses is reachable.
-  nodes.stock.boot.kernel.sysctl."dev.tty.ldisc_autoload" = 1;
+  machines.stock.boot.kernel.sysctl."dev.tty.ldisc_autoload" = 1;
 
-  nodes.restricted.my.security.restrictTrafficControl = {
+  machines.restricted.my.security.restrictTrafficControl = {
     enable = true;
     keep = [ "sch_htb" ];
   };

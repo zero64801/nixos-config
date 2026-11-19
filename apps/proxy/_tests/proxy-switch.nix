@@ -1,10 +1,11 @@
-# nix build --impure --no-link -L --expr 'import ./apps/proxy/_tests/proxy-switch.nix { }'
+# nix build --no-link -L .#tests.proxy.proxy-switch
 # The switch, started by its sockets, against a real VLESS server and a real WireGuard peer, told apart by the address the page sees.
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
   inherit (pkgs) lib;
 
   uuid = "11111111-2222-4333-8444-555555555555";
@@ -46,8 +47,14 @@ let
     }
   );
 in
-pkgs.testers.runNixOSTest {
+host.boot {
   name = "proxy-switch";
+  needs = [
+    "apps/confine"
+    "apps/proxy/proxy-switch.nix"
+    "apps/proxy/vless-proxy.nix"
+    "apps/proxy/wg-proxy.nix"
+  ];
 
   nodes.server =
     { pkgs, ... }:
@@ -88,107 +95,83 @@ pkgs.testers.runNixOSTest {
       };
     };
 
-  nodes.machine =
+  machines.machine =
     { config, pkgs, ... }:
     {
-      imports = [
-        ../../confine/default.nix
-        ../vless-proxy.nix
-        ../wg-proxy.nix
-        ../proxy-switch.nix
-      ];
-
-      # What the modules expect from the rest of a host.
-      options.my.apps.discord.enable = lib.mkEnableOption "the app the tunnelled launcher is added to";
-      options.my.persistence.home.directories = lib.mkOption {
-        type = lib.types.listOf lib.types.anything;
-        default = [ ];
-      };
-      options.hm = lib.mkOption {
-        type = lib.types.attrsOf lib.types.anything;
-        default = { };
+      boot.kernelModules = [ "tun" ];
+      networking.defaultGateway = {
+        address = "192.168.1.254";
+        interface = "eth1";
       };
 
-      config = {
-        boot.kernelModules = [ "tun" ];
-        networking.defaultGateway = {
-          address = "192.168.1.254";
-          interface = "eth1";
-        };
+      users.users.alice.linger = true;
+      environment.systemPackages = [ pkgs.curl ];
 
-        users.users.alice = {
-          isNormalUser = true;
-          linger = true;
-        };
-        environment.systemPackages = [ pkgs.curl ];
+      environment.etc."proxies/vless.json".text = builtins.toJSON {
+        type = "vless";
+        server = serverAddress;
+        server_port = ports.vless;
+        inherit uuid;
+      };
+      environment.etc."proxies/wg.json".text = builtins.toJSON {
+        type = "wireguard";
+        address = [ "${tunnelClient}/32" ];
+        private_key = keys.client.private;
+        peers = [
+          {
+            address = serverAddress;
+            port = ports.wireguard;
+            public_key = keys.server.public;
+            allowed_ips = [ "0.0.0.0/0" ];
+          }
+        ];
+      };
 
-        environment.etc."proxies/vless.json".text = builtins.toJSON {
-          type = "vless";
-          server = serverAddress;
-          server_port = ports.vless;
-          inherit uuid;
-        };
-        environment.etc."proxies/wg.json".text = builtins.toJSON {
-          type = "wireguard";
-          address = [ "${tunnelClient}/32" ];
-          private_key = keys.client.private;
-          peers = [
-            {
-              address = serverAddress;
-              port = ports.wireguard;
-              public_key = keys.server.public;
-              allowed_ips = [ "0.0.0.0/0" ];
-            }
-          ];
-        };
-
-        my.apps.vlessProxy = {
-          enable = true;
-          outboundFile = "/etc/proxies/vless.json";
-          socks.idleTimeout = idle;
-        };
-        my.apps.wgProxy = {
-          enable = true;
-          endpointFile = "/etc/proxies/wg.json";
-          tunnelDns = tunnelServer;
+      my.apps.vlessProxy = {
+        enable = true;
+        outboundFile = "/etc/proxies/vless.json";
+        socks.idleTimeout = idle;
+      };
+      my.apps.wgProxy = {
+        enable = true;
+        endpointFile = "/etc/proxies/wg.json";
+        tunnelDns = tunnelServer;
+        idleTimeout = idle;
+      };
+      my.apps.proxySwitch.switches = {
+        main = {
+          port = 2082;
+          controlPort = 2083;
+          command = "test-route";
           idleTimeout = idle;
         };
-        my.apps.proxySwitch.switches = {
-          main = {
-            port = 2082;
-            controlPort = 2083;
-            command = "test-route";
-            idleTimeout = idle;
-          };
-          other = {
-            port = 2084;
-            controlPort = 2085;
-            idleTimeout = idle;
-          };
-        };
-
-        # A service on the loopback of the machine the switch runs on, which no route may hand out.
-        networking.hosts."127.0.0.1" = [ "loop.test" ];
-        systemd.services.local-page = {
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 -I ${./whoami_page.py} ${toString ports.local} 127.0.0.1";
-        };
-
-        confine.apps.switcher = {
-          package = pkgs.bash;
-          binaries = [ "bash" ];
-          binPrefix = "switcher-";
-          appId = "com.test.Switcher";
-          network = "isolated";
-          networkPorts.toHost = with config.my.apps.proxySwitch.switches.main; [
-            port
-            controlPort
-          ];
-          binds.ro = [ "xdg-run/proxy-switch/main" ];
+        other = {
+          port = 2084;
+          controlPort = 2085;
+          idleTimeout = idle;
         };
       };
-    };
 
+      # A service on the loopback of the machine the switch runs on, which no route may hand out.
+      networking.hosts."127.0.0.1" = [ "loop.test" ];
+      systemd.services.local-page = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 -I ${./whoami_page.py} ${toString ports.local} 127.0.0.1";
+      };
+
+      confine.apps.switcher = {
+        package = pkgs.bash;
+        binaries = [ "bash" ];
+        binPrefix = "switcher-";
+        appId = "com.test.Switcher";
+        network = "isolated";
+        networkPorts.toHost = with config.my.apps.proxySwitch.switches.main; [
+          port
+          controlPort
+        ];
+        binds.ro = [ "xdg-run/proxy-switch/main" ];
+      };
+    };
 
   testScript =
     { nodes, ... }:

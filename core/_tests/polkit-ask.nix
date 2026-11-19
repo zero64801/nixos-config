@@ -1,29 +1,28 @@
-# nix build --impure --no-link -L --expr 'import ./core/_tests/polkit-ask.nix { }'
+# nix build --no-link -L .#tests.core.polkit-ask
 {
-  pkgs ? (builtins.getFlake (toString ../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
-pkgs.testers.runNixOSTest {
+let
+  inherit (host) pkgs;
+in
+host.boot {
   name = "polkit-ask-admin";
 
   defaults = {
-    imports = [ ../polkit.nix ];
     security.polkit.enable = true;
     # Their policies and the rule files they install are what the option has to answer before.
     environment.systemPackages = [
       pkgs.flatpak
       pkgs.udisks2
     ];
-    users.users.alice = {
-      isNormalUser = true;
-      extraGroups = [ "wheel" ];
-    };
+    users.users.alice.extraGroups = [ "wheel" ];
     # A session that is active and local, the kind the packages let through.
     services.getty.autologinUser = "alice";
   };
 
-  nodes.stock.my.security.polkitAskAdmin = [ ];
-  nodes.asking = { };
+  machines.stock.my.security.polkitAskAdmin = pkgs.lib.mkForce [ ];
+  machines.asking = { };
 
   testScript = ''
     start_all()

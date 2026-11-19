@@ -1,10 +1,10 @@
-# nix build --impure --no-link -L --expr 'import ./modules/virtualisation/_tests/nixvirt-snapshot-menu.nix { }'
+# nix build --no-link -L .#tests.virtualisation.nixvirt-snapshot-menu
 {
-  flake ? builtins.getFlake (toString ../../..),
-  pkgs ? flake.inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
   inherit (pkgs) lib;
 
   # First on the tool's PATH: a virsh that answers only on the read only connection, and a sudo that records its command.
@@ -56,23 +56,12 @@ let
   };
 
   inherit
-    ((import (pkgs.path + "/nixos/lib/eval-config.nix") {
-      inherit (pkgs.stdenv.hostPlatform) system;
-      specialArgs.inputs = flake.inputs;
-      modules = [
-        ../nixvirt.nix
-        {
-          # Stands in for the module left out, which nixvirt.nix writes to.
-          options.my.virtualisation.base.networkIsolation.extraInputRules = lib.mkOption { default = ""; };
-
-          config = {
-            nixpkgs.pkgs = pkgs;
-            virtualisation.libvirtd.package = fakeLibvirt;
-            my.virtualisation.nixvirt.enable = true;
-          };
-        }
-      ];
-    }))
+    (host.evaluate {
+      config = {
+        virtualisation.libvirtd.package = fakeLibvirt;
+        my.virtualisation.nixvirt.enable = true;
+      };
+    })
     config
     ;
 
