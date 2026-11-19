@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.core.pkexec-rules
+# nix build --no-link -L .#tests.pkexec.pkexec-rules
 {
   host,
 }:

@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.proxy.vless-fallback
+# nix build --no-link -L .#tests.vless-proxy.vless-fallback
 # The tunnelled launcher against two real VLESS servers, which needs a tun device and a second machine.
 {
   host,
@@ -86,10 +86,7 @@ let
 in
 host.boot {
   name = "vless-fallback";
-  needs = [
-    "apps/confine"
-    "apps/proxy/vless-proxy.nix"
-  ];
+  needs = [ "apps/confine" ];
   without = [ "apps/social/discord" ];
 
   nodes.server =

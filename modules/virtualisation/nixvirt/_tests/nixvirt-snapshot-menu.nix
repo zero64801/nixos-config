@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.virtualisation.nixvirt-snapshot-menu
+# nix build --no-link -L .#tests.nixvirt.nixvirt-snapshot-menu
 {
   host,
 }:

@@ -1,4 +1,4 @@
-# nix build --no-link .#tests.proxy.vless-bare
+# nix build --no-link .#tests.vless-proxy.bare
 # The VLESS proxy turned on in a fork that deleted the app its launcher is for, or the sandbox that launcher tunnels from.
 {
   host,
@@ -12,12 +12,12 @@ let
 in
 host.bare [
   {
-    on = [ "apps/proxy/vless-proxy.nix" ];
+    on = [ "apps/proxy/vless-proxy" ];
     gone = "apps/social/discord";
     inherit config;
   }
   {
-    on = [ "apps/proxy/vless-proxy.nix" ];
+    on = [ "apps/proxy/vless-proxy" ];
     gone = "apps/confine";
     inherit config;
   }

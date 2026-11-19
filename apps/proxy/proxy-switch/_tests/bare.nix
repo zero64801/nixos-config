@@ -1,4 +1,4 @@
-# nix build --no-link .#tests.proxy.switch-bare
+# nix build --no-link .#tests.proxy-switch.bare
 # The proxy switch turned on in a fork that deleted one of the two proxies it routes through.
 {
   host,
@@ -21,10 +21,10 @@ in
 host.bare [
   {
     on = [
-      "apps/proxy/proxy-switch.nix"
+      "apps/proxy/proxy-switch"
       "apps/proxy/wg-proxy.nix"
     ];
-    gone = "apps/proxy/vless-proxy.nix";
+    gone = "apps/proxy/vless-proxy";
     config.imports = [
       switch
       wg
@@ -32,8 +32,8 @@ host.bare [
   }
   {
     on = [
-      "apps/proxy/proxy-switch.nix"
-      "apps/proxy/vless-proxy.nix"
+      "apps/proxy/proxy-switch"
+      "apps/proxy/vless-proxy"
     ];
     gone = "apps/proxy/wg-proxy.nix";
     config.imports = [

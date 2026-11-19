@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.shell.confined-terminal
+# nix build --no-link -L .#tests.confined-terminal.confined-terminal
 # The confined command in a real session, where a compositor and a sound server exist to be withheld or handed over, and inside another sandbox, as an editor's terminal would start it, with a second machine to reach.
 {
   host,
@@ -17,10 +17,7 @@ let
 in
 host.boot {
   name = "confined-terminal";
-  needs = [
-    "apps/confine"
-    "apps/shell/confined-terminal.nix"
-  ];
+  needs = [ "apps/confine" ];
 
   nodes.server = {
     networking.firewall.allowedTCPPorts = [ 80 ];

@@ -5,7 +5,7 @@ let
   # Either proxy's module may be gone, which leaves no route through it.
   vless = config.my.apps.vlessProxy or { enable = false; };
   wg = config.my.apps.wgProxy or { enable = false; };
-  onDemand = import ./_on-demand.nix {
+  onDemand = import ../_on-demand.nix {
     inherit lib pkgs;
     systemd = config.systemd.package;
   };

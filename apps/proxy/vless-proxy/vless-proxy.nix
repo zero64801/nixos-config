@@ -2,7 +2,7 @@
 
 let
   cfg = config.my.apps.vlessProxy;
-  onDemand = import ./_on-demand.nix {
+  onDemand = import ../_on-demand.nix {
     inherit lib pkgs;
     systemd = config.systemd.package;
   };

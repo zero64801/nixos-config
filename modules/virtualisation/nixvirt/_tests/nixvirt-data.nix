@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.virtualisation.nixvirt-data
+# nix build --no-link -L .#tests.nixvirt.nixvirt-data
 {
   host,
 }:

@@ -14,7 +14,7 @@ let
     "modules/impermanence"
     "modules/persistence.nix"
     "modules/virtualisation/base.nix"
-    "modules/virtualisation/nixvirt.nix"
+    "modules/virtualisation/nixvirt"
   ];
 
   # Each thing a fork can delete: a folder, and each module file of a folder that only gathers things.

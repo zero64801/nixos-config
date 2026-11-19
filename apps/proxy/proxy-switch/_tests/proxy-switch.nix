@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.proxy.proxy-switch
+# nix build --no-link -L .#tests.proxy-switch.proxy-switch
 # The switch, started by its sockets, against a real VLESS server and a real WireGuard peer, told apart by the address the page sees.
 {
   host,
@@ -51,8 +51,7 @@ host.boot {
   name = "proxy-switch";
   needs = [
     "apps/confine"
-    "apps/proxy/proxy-switch.nix"
-    "apps/proxy/vless-proxy.nix"
+    "apps/proxy/vless-proxy"
     "apps/proxy/wg-proxy.nix"
   ];
 

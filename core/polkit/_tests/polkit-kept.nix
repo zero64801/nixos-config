@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.core.polkit-kept
+# nix build --no-link -L .#tests.polkit.polkit-kept
 {
   host,
 }:

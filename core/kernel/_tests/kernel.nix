@@ -1,4 +1,4 @@
-# nix build --no-link -L .#tests.core.kernel
+# nix build --no-link -L .#tests.kernel.kernel
 {
   host,
 }:
