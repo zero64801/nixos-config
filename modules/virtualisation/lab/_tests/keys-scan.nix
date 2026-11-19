@@ -1,5 +1,5 @@
 # nix build --no-link -L .#tests.lab.keys-scan
-# guest-net keys scan on a guest without Windows: the secrets of two TLS connections the guest's openssl holds open, found in its RAM from outside, and those of a curl that connects while the scan follows the capture and is gone before they are checked. Each has to equal what the client itself wrote to its key log.
+# guest-net keys scan on a guest without Windows: the secrets of two TLS connections the guest's openssl holds open, found in its RAM from outside and in its own memory through its page map, and those of a curl that connects while the scan follows the capture and is gone before they are checked. Each has to equal what the client itself wrote to its key log.
 {
   host,
 }:
@@ -86,6 +86,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "guest-push ${held} /tmp/held.sh > /dev/null && guest-exec /bin/sh /tmp/held.sh > /dev/null",
           "echo == around; guest-net keys scan --physical",
           "echo == deep; guest-net keys scan --physical --deep",
+          "echo == process; guest-net keys scan --again",
           "echo == follow; (guest-net keys scan --follow --physical --pause --seconds 15 &"
           " sleep 3; guest-exec --shell 'SSLKEYLOGFILE=/tmp/short.log curl -sk --resolve tls.test:9443:10.9.9.1 https://tls.test:9443/' > /dev/null; wait)",
           "echo == held; guest-exec --shell 'cat /tmp/held1_3.log /tmp/held1_2.log'",
@@ -116,6 +117,11 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert len({line.split()[1] for line in held}) == 2 and len(held) == 3, section["held"]
           assert held <= found, f"missing {held - found}: {section['around']} {section['deep']}"
           assert re.search(r"TLS 1\.3  CLIENT_TRAFFIC_SECRET_0 at 0x[0-9a-f]+, SERVER_TRAFFIC_SECRET_0 at", section["around"]), section["around"]
+
+      with subtest("without --physical the program itself is read, through its page map, which finds TLS 1.2's secret as well"):
+          assert re.search(r"TLS 1\.3  CLIENT_TRAFFIC_SECRET_0 at 0x[0-9a-f]+, SERVER_TRAFFIC_SECRET_0 at", section["process"]), section["process"]
+          assert re.search(r"TLS 1\.2  CLIENT_RANDOM at 0x[0-9a-f]+", section["process"]), section["process"]
+          assert re.search(r"guest-net: openssl\[\d+\]: ", section["process"]), section["process"]
 
       with subtest("following the capture, curl's keys are found though curl is gone before they are checked"):
           assert len(short) == 2 and short <= found, f"missing {short - found}: {section['follow']}"

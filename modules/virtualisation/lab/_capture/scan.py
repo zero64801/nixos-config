@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -311,6 +312,69 @@ class Physical:
         for start, offset, length in self.map:
             yield start, self.base + offset, length
 
+    def at(self, address):
+        """Where a page of the guest's RAM is mapped on this side, or None."""
+        for start, offset, length in self.map:
+            if start <= address < start + length:
+                return self.base + offset + address - start
+        return None
+
+
+# Run by the agent in a guest that is not Windows: each writable mapping of the process, then the entries of its page map,
+# which name the physical page of each virtual one when read as root.
+PAGES = r"""
+pid=$1
+echo "name $(cat /proc/$pid/comm)"
+grep -E '^[0-9a-f]+-[0-9a-f]+ rw' /proc/$pid/maps | while read -r range rest; do
+  a=${range%-*}; b=${range#*-}
+  echo "range $a $b"
+  dd if=/proc/$pid/pagemap bs=8 skip=$((0x$a / 4096)) count=$(((0x$b - 0x$a) / 4096)) 2>/dev/null | od -An -v -tx8
+done
+"""
+PRESENT, FRAME = 1 << 63, (1 << 55) - 1
+
+
+class Pagemap:
+    """The present, writable pages of a process of a guest that is not Windows, found in its own /proc through the agent,
+    which the guest sees, and read from the RAM in the program's order, so that a secret split across two pages is whole."""
+
+    def __init__(self, ram, pid):
+        self.ram, self.pid, self.name = ram, pid, "?"
+
+    def __str__(self):
+        return f"{plain(self.name, 80)}[{self.pid}]"
+
+    def regions(self, budget):
+        done = subprocess.run(["guest-exec", "--timeout", "120", "--max", "256M", "/bin/sh", "-c", PAGES, "sh", str(self.pid)],
+                              capture_output=True, text=True, errors="replace", check=False)
+        if done.returncode != 0 or "range " not in done.stdout:
+            raise LookupError(f"the agent read no page map of process {self.pid}: {plain(done.stderr.strip()[-300:], 300)}")
+        spans, frames = [], None
+        for line in done.stdout.splitlines():
+            words = line.split()
+            if words[:1] == ["name"]:
+                self.name = " ".join(words[1:])
+            elif words[:1] == ["range"] and len(words) == 3:
+                frames = []
+                spans.append((int(words[1], 16), int(words[2], 16), frames))
+            elif frames is not None:
+                frames += [int(word, 16) for word in words if len(word) == 16]
+        found = []
+        for start, end, entries in spans:
+            if budget <= 0:
+                break
+            length = min(end - start, budget, len(entries) * PAGE)
+            buffer = bytearray(length)
+            for page, entry in enumerate(entries[: length // PAGE]):
+                where = self.ram.at((entry & FRAME) * PAGE) if entry & PRESENT and entry & FRAME else None
+                if where:
+                    ctypes.memmove(address(buffer) + page * PAGE, where, PAGE)
+            budget -= length
+            found.append((start, buffer, length))
+        if found and not any(any(entry & FRAME for entry in entries) for _, _, entries in spans):
+            raise LookupError("the page map names no physical pages, so the agent does not run as root")
+        return found
+
 
 def threads():
     return max(1, min(32, len(os.sched_getaffinity(0))))
@@ -368,6 +432,23 @@ def owner(flow, live):
     return None
 
 
+def linux(picked, args):
+    """The flows of a guest that is not Windows by the process each belongs to, as the guest's agent names them, each
+    process read through its page map."""
+    if not os.environ.get("VM_INSPECT_DIR"):
+        shared.fail("this needs an open session")
+    ram = Physical()
+    if args.process:
+        return [(Pagemap(ram, int(pid)), picked) for pid in args.process if pid.isdigit()] or shared.fail(
+            "in a guest that is not Windows --process takes process numbers")
+    live, by = owners.Agent().sample(), {}
+    for s in picked:
+        by.setdefault(owner(s.flow, live), []).append(s)
+    for s in by.pop(None, []):
+        print(f"{s.flow['id']}: its program is not known, owners --follow while it runs finds it, or --process names it", file=sys.stderr)
+    return [(Pagemap(ram, pid), group) for pid, group in by.items()]
+
+
 def run(capture, args, flows):
     scanner = Scanner(shared.SETTINGS.scan)
     if args.follow:
@@ -385,9 +466,11 @@ def run(capture, args, flows):
     else:
         try:
             memory = owners.Memory()
-        except (LookupError, OSError) as e:
-            shared.fail(f"{e}. Without Windows, --physical searches the guest's whole RAM")
-        if args.process:
+        except (LookupError, OSError):
+            memory = None
+        if memory is None:
+            groups = linux(picked, args)
+        elif args.process:
             pids = [memory.windows.pid(name) for name in args.process]
             groups = [(Process(memory.windows, pid), picked) for pid in pids]
         else:

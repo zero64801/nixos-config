@@ -62,10 +62,11 @@ The idea is that of X-Ray-TLS (Moriconi et al., 2024) and of DRAKVUF's tlsmon, h
 
 - One look: `keys scan` searches the program of each TLS flow of the capture that has no keys, as `owners` saw it or as the guest's memory shows it now, or the processes `--process` names.
   It finds the connections that are still open.
+  In a guest that is not Windows it reads the program through the guest's own `/proc/PID/pagemap`, by the agent, which needs `--control` and which the guest sees, and puts its pages together from the RAM in the program's order.
 - `keys scan --follow` copies the memory of each new flow's program a few milliseconds after its handshake, and checks the copy as the flow's records come in.
   This is the mode for browsers, which close most connections within a second and wipe their secrets.
   `--pause` holds the whole guest still while it copies, which catches nearly every connection, and takes the debug stub, which `keys schannel` and `guest-gdb` then cannot use.
-- `--physical` searches the guest's whole RAM instead of one program's memory, for a guest that is not Windows, around each client random.
+- `--physical` searches the guest's whole RAM instead of one program's memory, around each client random, without the agent, and is what `--follow` takes in a guest that is not Windows, since the agent cannot answer while the guest is held.
   `--deep` searches all of it, for secrets kept apart from the client random, as OpenSSL's of TLS 1.2 are.
 
 It finds the secrets of OpenSSL, BoringSSL, GnuTLS, NSS, mbedTLS, Go's crypto/tls and rustls, whatever the program is written in, since it looks for the secrets and not for a library's structures.
@@ -96,7 +97,7 @@ What it lists is what to send from Linux for the same effect.
 ## Limits
 
 - HTTP/3 shows as a QUIC flow with the name it asked for, and is not read further, and `keys scan` does not look for QUIC's secrets.
-- A secret that crosses a page boundary of the program's memory is in two places of the RAM, so `--physical` cannot find it, though a Windows guest's process memory can.
+- A secret that crosses a page boundary of the program's memory is in two places of the RAM, so `--physical` cannot find it, though the program's own memory, read through MemProcFS or the page map, can.
 - A TLS 1.3 connection whose keys were updated holds the newer secrets, which open no record of the start, so `keys scan` finds none of it.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.
 - Isochronous transfers, as of sound and cameras, are shown as transfers without their packets taken apart.
