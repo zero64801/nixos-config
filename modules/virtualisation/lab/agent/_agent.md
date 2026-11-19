@@ -128,6 +128,50 @@ Windows paths work with forward slashes (`C:/Windows/Temp/x.bin`), which saves q
 
 Everything in the tables for programs and files, and what the screen table says of windows and input, needs a session with control.
 
+### Network and USB
+
+A session records what the guest sends and gets only when the user opened it with `--net`, and the traffic of its USB devices with `--usb`.
+`$VM_INSPECT_CAPTURE` is the folder it records into, and `guest-net summary` says what it holds.
+Where the host deletes a capture with its session, read what you need while it is open and write your findings to `./out`.
+What a capture holds was sent or received by the guest: the readers run `tshark` inside `lab-box`, and a body or file they write to `./out` is guest data.
+
+| Tool | Use |
+|---|---|
+| `guest-mark LABEL` | Marks a moment. The readers take `--since LABEL` and `--until LABEL`, or seconds from the start. |
+| `guest-net summary`, `flows`, `dns` | What the capture holds, every TCP and UDP flow with its ends, names, bytes each way and program, the names looked up. |
+| `guest-net http [ID]` | The requests of HTTP/1 and HTTP/2, their answers and how long each took, or one in full: headers and bodies both ways, undone of gzip, deflate, brotli and zstd, JSON laid out. `--save NAME` writes the bodies to `./out`. |
+| `guest-net tls`, `stream ID` | Each handshake and whether the keys open it, what went each way in one flow (`--decrypted`, `--hex`). |
+| `guest-net packets FILTER`, `tshark ARGS`, `export` | Wireshark's display filters, any tshark options on the capture, a copy with its keys into `./out`. |
+| `guest-net watch` | Names, requests and handshakes as they happen. |
+| `guest-net owners --follow` | Which program each connection belongs to, read from a Windows guest's memory or asked of the agent elsewhere. |
+| `guest-net keys pull PATH` | A key log a program in the guest wrote, as Edge or Chrome do with `SSLKEYLOGFILE` set in a `guest-exec --powershell` script. |
+| `guest-net keys scan` | The TLS and QUIC secrets of any program, found in its memory from outside and kept only when they open the flow's own records. |
+| `guest-net keys schannel --seconds N` | The secrets of Windows' own TLS (PowerShell, .NET, the system's services), read from `lsass`. |
+| `guest-usb devices`, `urbs`, `control`, `reports`, `hid`, `changes A B` | The guest's USB devices, their transfers, control requests, report descriptors, and what changed between two marks. |
+
+`keys scan` works on OpenSSL, BoringSSL, GnuTLS, NSS, mbedTLS, Go and rustls, TLS 1.0 to 1.3 and QUIC:
+
+- On its own it searches the programs whose connections are open now: through MemProcFS in Windows, through the guest's page map by the agent elsewhere.
+- `--follow --pause` copies each new connection's program a few milliseconds after its handshake, with the guest held still for each copy, about 50 ms for a browser.
+  Browsers close most connections and wipe their secrets within a second, so this is the mode for them and for anything short lived.
+- `--physical` searches the whole RAM around each client random, `--deep` all of it, and `--process` names programs to search.
+- It says why a flow was not found: closed before its program was seen, or no secrets in the copy.
+
+To watch a program from its start, arm before you launch it:
+
+```
+guest-net keys scan --follow --pause --seconds 120 > out/keys.txt 2>&1 &
+guest-mark start
+guest-exec --as-user --job PROGRAM
+guest-mark started
+```
+
+and read it with `guest-net flows --since start`, `http --since start` and `tls --since start`.
+
+`keys scan --pause`, `keys schannel`, `guest-dbg` and `guest-gdb` all go through the guest's one debug stub, so only one of them can run at a time.
+`--pause` and `keys schannel` stop the guest or `lsass` only for moments, and the agent waits each hold out.
+Say when you use them, and ask before one that will run long while the user works at the guest.
+
 ## MCP servers that live in the guest
 
 When the folder names MCP servers for this guest, their tools show up like any other MCP tools.
@@ -182,6 +226,9 @@ Deleting that folder removes it.
   Jobs there may end when the session closes.
 - A window that blocks capture, such as protected video, will likely come out black.
   The screen's picture cut to that window's place is the way around it.
+- A program with its own crypto over plain TCP or UDP stays unreadable: `keys scan` opens TLS and QUIC only.
+- tshark reads HTTP/3 only in part, though `keys scan` opens QUIC's packets.
+- A TLS 1.3 connection that updated its keys holds only the newer ones, which open none of its start, and `--follow` is the way to catch it before.
 
 ## Running something that came out of the guest
 
