@@ -309,6 +309,15 @@ let
     fi
   '';
 
+  # Lent to a running guest for the length of one snapshot, so that the agent in it can be asked to freeze its filesystems.
+  snapshotAgent = pkgs.writeText "nixvirt-snapshot-agent.xml" ''
+    <channel type="unix">
+      <source mode="bind"/>
+      <target type="virtio" name="org.qemu.guest_agent.0"/>
+      <alias name="ua-nixvirt-snapshot-agent"/>
+    </channel>
+  '';
+
   snapshotFixup = pkgs.writeShellApplication {
     name = "nixvirt-snapshot-fixup";
     runtimeInputs = [
@@ -384,10 +393,12 @@ let
       usage: nixvirt-snapshot <command> ...
              nixvirt-snapshot                            on a terminal: pick the domain, action and snapshot from a menu
 
-        create  [-y] [--mem[=file]] [--internal] <domain> [name]
-                                                         create a snapshot (defaults: external, disk-only; --mem adds RAM state, --internal stores inside the qcow2)
+        create  [-y] [--mem[=file]] [--internal] [--no-freeze] <domain> [name]
+                                                         create a snapshot (defaults: external, disk-only; --mem adds RAM state, --internal stores inside the qcow2);
+                                                         a running guest's agent freezes its filesystems for the moment of a disk-only one (--no-freeze skips that)
         commit  [-y] [-a|--all] [--to <snap>] <domain>   merge snapshot overlay(s) down into their base (alias: flatten)
-        rotate  [-y] [--as <new>] <domain> [name]        commit through snapshot [name] (default: current), then recreate it (renamed to <new> if given)
+        rotate  [-y] [--as <new>] [--no-freeze] <domain> [name]
+                                                         commit through snapshot [name] (default: current), then recreate it (renamed to <new> if given)
         revert  [-y] [--no-data] [--no-carry] <domain> [name]
                                                          restore the disk state saved by snapshot [name] (default: current), discarding newer changes (VM must be off);
                                                          a domain with a data disk reviews it first (--no-data skips that), and one with
@@ -427,6 +438,36 @@ let
           > "$tmpf"
         virsh define "$tmpf" >/dev/null
         rm -f "$tmpf"
+      }
+
+      # A snapshot of a running guest is like a power cut unless its filesystems hold still for the moment, which takes the agent inside it. A guest with no channel to its agent is lent one for just that long.
+      disk_snapshot() {
+        local name="$1" lent=0 reachable=1 tries
+        if [ "$freeze" -eq 1 ] && [ "$(virsh domstate "$dom" 2>/dev/null || true)" = running ]; then
+          if ! virsh dumpxml "$dom" | grep -q "org.qemu.guest_agent.0"; then
+            if virsh attach-device "$dom" ${snapshotAgent} --live >/dev/null 2>&1; then
+              lent=1
+            else
+              reachable=0
+            fi
+          fi
+          for (( tries = 0; reachable && tries < 6; tries++ )); do
+            if virsh qemu-agent-command "$dom" '{"execute":"guest-ping"}' --timeout 1 >/dev/null 2>&1; then
+              if virsh snapshot-create-as "$dom" "$name" --disk-only --atomic --quiesce; then
+                if [ "$lent" -eq 1 ]; then virsh detach-device-alias "$dom" ua-nixvirt-snapshot-agent --live >/dev/null 2>&1 || true; fi
+                echo "$dom: its filesystems held still for the snapshot"
+                return 0
+              fi
+              # A freeze that went wrong halfway must not stay.
+              virsh domfsthaw "$dom" >/dev/null 2>&1 || true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$lent" -eq 1 ]; then virsh detach-device-alias "$dom" ua-nixvirt-snapshot-agent --live >/dev/null 2>&1 || true; fi
+          echo "$dom: no agent in the guest froze its filesystems, so this snapshot is crash-consistent (like a power cut at this instant)"
+        fi
+        virsh snapshot-create-as "$dom" "$name" --disk-only --atomic
       }
 
       list_domain() {
@@ -484,6 +525,7 @@ let
       internal=0
       no_data=0
       no_carry=0
+      freeze=1
       pos=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -491,6 +533,7 @@ let
           -y|--yes) assume_yes=1 ;;
           --no-data) no_data=1 ;;
           --no-carry) no_carry=1 ;;
+          --no-freeze) freeze=0 ;;
           -a|--all) all=1 ;;
           --to)
             if [ "$#" -lt 2 ]; then echo "--to requires a snapshot name" >&2; exit 1; fi
@@ -533,6 +576,10 @@ let
       fi
       if { [ "$mem" -eq 1 ] || [ "$internal" -eq 1 ]; } && [ "$sub" != "create" ]; then
         echo "--mem/--internal only apply to create" >&2
+        exit 1
+      fi
+      if [ "$freeze" -eq 0 ] && [ "$sub" != "create" ] && [ "$sub" != "rotate" ]; then
+        echo "--no-freeze only applies to create and rotate" >&2
         exit 1
       fi
       if [ "$mem" -eq 1 ] && [ "$internal" -eq 1 ]; then
@@ -616,11 +663,13 @@ let
           virsh snapshot-create-as "$dom" "$name" "''${cargs[@]}"
         else
           echo "Creating external disk-only snapshot '$name' of '$dom' ($state)."
-          if [ "$state" = "running" ]; then
+          if [ "$state" = "running" ] && [ "$freeze" -eq 1 ]; then
+            echo "The VM stays on; the agent in it is asked to freeze its filesystems for the moment."
+          elif [ "$state" = "running" ]; then
             echo "The VM stays on; the snapshot is crash-consistent (like a power cut at this instant)."
           fi
           confirm "Proceed?"
-          virsh snapshot-create-as "$dom" "$name" --disk-only --atomic
+          disk_snapshot "$name"
         fi
 
         # NixVirt resets the persistent disk source to the base on every service start, so repoint it now or a rebuild or shutdown before the next snapshotFixup surfaces a stale base.
@@ -667,7 +716,7 @@ let
           rotname="''${pos[2]:-''${as_name:-}}"
           [ -n "$rotname" ] || { echo "rotate: no snapshots exist - pass a name to create the first one" >&2; exit 1; }
           confirm "No snapshots exist; create snapshot '$rotname' of '$dom'?"
-          virsh snapshot-create-as "$dom" "$rotname" --disk-only --atomic
+          disk_snapshot "$rotname"
           exit 0
         fi
         if [ "$sub" = "revert" ]; then
@@ -1300,7 +1349,7 @@ let
       if [ "$sub" = "rotate" ]; then
         echo
         echo "$dom: recreating snapshot '$newname'"
-        virsh snapshot-create-as "$dom" "$newname" --disk-only --atomic
+        disk_snapshot "$newname"
         echo "Snapshot chain is now:"
         virsh snapshot-list "$dom" --tree 2>/dev/null | sed '/^$/d; s/^/  /'
       fi
