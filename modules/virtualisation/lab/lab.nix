@@ -138,6 +138,7 @@ let
       guestMount
       guestGdb
       guestPs
+      (pkgs.callPackage ./_guest-dbg/guest-dbg.nix { })
       labBox
       config.my.virtualisation.inspect.guestTools
     ]
@@ -226,6 +227,7 @@ let
       echo "  guest-mount   the guest's memory as files under ~/guest (MemProcFS), runs until stopped"
       echo "  guest-gdb     gdb on QEMU's debug stub, the guest stops while it is attached"
       echo "  guest-ps      the processes of a Windows guest as its memory holds them, held against what the guest lists"
+      echo "  guest-dbg     breakpoints and watchpoints in one process, from outside: the guest sees no debugger"
       echo "  guest-shot    a picture of the guest's screen, from QEMU or from the frames Looking Glass shares,"
       echo "                or with --window of one window as the guest draws it, and with --crop a part of either"
       echo "  guest-input   keys and pointer events for the guest, in a session opened with --control"

@@ -57,10 +57,21 @@ A tool's own trouble is one line that starts with its name and exit status 1.
 | `guest-mount` | The guest's memory as files under `~/guest` (MemProcFS). Runs until stopped. |
 | `$VM_LAB_TOOLS/lib/memprocfs/vmm.so` | The MemProcFS library, much faster than the files. |
 | `guest-ps` | The processes of a Windows guest read from its memory, with a note on any that the guest itself does not list. |
+| `guest-dbg PROCESS --break PLACE` | Stops one process at a place, from outside, so the guest sees no debugger. `--watch` and `--access` stop on a write or any access, `--do` and `--on-return` run gdb commands there. |
 | `guest-gdb` | gdb on QEMU's debug stub. The whole guest stops while it is attached, so ask the user first. |
 | `radare2`, `gdb` | Static work on dumped files. |
 
 Windows debug symbols arrive by themselves, through a gateway outside the lab that fetches nothing else.
+
+A program that guards itself against debuggers is worked on from outside:
+
+- Read before you stop anything.
+  With `guest-mount` running, `~/guest/pid/PID/` holds `minidump/minidump.dmp` and, for each module, `modules/NAME/pefile.dll`, rebuilt from memory with its unpacked code.
+- `guest-dbg` uses the CPU's four debug registers, writes nothing into the guest and lets every other process pass.
+  It still stops the whole guest for a moment at each stop, and a program that measures time closely may notice that.
+  A place that every process runs through, as a function of `ntdll.dll`, makes the guest slow while it is set.
+- A place is `0xADDRESS`, `MODULE`, `MODULE!NAME`, each with `+OFFSET`, and `nt` is the kernel.
+  `--on-return 'p/x $rax'` shows what a function gave back, and `--do 'set $rax = 0'` changes it.
 
 ### Screen and input
 
