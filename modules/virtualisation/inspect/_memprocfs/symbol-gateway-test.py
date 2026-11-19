@@ -86,5 +86,28 @@ try:
     with open(path.value, "rb") as file:
         assert file.read() == CONTENT
     assert not ensure(b"local", IDENTIFIER.encode(), b"other.pdb", True, len(path), path), "the library, for a missing file"
+
+    # Several MemProcFS started together in one lab share an empty cache, and each has to get every file whole.
+    for attempt in range(20):
+        folder = f"race{attempt}".encode()
+        os.mkdir(folder)
+        start, results = threading.Barrier(8), []
+
+        def fetch(start=start, folder=folder, results=results):
+            found = ctypes.create_string_buffer(1024)
+            start.wait()
+            if ensure(folder, IDENTIFIER.encode(), NAME.encode(), True, len(found), found):
+                with open(found.value, "rb") as file:
+                    results.append(file.read() == CONTENT)
+            else:
+                results.append(False)
+
+        fetching = [threading.Thread(target=fetch) for _ in range(8)]
+        for thread in fetching:
+            thread.start()
+        for thread in fetching:
+            thread.join()
+        assert results == [True] * 8, f"attempt {attempt}: {results.count(True)} of 8 got the whole file"
+        assert os.listdir(f"race{attempt}/{NAME}/{IDENTIFIER}") == [NAME], os.listdir(f"race{attempt}/{NAME}/{IDENTIFIER}")
 finally:
     running.kill()

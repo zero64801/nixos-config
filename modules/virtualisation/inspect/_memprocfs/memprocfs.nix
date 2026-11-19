@@ -30,7 +30,7 @@ let
         "sha256-3PStkW3q4FJFeBmujYxhdhm2fUYCD3ayRtL/sAjumpY=";
 
     # Upstream ships no lock file.
-    # Lets a process without network get its symbols from a gateway on a unix socket, named by PDBCRUST_SYMBOL_SOCKET.
+    # Lets a process without network get its symbols from a gateway on a unix socket, named by PDBCRUST_SYMBOL_SOCKET, with several processes on one cache.
     patches = [ ./symbol-socket.patch ];
 
     cargoLock.lockFile = ./pdbcrust.Cargo.lock;

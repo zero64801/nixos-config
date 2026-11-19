@@ -1,17 +1,48 @@
---- a/src/lib.rs	2026-11-12 23:16:05.362731744 -0300
-+++ b/src/lib.rs	2026-11-12 23:16:05.370015368 -0300
-@@ -13,6 +13,7 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -13,13 +13,18 @@
  use std::collections::HashMap;
  use std::ffi::CString;
  use std::fs::File;
 +use std::io::{BufRead, Read, Write};
  use std::path::Path;
  use std::sync::Mutex;
++use std::sync::atomic::{AtomicU64, Ordering};
  use lazy_static::lazy_static;
-@@ -276,6 +277,24 @@
-     // test if possible to create a file in the directory:
-     std::fs::File::create(&path)?;
-     std::fs::remove_file(&path)?;
+ use pdb::{AddressMap, FallibleIterator, ItemInformation, PDB, SymbolTable, TypeIndex};
+ 
+ type ResultEx<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+ 
++// tells apart the partial files of one process:
++static PARTIAL : AtomicU64 = AtomicU64::new(0);
++
+ // GLOBALS:
+ // accesses to G_HASHMAP must be serialized behind G_LOCK.
+ // accesses to individual PdbCRust are serialized behind internal lock.
+@@ -250,16 +255,9 @@
+     if !path.is_dir() {
+         return Err("base path '{base_path}' is not a valid directory".into());
+     }
+-    // verify/create pdb path:
+-    let path = path.join(pdb_name);
+-    if !path.is_dir() {
+-        std::fs::create_dir(&path)?;
+-    }
+-    // verify/create guid path:
+-    let path = path.join(pdb_guidage);
+-    if !path.is_dir() {
+-        std::fs::create_dir(&path)?;
+-    }
++    // verify/create pdb and guid paths, which another process may be creating at the same time:
++    let path = path.join(pdb_name).join(pdb_guidage);
++    std::fs::create_dir_all(&path)?;
+     // verify complete file path:
+     // (also return success if file already exists)
+     let path = path.join(pdb_name);
+@@ -273,6 +271,30 @@
+     if !is_mspdb_download {
+         return Err("download from ms-pdb server not enabled".into());
+     }
 +    // fetch pdb file from a local symbol gateway, for a process without network:
 +    if let Some(socket) = std::env::var_os("PDBCRUST_SYMBOL_SOCKET") {
 +        let mut stream = std::io::BufReader::new(std::os::unix::net::UnixStream::connect(socket)?);
@@ -27,9 +58,15 @@
 +        }
 +        let mut content = vec![0u8; length];
 +        stream.read_exact(&mut content)?;
-+        std::fs::write(&path, content)?;
++        // written aside and renamed, so that a process sharing the cache never reads a part of it:
++        let partial = path.with_file_name(format!("{pdb_name}.{}.{}.part", std::process::id(), PARTIAL.fetch_add(1, Ordering::Relaxed)));
++        std::fs::write(&partial, content)?;
++        if let Err(e) = std::fs::rename(&partial, &path) {
++            let _ = std::fs::remove_file(&partial);
++            return Err(e.into());
++        }
 +        return Ok(path_string);
 +    }
-     // fetch pdb file from microsoft symbol server:
-     let url = format!("https://msdl.microsoft.com/download/symbols/{pdb_name}/{pdb_guidage}/{pdb_name}");
-     let response = reqwest::blocking::get(url)?;
+     // test if possible to create a file in the directory:
+     std::fs::File::create(&path)?;
+     std::fs::remove_file(&path)?;
