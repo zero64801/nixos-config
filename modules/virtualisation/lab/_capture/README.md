@@ -17,10 +17,10 @@ What it says is shown with the characters a terminal acts on taken out.
 | `summary` | What the capture holds, its marks, keys, owners, flows and the names the guest reached |
 | `flows` | Each TCP and UDP flow: the guest's end and the other, the names it went by, what went each way, and the program it was of |
 | `dns` | The names looked up and what came back |
-| `http [ID]` | The requests of HTTP/1 and HTTP/2 and their answers, or one in full with its body, `--save NAME` writes the body to `./out` |
+| `http [ID]` | The requests of HTTP/1 and HTTP/2, their answers and how long each took, or one in full: the headers and bodies of both ways, undone of their encoding, JSON laid out, `--save NAME` writes them to `./out` |
 | `tls` | Each handshake: the name asked for, version, cipher, ALPN, JA4, the certificate's names where it is readable, and whether the keys open it |
 | `stream ID` | What went each way in one flow, `--decrypted` inside TLS, `--hex`, `--save NAME` |
-| `body ID` | The body of an answer into `./out` |
+| `body ID` | The body of an answer into `./out`, or with `--request` the request's, undone of its encoding |
 | `packets [FILTER]` | Wireshark's line for each packet, with a display filter |
 | `watch` | Names, requests and handshakes as the guest makes them |
 | `owners [--follow]` | Which program each connection belongs to, kept in the capture for `flows` and `http` |
@@ -108,16 +108,18 @@ nix build --no-link -L .#tests.lab.guest-net
 nix build --no-link -L .#tests.lab.guest-usb
 nix build --no-link -L .#tests.lab.schannel
 nix build --no-link -L .#tests.lab.owners
+nix build --no-link -L .#tests.lab.bodies
 nix build --no-link -L .#tests.lab.tlsscan
 nix build --no-link -L .#tests.lab.tlsscan-libraries
 nix build --no-link -L .#tests.lab.keys-scan
 ```
 
-The first records a guest that looks up a name, fetches a page, fetches one over HTTP/2 with TLS while curl writes its keys, holds a connection open and sends a request meant to steer a terminal.
+The first records a guest that looks up a name, fetches a page, fetches pages over HTTP/2 with TLS while curl writes its keys, one of them compressed, sends JSON and a form, holds a connection open and sends a request meant to steer a terminal.
 The second passes a USB keyboard of the test machine to the guest and lights its Caps Lock between two marks.
 The third runs the reading of SChannel's keys on a made up stretch of `lsass`' memory, since there is no Windows here.
 The fourth reads what Windows' and Linux' own tools say of their connections.
-The fifth runs OpenSSL's client and server in every suite `keys scan` knows, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
-The sixth has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
-The seventh has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote.
+The fifth undoes the encodings of bodies, gzip, deflate, brotli and zstd, alone and chained, stops at a limit for a body made to grow without end, and lays out JSON.
+The sixth runs OpenSSL's client and server in every suite `keys scan` knows, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
+The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
+The eighth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.

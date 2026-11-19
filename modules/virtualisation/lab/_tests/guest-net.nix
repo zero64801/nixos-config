@@ -15,6 +15,20 @@ let
       -subj /CN=tls.test -addext subjectAltName=DNS:tls.test
   '';
 
+  # A page of JSON that nginx sends compressed, a JSON request of HTTP/2 and a form of HTTP/1, each with a body to read back.
+  site = pkgs.runCommand "tls-test-site" { } ''
+    mkdir $out
+    printf %s "the secret behind TLS" > $out/secret.txt
+    echo '{"name": "site", "list": [1, 2]}' > $out/data.json
+  '';
+  posts = pkgs.writeText "posts.sh" ''
+    export SSLKEYLOGFILE=/tmp/keys.log
+    curl -sk --http2 --compressed --resolve tls.test:8443:10.9.9.1 -o /dev/null https://tls.test:8443/data.json
+    curl -sk --http2 --resolve tls.test:8443:10.9.9.1 -o /dev/null -H 'content-type: application/json' \
+      --data '{"user":"alice","pin":1234}' https://tls.test:8443/data.json
+    wget -q -O /dev/null --post-data 'name=alice&pin=1234' http://site.test:8000/form || true
+  '';
+
   # A request whose path would clear a terminal that printed it as it is.
   steering = pkgs.writeText "steering.sh" ''
     printf 'GET /\033[2Jcleared HTTP/1.0\r\nHost: evil\r\n\r\n' | nc 10.9.9.1 8000
@@ -45,7 +59,8 @@ host.needs [ "modules/virtualisation/inspect" ] (
           ];
           sslCertificate = "${certificate}/cert.pem";
           sslCertificateKey = "${certificate}/key.pem";
-          root = pkgs.writeTextDir "secret.txt" "the secret behind TLS";
+          root = site;
+          extraConfig = "gzip on; gzip_types application/json; gzip_min_length 1;";
         };
       };
     };
@@ -69,6 +84,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "guest-mark start",
           "guest-exec --shell 'nslookup site.test 10.9.9.1 > /dev/null; wget -q -O - http://site.test:8000/hello.txt'",
           "guest-exec --shell 'SSLKEYLOGFILE=/tmp/keys.log curl -sk --http2 --resolve tls.test:8443:10.9.9.1 https://tls.test:8443/secret.txt'",
+          "guest-push ${posts} /tmp/posts.sh > /dev/null && guest-exec /bin/sh /tmp/posts.sh > /dev/null",
           "guest-push ${steering} /tmp/steering.sh > /dev/null && guest-exec /bin/sh /tmp/steering.sh > /dev/null",
           "guest-exec --job --shell 'sleep 30 | nc 10.9.9.1 9000' > /dev/null",
           "guest-wait --process nc --timeout 20 > /dev/null",
@@ -84,6 +100,10 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == http after; guest-net http",
           "echo == hello; guest-net http $(guest-net http | grep hello.txt | cut -d' ' -f1)",
           "echo == secret; guest-net http --save secret.txt $(guest-net http | grep secret.txt | cut -d' ' -f1)",
+          "echo == json; guest-net http $(guest-net http | grep 'GET https://tls.test:8443/data.json' | cut -d' ' -f1)",
+          "echo == posted; guest-net http $(guest-net http | grep 'POST https://tls.test:8443/data.json' | cut -d' ' -f1)",
+          "echo == form; guest-net http $(guest-net http | grep 'POST http://site.test:8000/form' | cut -d' ' -f1)",
+          "echo == kept; guest-net http --save posted $(guest-net http | grep 'POST https' | cut -d' ' -f1) && cat /tmp/work/out/posted.request",
           "echo == stream; guest-net stream $(guest-net flows | grep ':8000 ' | head -n 1 | cut -d' ' -f1)",
           "echo == window; guest-net flows --since done",
           "echo == packets; guest-net packets dns --max 4",
@@ -113,12 +133,20 @@ host.needs [ "modules/virtualisation/inspect" ] (
       with subtest("TLS is named and stays closed without keys, and opens with those the guest's program wrote"):
           assert re.search(r"tls\.test\s+TLS 1\.3 .*h2.*encrypted, the capture has no keys", section["tls before"]), section["tls before"]
           assert "secret.txt" not in section["http before"], section["http before"]
-          assert re.search(r"CLIENT_TRAFFIC_SECRET_0 1", section["keys"]) and "lines added" in section["keys"], section["keys"]
+          assert re.search(r"CLIENT_TRAFFIC_SECRET_0 3", section["keys"]) and "lines added" in section["keys"], section["keys"]
           assert re.search(r"tls\.test\s+TLS 1\.3 .*decrypted", section["tls after"]), section["tls after"]
           assert re.search(r"GET https://tls\.test:8443/secret\.txt -> 200", section["http after"]), section["http after"]
           assert machine.succeed("cat /tmp/work/out/secret.txt") == "the secret behind TLS"
           exported = machine.succeed("${tshark} -n -r /tmp/work/out/all.pcapng -Y http2.headers.path -T fields -e http2.headers.path")
           assert "/secret.txt" in exported, "the exported capture does not open without the keys beside it"
+
+      with subtest("bodies read as meant: undone of their encoding, JSON laid out, and the requests' own with them"):
+          assert "content-encoding: gzip" in section["json"] and '\n  "name": "site",' in section["json"], section["json"]
+          assert "request body:" in section["posted"] and '"user": "alice",' in section["posted"] and "-> 405" in section["posted"], section["posted"]
+          assert "request body:" in section["form"] and "name=alice&pin=1234" in section["form"], section["form"]
+          assert '{"user":"alice","pin":1234}' in section["kept"], section["kept"]
+          assert re.search(r"GET http://site\.test:8000/hello\.txt -> 200 OK in \d+ ms", section["http before"]), section["http before"]
+          assert re.search(r"GET https://tls\.test:8443/secret\.txt -> 200 in \d+ ms", section["http after"]), section["http after"]
 
       with subtest("each connection is put to the program that held it, as the guest's own tools named it"):
           assert re.search(r"tcp 10\.9\.9\.50:\d+ -> 10\.9\.9\.1:9000 .*nc\[\d+\]", section["owners"]), section["owners"]

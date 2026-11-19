@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 
+import bodies
 import capture as shared
 import owners
 import scan
@@ -106,7 +107,7 @@ def dns(capture, args):
 
 HTTP_FIELDS = ["frame.number", "frame.time_epoch", "tcp.stream", "frame.packet_flags_direction", "http.request.method", "http.request.full_uri",
                "http.request.uri", "http.host", "http.response.code", "http.response.phrase", "http.content_type", "http.request_in",
-               "http.content_length"]
+               "http.content_length", "http.time"]
 # Each HTTP/2 frame of a packet has a type and a stream, each HEADERS frame says how many headers it carries, and each DATA frame
 # with a payload carries one piece of data, so the lists tshark gives are lined up frame by frame.
 FRAME_FIELDS = ["http2.type", "http2.streamid", "http2.length", "http2.header.count", "http2.header.name", "http2.header.value", "http2.data.data"]
@@ -136,21 +137,24 @@ def exchanges(capture, args, keys=None):
         if packet["http.request.method"]:
             uri = first(packet, "http.request.full_uri") or f"http://{first(packet, 'http.host')}{first(packet, 'http.request.uri')}"
             requests[number] = {"id": f"h{number}", "time": stamp, "flow": f"t{tcp}", "method": first(packet, "http.request.method"),
-                                "url": uri, "status": "", "type": "", "size": "", "answer": None, "version": "1"}
+                                "url": uri, "status": "", "type": "", "size": "", "answer": None, "version": "1", "took": None}
         elif packet["http.response.code"]:
             asked = requests.get(first(packet, "http.request_in"))
             if asked:
                 asked.update(status=f"{first(packet, 'http.response.code')} {first(packet, 'http.response.phrase')}".strip(),
-                             type=first(packet, "http.content_type"), size=first(packet, "http.content_length"), answer=number)
+                             type=first(packet, "http.content_type"), size=first(packet, "http.content_length"), answer=number,
+                             took=float(first(packet, "http.time", "0") or 0))
         for kind, stream, headers, _ in frames(packet):
             said = dict(headers)
             key = (tcp, stream)
             if kind == 1 and ":method" in said:
                 url = f"{said.get(':scheme', 'https')}://{said.get(':authority', '?')}{said.get(':path', '')}"
                 streams[key] = requests[f"{number}.{stream}"] = {"id": f"h{number}.{stream}", "time": stamp, "flow": f"t{tcp}", "method": said[":method"],
-                                                                 "url": url, "status": "", "type": "", "size": "", "answer": None, "version": "2"}
+                                                                 "url": url, "status": "", "type": "", "size": "", "answer": None, "version": "2",
+                                                                 "took": None}
             elif kind == 1 and ":status" in said and key in streams:
-                streams[key].update(status=said[":status"], type=said.get("content-type", ""), size=said.get("content-length", ""))
+                streams[key].update(status=said[":status"], type=said.get("content-type", ""), size=said.get("content-length", ""),
+                                    took=float(stamp) - float(streams[key]["time"]))
     return sorted(requests.values(), key=lambda r: float(r["time"]))
 
 
@@ -163,61 +167,85 @@ def http(capture, args):
         return
     for request in found[: args.max]:
         owner = owners.owner_of(known, flows_by_id[request["flow"]]) if request["flow"] in flows_by_id else ""
+        took = f" in {request['took'] * 1000:.0f} ms" if request["took"] is not None else ""
         print(f"{request['id']:<10} {capture.relative(request['time']):>9} {request['flow']:<6} {request['method']} {plain(request['url'], 160)} -> "
-              f"{plain(request['status'] or 'no answer', 40)} {plain(request['type'], 60)} {request['size'] and size(int(request['size']))}  {plain(owner or '', 60)}")
+              f"{plain(request['status'] or 'no answer', 40)}{took} {plain(request['type'], 60)} {request['size'] and size(int(request['size']))}  {plain(owner or '', 60)}")
     if not found:
         encrypted = sum(1 for f in flows(capture, args) if f["names"] and f["proto"] == "tcp")
         print("no HTTP in this capture" + (f", {encrypted} flows went to named hosts, see guest-net tls for those that are encrypted" if encrypted else ""))
 
 
+def both_ways(capture, request, keys):
+    """The headers and the body of an HTTP/2 request and of its answer, from the frames of its stream."""
+    sent, got, asked, answer = [], [], b"", b""
+    stream = request["id"].split(".")[1]
+    for packet in capture.ek(NET, ["frame.packet_flags_direction"] + FRAME_FIELDS, f"tcp.stream == {request['flow'][1:]} && http2.streamid == {stream}", keys):
+        from_guest = first(packet, "frame.packet_flags_direction") == SENT
+        for _, number, headers, data in frames(packet):
+            if number != stream:
+                continue
+            (sent if from_guest else got).extend(headers)
+            if from_guest:
+                asked += data
+            else:
+                answer += data
+    return sent, got, asked, answer
+
+
 def detail(capture, args, found):
-    """A request with its headers and its answer's, and the answer's body as text when it is text."""
+    """A request with its headers and body, and its answer's, each body undone of its encoding and shown as text when it
+    is text."""
     if not found:
         fail(f"there is no request {args.id}, guest-net http lists them")
     request = found[0]
     if request["version"] == "2":
-        sent, got, body = [], [], b""
-        stream = request["id"].split(".")[1]
-        for packet in capture.ek(NET, ["frame.packet_flags_direction"] + FRAME_FIELDS, f"tcp.stream == {request['flow'][1:]} && http2.streamid == {stream}", args.keys):
-            from_guest = first(packet, "frame.packet_flags_direction") == SENT
-            for kind, number, headers, data in frames(packet):
-                if number != stream:
-                    continue
-                (sent if from_guest else got).extend(headers)
-                if not from_guest:
-                    body += data
+        sent, got, asked, answer = both_ways(capture, request, args.keys)
         print(f"{request['method']} {plain(request['url'], 400)}")
         for name, value in sent:
             print(f"  {plain(name, 100)}: {plain(value, 400)}")
+        show_body(args, asked, dict(sent), request=True)
         print(f"-> {plain(request['status'] or 'no answer', 80)}")
         for name, value in got:
             print(f"  {plain(name, 100)}: {plain(value, 400)}")
-        show_body(args, body)
+        show_body(args, answer, dict(got))
         return
     number = request["id"][1:]
-    fields = ["http.request.line", "http.response.line", "http.file_data", "frame.number"]
+    fields = ["http.request.line", "http.response.line", "http.file_data", "http.content_type", "http.content_encoding", "frame.number"]
     for packet in capture.ek(NET, fields, f"frame.number == {number} || http.request_in == {number}", args.keys):
+        data = bytes.fromhex("".join(packet["http.file_data"]).replace(":", "")) if packet["http.file_data"] else b""
+        # tshark has undone HTTP/1's encodings already where it could, and a body it left as it came is undone here.
+        headers = {"content-type": first(packet, "http.content_type"), "content-encoding": first(packet, "http.content_encoding")}
         if packet["http.request.line"]:
             print(f"{request['method']} {plain(request['url'], 400)}")
             for line in packet["http.request.line"]:
                 print("  " + plain(line.rstrip(), 400))
+            show_body(args, data, headers, request=True)
         if packet["http.response.line"]:
             print(f"-> {plain(request['status'], 80)}")
             for line in packet["http.response.line"]:
                 print("  " + plain(line.rstrip(), 400))
-            show_body(args, bytes.fromhex("".join(packet["http.file_data"]).replace(":", "")) if packet["http.file_data"] else b"")
+            show_body(args, data, headers)
 
 
-def show_body(args, body):
-    """The body of an answer: written to ./out when asked, shown when it is text, and its size otherwise."""
+def show_body(args, data, headers, request=False):
+    """A body: undone of its encoding, written to ./out when asked, shown when it is text, and its size otherwise."""
+    if not data:
+        return
+    headers = {name.lower(): value for name, value in headers.items()}
+    data, note = bodies.decoded(data, headers.get("content-encoding", ""))
+    side = "request body" if request else "body"
+    shown = bodies.text(data, headers.get("content-type", ""), args.body) if args.body else None
+    # tshark undoes the encodings it knows by itself, so a body that does not undo is only worth a word when it does not read.
+    if note and shown is None:
+        print(f"  ({side} {note})")
     if args.save:
-        saved(args.save, body)
-    elif body:
-        printable = sum(32 <= b < 127 or b in (9, 10, 13) for b in body[:4096])
-        if printable > 0.95 * min(len(body), 4096):
-            print(plain(body[: args.body].decode("utf-8", "replace"), args.body))
-        else:
-            print(f"  ({size(len(body))} that are not text, --save NAME writes them to ./out)")
+        saved(f"{args.save}.request" if request else args.save, data)
+        return
+    if shown is None:
+        print(f"  ({side}: {size(len(data))} that are not text, --save NAME writes it to ./out)")
+    else:
+        print(f"  {side}:" if request else "")
+        print(plain(shown, args.body + 100))
 
 
 def saved(name, data):
@@ -337,18 +365,25 @@ def hexdump(data):
 
 
 def body(capture, args):
+    """The body of an answer, or with --request of the request, written to ./out undone of its encoding."""
     found = [r for r in exchanges(capture, args, args.keys) if r["id"] == args.id]
-    if found and found[0]["version"] == "2":
-        args.save, args.body = args.save or f"body-{args.id}.bin", 0
-        detail(capture, args, found)
-        return
     if not found:
         fail(f"there is no request {args.id}, guest-net http lists them")
-    for packet in capture.ek(NET, ["http.file_data"], f"http.request_in == {args.id[1:]}", args.keys):
+    name = args.save or f"body-{args.id}.bin"
+    if found[0]["version"] == "2":
+        sent, got, asked, answer = both_ways(capture, found[0], args.keys)
+        data, headers = (asked, dict(sent)) if args.request else (answer, dict(got))
+    else:
+        display = f"frame.number == {args.id[1:]}" if args.request else f"http.request_in == {args.id[1:]}"
+        packet = next(iter(capture.ek(NET, ["http.file_data", "http.content_encoding"], display, args.keys)), None)
+        if packet is None:
+            fail(f"{args.id} got no answer with a body")
         data = bytes.fromhex("".join(packet["http.file_data"]).replace(":", "")) if packet["http.file_data"] else b""
-        saved(args.save or f"body-{args.id}.bin", data)
-        return
-    fail(f"{args.id} got no answer with a body")
+        headers = {"content-encoding": first(packet, "http.content_encoding")}
+    data, note = bodies.decoded(data, {k.lower(): v for k, v in headers.items()}.get("content-encoding", ""))
+    if note:
+        print(f"the body is {note}")
+    saved(name, data)
 
 
 def packets(capture, args):
@@ -549,7 +584,7 @@ def build(parser):
     sub.add_argument("--max", type=int, default=500)
     sub = reader("http", http, "the requests of HTTP/1 and HTTP/2 and their answers, or one of them in full")
     sub.add_argument("id", nargs="?", help="a request as the list names it, to show its headers and the answer's body")
-    sub.add_argument("--save", metavar="NAME", help="write the answer's body to ./out under this name")
+    sub.add_argument("--save", metavar="NAME", help="write the answer's body to ./out under this name, and the request's as NAME.request")
     sub.add_argument("--body", type=int, default=4000, help="characters of a text body to show, 4000 by default")
     sub.add_argument("--max", type=int, default=300)
     sub = reader("tls", tls, "each TLS handshake: the name asked for, the version and cipher chosen, the client's JA4, whether the keys open it")
@@ -560,9 +595,10 @@ def build(parser):
     sub.add_argument("--hex", action="store_true")
     sub.add_argument("--max", type=int, default=65536, help="bytes to show, 64 KiB by default")
     sub.add_argument("--save", metavar="NAME", help="write both ways to ./out as NAME.sent and NAME.got")
-    sub = reader("body", body, "write the body of an answer to ./out", timed_too=False)
+    sub = reader("body", body, "write the body of an answer, or of the request, to ./out", timed_too=False)
     sub.add_argument("id", help="the request, as h41")
     sub.add_argument("--save", metavar="NAME")
+    sub.add_argument("--request", action="store_true", help="the request's body instead of the answer's")
     sub = reader("packets", packets, "Wireshark's line for each packet, with a display filter")
     sub.add_argument("filter", nargs="?", help="a display filter of Wireshark, such as 'tcp.port == 443'")
     sub.add_argument("--max", type=int, default=200)
