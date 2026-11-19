@@ -46,7 +46,6 @@ in
   };
 
   config = mkIf cfg.enable {
-    # Present from the start, so that a sandbox can be given the folder before anything is put there.
     systemd.user.tmpfiles.rules = [ "d %h/${cfg.places} 0755 - - -" ];
 
     systemd.user.sockets.studio-broker = {
@@ -65,7 +64,7 @@ in
         ExecStart = lib.concatStringsSep " " (
           [
             (lib.getExe pkgs.nodejs-slim)
-            "${./_studio-broker}/broker.mjs"
+            "${./_broker}/broker.mjs"
             (toString cfg.idleTimeout)
             "%S/studio-broker"
           ]

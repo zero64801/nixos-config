@@ -1,14 +1,13 @@
-# nix build --impure --no-link -L --expr 'import ./apps/dev/_tests/studio-broker.nix { }'
-# The broker behind its socket, with a stand-in for Vinegar's Flatpak that turns into a process named like Studio,
-# and an X server whose windows stand in for Studio's and other programs'.
+# nix build --no-link -L .#tests.studio-broker.studio-broker
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  host,
 }:
 
 let
+  inherit (host) pkgs;
+
   idle = 3;
 
-  # flatpak run --branch --arch --command org.vinegarhq.Vinegar run, then Studio's own arguments.
   flatpak = pkgs.writeShellScriptBin "flatpak" ''
     shift 6
     exec -a 'C:\Program Files\Roblox\RobloxStudioBeta.exe' ${pkgs.runtimeShell} -c \
@@ -18,16 +17,15 @@ let
   displayNumber = "7";
   display = ":${displayNumber}";
 
-  # A display that takes only clients holding its cookie, as a desktop session's does.
   xserver = pkgs.writeShellScript "xserver" ''
     ${pkgs.xauth}/bin/xauth -f "$XDG_RUNTIME_DIR/xauth" add ${display} . "$(${pkgs.util-linux}/bin/mcookie)"
     exec ${pkgs.xvfb}/bin/Xvfb ${display} -screen 0 1280x720x24 -auth "$XDG_RUNTIME_DIR/xauth"
   '';
 in
-pkgs.testers.runNixOSTest {
+host.boot {
   name = "studio-broker";
 
-  nodes.machine = {
+  machines.machine = {
     imports = [ ../studio-broker.nix ];
 
     my.apps.studioBroker = {
@@ -36,10 +34,7 @@ pkgs.testers.runNixOSTest {
       idleTimeout = idle;
     };
 
-    users.users.alice = {
-      isNormalUser = true;
-      linger = true;
-    };
+    users.users.alice.linger = true;
 
     systemd.user.services.xserver = {
       wantedBy = [ "default.target" ];

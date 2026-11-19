@@ -21,7 +21,6 @@ window.set_wm_name(title)
 window.change_property(d.intern_atom("_NET_WM_NAME"), d.intern_atom("UTF8_STRING"), 8, title.encode())
 window.set_wm_class(wm_class, wm_class)
 window.change_property(d.intern_atom("_NET_WM_PID"), Xatom.CARDINAL, 32, [int(pid)])
-# As Xwayland does for every window: its pixels live in a pixmap of its own, whatever covers it.
 window.composite_redirect_window(composite.RedirectAutomatic)
 window.map()
 d.sync()
