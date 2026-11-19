@@ -5,7 +5,9 @@ let
 in
 {
   confine.apps.sonobus = {
-    package = pkgs.sonobus;
+    package = pkgs.sonobus.overrideAttrs (oldAttrs: {
+      cmakeFlags = (oldAttrs.cmakeFlags or [ ]) ++ [ "-DCMAKE_CXX_STANDARD=17" ];
+    });
     appId = "net.sonobus.SonoBus";
 
     profile = [

@@ -1,11 +1,11 @@
 {
-  util,
+  mkProtonBin,
   steamDisplayName ? "proton-cachyos-v3",
 }:
 let
   version = "cachyos-11.0-20261015-slr";
 in
-util.mkProtonBin {
+mkProtonBin {
   pname = "proton-cachyos-v3-bin";
   inherit version steamDisplayName;
 

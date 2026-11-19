@@ -17,7 +17,7 @@ in
 host.needs [ "modules/virtualisation/inspect" ] (
   import ../../../inspect/_tests/fixture.nix { inherit host; } {
     name = "guest-mcp";
-    tools = library: [ (pkgs.callPackage ../_guest-mcp.nix { } library) ];
+    tools = inspect: [ (pkgs.callPackage ../_guest-mcp.nix { } inspect.guestLibrary) ];
 
     testScript = ''
       start_driven()

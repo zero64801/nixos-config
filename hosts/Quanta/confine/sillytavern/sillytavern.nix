@@ -26,7 +26,12 @@ let
 in
 {
   confine.apps.sillytavern = {
-    package = pkgs.sillytavern;
+    package = pkgs.sillytavern.overrideAttrs (oldAttrs: {
+      postInstall = (oldAttrs.postInstall or "") + ''
+        cp -r ${./cardbrowser-plugin} $out/lib/node_modules/sillytavern/plugins/cardbrowser
+        cp -r ${./cardbrowser-extension} $out/lib/node_modules/sillytavern/public/scripts/extensions/third-party/cardbrowser
+      '';
+    });
     appId = "app.sillytavern.SillyTavern";
     install = false;
 

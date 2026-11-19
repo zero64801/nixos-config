@@ -85,12 +85,7 @@ in
         enable = true;
         x3dCacheBias = true;
 
-        steam = {
-          enable = true;
-          compatPackages = [
-            pkgs.proton-cachyos-v3-bin
-          ];
-        };
+        steam.enable = true;
       };
       llamaCpp = {
         enable = true;

@@ -11,7 +11,6 @@ nixos/
 ├── modules/    Feature modules with my.* options (impermanence, stylix, etc.)
 ├── hosts/      Per-host configuration (hardware, user, host-specific settings)
 ├── lib/        Helper functions (recursivelyImport)
-├── pkgs/       Overlays, custom packages, and utility functions
 ├── flake.nix   Flake entry point
 └── hosts.nix   Host builder (auto-discovers hosts/ subdirectories)
 ```

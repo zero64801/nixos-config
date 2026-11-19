@@ -6,7 +6,7 @@
 
 let
   inherit (host) pkgs;
-  inherit (pkgs) memprocfs;
+  memprocfs = pkgs.callPackage ../_memprocfs/memprocfs.nix { };
 
   # 5 GiB so that part of the memory lies above the hole below 4 GiB, where its place in the file and in the guest differ.
   domain =

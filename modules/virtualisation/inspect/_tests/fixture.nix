@@ -83,7 +83,7 @@ let
 in
 {
   name,
-  # More tools for the path of a session, made of the library of the guest tools.
+  # More tools for the path of a session, made of what the machine's inspect module offers, as its guestLibrary and its memprocfs.
   tools ? _: [ ],
   # What the test says of the machine beyond what is here.
   machine ? { },
@@ -153,7 +153,7 @@ host.boot {
       def lab(command):
           return alice(f"export PATH=${
             pkgs.lib.makeBinPath (
-              [ nodes.machine.my.virtualisation.inspect.guestTools ] ++ tools nodes.machine.my.virtualisation.inspect.guestLibrary
+              [ nodes.machine.my.virtualisation.inspect.guestTools ] ++ tools nodes.machine.my.virtualisation.inspect
             )
           }:$PATH; {command}")
 

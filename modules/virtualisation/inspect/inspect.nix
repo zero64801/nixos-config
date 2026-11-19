@@ -37,6 +37,9 @@ let
     exec ${python} -I -B ${./_guest} ${tool} "$@"
   '';
 
+  # MemProcFS, built to read a guest's memory through a session's socket.
+  memprocfs = pkgs.callPackage ./_memprocfs/memprocfs.nix { };
+
   guestTools = pkgs.symlinkJoin {
     name = "vm-inspect-guest-tools";
     paths = map guest [
@@ -102,6 +105,16 @@ in
       readOnly = true;
       default = ./_guest;
       description = "The Python the guest tools are made of, for a module that builds another tool on a session.";
+    };
+
+    memprocfs = mkOption {
+      type = types.package;
+      readOnly = true;
+      default = memprocfs;
+      description = ''
+        MemProcFS with the device that reads a session's memory socket, and its library, for whatever wraps a
+        session. It is on no path by itself, for the reason the guest tools are not.
+      '';
     };
   };
 

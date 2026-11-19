@@ -10,7 +10,7 @@ in
 host.needs [ "modules/virtualisation/inspect" ] (
   import ../../inspect/_tests/fixture.nix { inherit host; } {
     name = "guest-dbg";
-    tools = _: [ (pkgs.callPackage ../_guest-dbg/guest-dbg.nix { }) ];
+    tools = inspect: [ (pkgs.callPackage ../_guest-dbg/guest-dbg.nix { inherit (inspect) memprocfs; }) ];
 
     testScript = ''
       start_driven()

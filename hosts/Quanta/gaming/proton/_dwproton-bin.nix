@@ -1,12 +1,12 @@
 {
-  util,
+  mkProtonBin,
   writeScript,
   steamDisplayName ? "dwproton",
 }:
 let
   version = "dwproton-10.0-15";
 in
-util.mkProtonBin {
+mkProtonBin {
   pname = "dwproton-bin";
   inherit version steamDisplayName;
 

@@ -21,7 +21,7 @@ let
 in
 {
   confine.apps.marinara-engine = {
-    package = pkgs.marinara-engine;
+    package = pkgs.callPackage ./_marinara-engine.nix { };
     appId = "dev.marinara.Engine";
     install = false;
 

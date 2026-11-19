@@ -35,8 +35,8 @@ stdenv.mkDerivation (finalAttrs: {
   };
 
   patches = [
-    ./marinara-engine/advanced-memory-drain.patch
-    ./marinara-engine/act-command.patch
+    ./advanced-memory-drain.patch
+    ./act-command.patch
   ];
 
   pnpmDeps = fetchPnpmDeps {

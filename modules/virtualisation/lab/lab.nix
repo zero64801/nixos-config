@@ -4,6 +4,8 @@ let
   inherit (lib) mkEnableOption mkIf mkOption types;
 
   cfg = config.my.virtualisation.lab;
+  # The module of the sessions the lab works in, which also brings the tools that read a guest.
+  inherit (config.my.virtualisation) inspect;
   inherit (cfg) modes;
   sandboxed = cfg.sandbox != null;
 
@@ -131,16 +133,16 @@ let
   tools = pkgs.buildEnv {
     name = "vm-lab-tools";
     paths = [
-      pkgs.memprocfs
+      inspect.memprocfs
       pkgs.gdb
       pkgs.radare2
-      pkgs.memprocfs.symbolGateway
+      inspect.memprocfs.symbolGateway
       guestMount
       guestGdb
       guestPs
-      (pkgs.callPackage ./_guest-dbg/guest-dbg.nix { })
+      (pkgs.callPackage ./_guest-dbg/guest-dbg.nix { inherit (inspect) memprocfs; })
       labBox
-      config.my.virtualisation.inspect.guestTools
+      inspect.guestTools
     ]
     ++ map (tool: tool.package) (lib.attrValues cfg.tools);
   };
@@ -403,7 +405,7 @@ let
     ''}
 
     id=${pkgs.coreutils}/bin/id
-    inspect=${config.my.virtualisation.inspect.package}/bin/vm-inspect
+    inspect=${inspect.package}/bin/vm-inspect
     session=(--gdb)
     if [ -n "$control" ]; then session+=(--control); fi
     if "$inspect" --join "$domain" -- ${pkgs.coreutils}/bin/true 2>/dev/null; then

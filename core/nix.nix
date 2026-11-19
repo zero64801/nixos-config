@@ -1,10 +1,7 @@
-{ inputs, hostName, lib, pkgs, ... }:
+{ lib, pkgs, ... }:
 
 {
-  nixpkgs = {
-    config.allowUnfree = true;
-    overlays = [ (import ../pkgs/default.nix { inherit inputs hostName; }) ];
-  };
+  nixpkgs.config.allowUnfree = true;
 
   nix = {
     package = pkgs.lixPackageSets.lix_2_96.lix;

@@ -33,6 +33,8 @@ let
 in
 host.boot {
   name = "vm-lab-bare";
+  # Its own module is stood in for below, yet the MemProcFS the lab hands out is built from that folder.
+  needs = [ "modules/virtualisation/inspect" ];
 
   # The made up host as a fork has it that deleted confine, and without the agent's folder, which builds on the real vm-inspect.
   without = [
@@ -49,6 +51,7 @@ host.boot {
         enable = lib.mkEnableOption "the stand in for vm-inspect";
         package = lib.mkOption { type = lib.types.package; };
         guestTools = lib.mkOption { type = lib.types.package; };
+        memprocfs = lib.mkOption { type = lib.types.package; };
       };
 
       config = {
@@ -56,6 +59,8 @@ host.boot {
           enable = true;
           package = session;
           inherit guestTools;
+          # The real one, which is the tool the lab is for and needs no guest to be built.
+          memprocfs = pkgs.callPackage ../../inspect/_memprocfs/memprocfs.nix { };
         };
         my.virtualisation.lab = {
           enable = true;

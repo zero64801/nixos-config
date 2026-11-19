@@ -4,7 +4,7 @@ let
   cfg = config.my.apps.zen;
   profilePath = ".config/zen/default";
 
-  addons = if cfg.addonPins == null then { } else pkgs.util.importAddons cfg.addonPins;
+  addons = if cfg.addonPins == null then { } else pkgs.callPackage ./_addons.nix { } cfg.addonPins;
 
   lock = x: {
     Value = x;
@@ -76,8 +76,7 @@ in
       default = null;
       example = lib.literalExpression "./firefox-addons.json";
       description = ''
-        A firefox-addons.json of AMO pins, imported with pkgs.util.importAddons
-        and managed by `addon-pin`. Everything it lists is force installed and
+        A firefox-addons.json of AMO pins, managed by `addon-pin`. Everything it lists is force installed and
         every other extension is blocked, including when this is null.
       '';
     };
