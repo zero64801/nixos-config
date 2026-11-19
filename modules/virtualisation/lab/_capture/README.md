@@ -98,7 +98,9 @@ What it lists is what to send from Linux for the same effect.
 
 ## Limits
 
-- HTTP/3 shows as a QUIC flow with the name it asked for. `keys scan` finds QUIC's secrets, which open its packets, but tshark reads HTTP/3 itself only in part, without its library for QPACK.
+- HTTP/3 shows as a QUIC flow with the name it asked for. `keys scan` finds QUIC's secrets, which open its packets, but tshark reads them as HTTP/3 only when the handshake secrets were found too.
+  It learns the protocol from the server's encrypted extensions, which only those open, and has no setting to name it instead.
+  With the traffic secrets alone it shows the decrypted stream frames, not HTTP/3's requests.
 - A secret that crosses a page boundary of the program's memory is in two places of the RAM, so `--physical` cannot find it, though the program's own memory, read through MemProcFS or the page map, can.
 - A TLS 1.3 connection whose keys were updated holds the newer secrets, which open no record of the start, so `keys scan` finds none of it.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.

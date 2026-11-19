@@ -227,7 +227,8 @@ Deleting that folder removes it.
 - A window that blocks capture, such as protected video, will likely come out black.
   The screen's picture cut to that window's place is the way around it.
 - A program with its own crypto over plain TCP or UDP stays unreadable: `keys scan` opens TLS and QUIC only.
-- tshark reads HTTP/3 only in part, though `keys scan` opens QUIC's packets.
+- tshark reads QUIC's streams as HTTP/3 only when `keys scan` found the handshake secrets too.
+  With the traffic secrets alone it shows the decrypted stream frames, not the requests.
 - A TLS 1.3 connection that updated its keys holds only the newer ones, which open none of its start, and `--follow` is the way to catch it before.
 
 ## Running something that came out of the guest
