@@ -79,7 +79,7 @@ in
       description = "Libvirt hooks for VM lifecycle management";
       example = literalExpression ''
         {
-          win11 = ./win11-hook.sh;
+          guest = ./guest-hook.sh;
         }
       '';
     };

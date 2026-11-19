@@ -280,7 +280,7 @@ in
     domains = mkOption {
       type = types.attrsOf domainType;
       default = { };
-      example = lib.literalExpression ''{ win11 = { }; win11-re.modes.virtual.video = "qxl"; }'';
+      example = lib.literalExpression ''{ guest = { }; other.modes.virtual.video = "qxl"; }'';
       description = "Libvirt domains vm-gpu may start and switch, each with optional per-mode overrides.";
     };
 

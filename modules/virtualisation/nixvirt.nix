@@ -1785,7 +1785,7 @@ in
         };
       });
       default = { };
-      example = lib.literalExpression "{ win11.tcp = [ 3000 ]; }";
+      example = lib.literalExpression "{ guest.tcp = [ 3000 ]; }";
       description = ''
         Host ports one domain's guest may reach on top of what network isolation allows every guest, keyed by domain name.
         Matched on the domain's network device, so another guest cannot gain the access by copying its MAC or IP address.

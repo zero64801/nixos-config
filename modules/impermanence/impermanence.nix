@@ -214,7 +214,7 @@ in
     configRepoPath = mkOption {
       type    = nullOr str;
       default = config.my.flakePath;
-      example = "/home/dx/nixos";
+      example = "/home/alice/nixos";
       description = "Path to the NixOS configuration repository. Defaults to my.flakePath.";
     };
 
