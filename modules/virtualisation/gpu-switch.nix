@@ -5,7 +5,8 @@ let
   inherit (lib.types) bool enum;
 
   cfg = config.my.virtualisation.gpuSwitch;
-  vfioCfg = config.my.virtualisation.desktop.vfio;
+  # Read with a stand in where the module is gone, so that the assertion below is what a rebuild ends with.
+  vfioCfg = config.my.virtualisation.desktop.vfio or { enable = false; pciAddresses = [ ]; };
 
   nvidiaEnabled = lib.elem "nvidia" config.services.xserver.videoDrivers;
   nvidiaSmi = lib.optionalString nvidiaEnabled "${config.hardware.nvidia.package.bin}/bin/nvidia-smi";
@@ -538,6 +539,13 @@ in
 
   config = mkIf cfg.enable (mkMerge [
     {
+      assertions = [
+        {
+          assertion = config.my.virtualisation ? desktop;
+          message = "my.virtualisation.gpuSwitch switches the cards that my.virtualisation.desktop.vfio names, and this system has no module with that option.";
+        }
+      ];
+
       environment.systemPackages = [ gpuSwitch ];
     }
 

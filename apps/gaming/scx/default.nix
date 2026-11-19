@@ -2,11 +2,16 @@
 
 let
   cfg = config.my.apps.scx;
-  scripts = import ./_scripts.nix {
-    inherit pkgs lib;
-    inherit (cfg) gameScheduler gameSchedulerFlags;
-    vmClaimDir = config.my.virtualisation.cpuPinning.claimDir;
-  };
+  scripts = import ./_scripts.nix (
+    {
+      inherit pkgs lib;
+      inherit (cfg) gameScheduler gameSchedulerFlags;
+    }
+    # Where guests name the cores they hold, on a system that pins them. Without that module the scripts keep their own place for it.
+    // lib.optionalAttrs (config.my ? virtualisation.cpuPinning) {
+      vmClaimDir = config.my.virtualisation.cpuPinning.claimDir;
+    }
+  );
   inherit (scripts) scx-env scx-switch scx-gui scx-desktop-item;
 in
 {

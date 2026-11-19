@@ -28,7 +28,7 @@ in
       pkgs.yubioath-flutter
     ];
 
-    programs.yubikey-touch-detector.enable = !config.my.security.touchGuard.enable;
+    programs.yubikey-touch-detector.enable = !(config.my.security.touchGuard.enable or false);
 
     security.pam.u2f = {
       enable = true;

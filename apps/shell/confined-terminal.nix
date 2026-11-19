@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, options, pkgs, ... }:
 
 let
   cfg = config.my.apps.confinedTerminal;
@@ -25,7 +25,15 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [
+    assertions = [
+      {
+        assertion = options ? confine;
+        message = "my.apps.confinedTerminal opens a confine sandbox, and this system has no confine module.";
+      }
+    ];
+
+    # Left out without confine, so that the assertion above is what a rebuild ends with.
+    environment.systemPackages = lib.optionals (options ? confine) [
       (pkgs.callPackage ./_confined-terminal.nix { inherit (config.confine.lib) wrap; } { inherit (cfg) scratchDir tint; })
     ];
 

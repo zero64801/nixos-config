@@ -10,7 +10,8 @@ let
   inherit (lib.types) attrsOf int listOf path str;
 
   cfg = config.my.virtualisation.desktop;
-  gpuSwitchCfg = config.my.virtualisation.gpuSwitch;
+  # Without the module that switches the cards they stay with vfio from boot.
+  gpuSwitchCfg = config.my.virtualisation.gpuSwitch or { enable = false; };
 
   hugepagesHook = pkgs.writeShellScript "libvirt-hook-hugepages" (
     ''

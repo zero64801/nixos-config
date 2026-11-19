@@ -54,9 +54,10 @@ in
           defaultgov = "powersave";
         };
         settings.custom = let
-          scxCfg = config.my.apps.scx;
+          # A system without the scx module switches no scheduler.
+          scxCfg = config.my.apps.scx or { };
           switch = "${scxCfg.package}/bin/scx-switch";
-          scxEnabled = scxCfg.gameScheduler != "" && scxCfg.gameScheduler != null;
+          scxEnabled = !lib.elem (scxCfg.gameScheduler or null) [ "" null ];
 
           x3dStart = lib.optionalString cfg.x3dCacheBias ''
             for f in /sys/bus/platform/drivers/amd_x3d_vcache/*/amd_x3d_mode; do

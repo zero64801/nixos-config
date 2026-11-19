@@ -4,7 +4,6 @@ let
   inherit (lib) mkEnableOption mkIf mkOption types concatStringsSep escapeShellArg;
 
   cfg = config.my.virtualisation.gpuMode;
-  vfioCfg = config.my.virtualisation.desktop.vfio;
   lgEnabled = config.my.virtualisation.desktop.looking-glass.enable or false;
 
   pciPredicate = addr:
@@ -318,7 +317,8 @@ in
     my.virtualisation.gpuMode.modes = {
       passthrough = { };
       virtual = {
-        stripHostdevs = lib.mkDefault vfioCfg.pciAddresses;
+        # The cards a host names for passthrough, where the module that takes them is there.
+        stripHostdevs = lib.mkDefault (config.my.virtualisation.desktop.vfio.pciAddresses or [ ]);
         stripQemuArgs = lib.mkDefault (lib.optional lgEnabled "looking-glass");
         video = lib.mkDefault "virtio";
       };
