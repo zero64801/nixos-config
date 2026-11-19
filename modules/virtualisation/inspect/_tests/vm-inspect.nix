@@ -1,11 +1,11 @@
-# nix build --impure --no-link -L --expr 'import ./modules/virtualisation/_tests/vm-inspect.nix { }'
+# nix build --impure --no-link -L --expr 'import ./modules/virtualisation/inspect/_tests/vm-inspect.nix { }'
 # vm-inspect against a real QEMU under libvirt, running as its own user with its memory on huge pages.
 {
-  pkgs ? (builtins.getFlake (toString ../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  pkgs ? (builtins.getFlake (toString ../../../..)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
 }:
 
 let
-  memprocfs = pkgs.callPackage ../../../pkgs/packages/memprocfs/memprocfs.nix { };
+  memprocfs = pkgs.callPackage ../../../../pkgs/packages/memprocfs/memprocfs.nix { };
 
   # 5 GiB so that part of the memory lies above the hole below 4 GiB, where its place in the file and in the guest differ.
   domain =
