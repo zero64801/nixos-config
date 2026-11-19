@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, options, pkgs, ... }:
 
 let
   cfg = config.my.apps.vlessProxy;
@@ -455,7 +455,8 @@ in
       ];
     }
 
-    (lib.mkIf (cfg.discordWrapper.enable && config.my.apps.discord.enable) {
+    # The launcher tunnels from inside Discord's confine sandbox, so a system without the confine module, or without Discord's, gets none.
+    (lib.optionalAttrs (options ? confine) (lib.mkIf (cfg.discordWrapper.enable && (config.my.apps.discord.enable or false)) {
       # The voice engine sends its own UDP and ignores Chromium's proxy switch, so only a tun catches it.
       confine.apps.discord.networkSetups.vless = tunSetup;
 
@@ -488,6 +489,6 @@ in
             };
           })
       ];
-    })
+    }))
   ]);
 }

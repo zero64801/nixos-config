@@ -1,4 +1,4 @@
-{ config, lib, ... }:
+{ config, lib, options, ... }:
 
 let
   inherit (lib) mkOption mkIf types;
@@ -40,7 +40,7 @@ in
 
   config = lib.mkMerge [
     {
-      my.persistence.home.directories = config.confine.persistentHomeDirectories;
+      my.persistence.home.directories = lib.optionals (options ? confine) config.confine.persistentHomeDirectories;
     }
 
     (mkIf config.my.impermanence.enable {

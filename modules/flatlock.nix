@@ -1,10 +1,11 @@
-{ config, lib, ... }:
+{ config, lib, options, ... }:
 
 let
   cfg = config.flatlock;
 in
 {
-  config = lib.mkMerge [
+  # The flatlock app is a folder a system can do without, and this wiring then does nothing.
+  config = lib.optionalAttrs (options ? flatlock) (lib.mkMerge [
     {
       hm.imports = [ ../apps/flatlock/_modules/home-manager.nix ];
       hm.flatlock.configRepoPath = lib.mkDefault config.my.flakePath;
@@ -38,5 +39,5 @@ in
         ".local/state/flatlock"
       ];
     })
-  ];
+  ]);
 }
