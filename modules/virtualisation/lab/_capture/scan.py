@@ -115,7 +115,9 @@ SENT = "0x00000002"
 # The first bytes of each direction hold the hellos and the first encrypted records.
 OPENING = 65536
 PAGE = 4096
-WANTED = {0x0303: {"CLIENT_RANDOM"}, 0x0304: {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"}}
+WANTED = {0x0301: {"CLIENT_RANDOM"}, 0x0302: {"CLIENT_RANDOM"}, 0x0303: {"CLIENT_RANDOM"},
+          0x0304: {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"}}
+VERSIONS = {0x0301: "1.0", 0x0302: "1.1", 0x0303: "1.2", 0x0304: "1.3"}
 
 
 def contiguous(parts):
@@ -407,9 +409,9 @@ def run(capture, args, flows):
         names = plain(",".join(s.flow["names"]) or s.flow["remote"], 60)
         if s.found:
             where = ", ".join(f"{label} at {hit.address:#x}" for label, hit in sorted(s.found.items()))
-            print(f"{s.flow['id']:<6} {names}  TLS {'1.3' if s.version == 0x0304 else '1.2'}  {where}")
+            print(f"{s.flow['id']:<6} {names}  TLS {VERSIONS[s.version]}  {where}")
         else:
-            print(f"{s.flow['id']:<6} {names}  TLS {'1.3' if s.version == 0x0304 else '1.2'}  not found")
+            print(f"{s.flow['id']:<6} {names}  TLS {VERSIONS[s.version]}  not found")
     print(f"{len(lines)} secrets added to the capture", file=sys.stderr)
 
 
@@ -568,8 +570,8 @@ class Follower:
         if found and found.version == 0x0304 and flow.before is None and any(record[0] == 1 for record in found.records):
             flow.before = client
         # The traffic secrets of TLS 1.3 are there once the client encrypts after the server's flight: its records before
-        # that can be early data, sent with the hello. Those of TLS 1.2 are there with the client's first.
-        if found and client and (found.version == 0x0303 or (flow.before is not None and client > flow.before)):
+        # that can be early data, sent with the hello. Those of the older versions are there with the client's first.
+        if found and client and (found.version != 0x0304 or (flow.before is not None and client > flow.before)):
             self.handled.add(key)
             flow.trigger = packet.time
             if self.scanner.supported(found):
@@ -678,7 +680,7 @@ class Follower:
             hits += self.scanner.scan(window, len(window), low, [found], step=1, threads=threads())
         labels = pending.told | {hit.label for hit in hits}
         # The whole copy is searched once, when the records the traffic secrets open have come.
-        ready = final or found.version == 0x0303 or sum(1 for record in found.records if record[0] == 1) > 1
+        ready = final or found.version != 0x0304 or sum(1 for record in found.records if record[0] == 1) > 1
         if not WANTED[found.version] <= labels and pending.whole and ready:
             total = sum(length for _, _, length in pending.whole)
             step = step_for(self.args, total)
@@ -689,7 +691,7 @@ class Follower:
         if fresh:
             tell({"do": "note", "kind": "keys", "lines": [hit.line for hit in fresh.values()]})
             pending.told |= set(fresh)
-            print(f"{pending.flow}  {plain(found.name or '-', 60)}  TLS {'1.3' if found.version == 0x0304 else '1.2'}  "
+            print(f"{pending.flow}  {plain(found.name or '-', 60)}  TLS {VERSIONS[found.version]}  "
                   f"{', '.join(sorted(fresh))} in {pending.source}")
             sys.stdout.flush()
         done = WANTED[found.version] <= pending.told

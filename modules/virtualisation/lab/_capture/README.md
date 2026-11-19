@@ -73,7 +73,7 @@ The libraries most programs use keep the client random beside the secrets, OpenS
 The rest is searched at every offset where it is up to 32 MiB and at every eighth beyond, which `--step` changes.
 The search itself is in C, `tlsscan/tlsscan.c`, and tries some millions of windows a second.
 
-It knows TLS 1.3 with AES-GCM and ChaCha20-Poly1305, and TLS 1.2 with AES-GCM, ChaCha20-Poly1305 and AES-CBC, with or without encrypt-then-MAC.
+It knows TLS 1.3 with AES-GCM and ChaCha20-Poly1305, TLS 1.2 with AES-GCM, ChaCha20-Poly1305 and AES-CBC, and TLS 1.0 and 1.1 with AES-CBC, older programs and samples still using them, with or without encrypt-then-MAC.
 Windows' own TLS keeps its secrets in `lsass`, which `keys schannel` reads.
 
 ## guest-usb

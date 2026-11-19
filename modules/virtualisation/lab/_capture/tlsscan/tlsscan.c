@@ -9,6 +9,7 @@
  * the whole record.
  */
 #include <openssl/evp.h>
+#include <openssl/md5.h>
 #include <openssl/sha.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -16,7 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { H_SHA1 = 1, H_SHA256 = 2, H_SHA384 = 3 };
+/* H_LEGACY is the PRF of TLS 1.0 and 1.1, MD5 and SHA1 together. */
+enum { H_SHA1 = 1, H_SHA256 = 2, H_SHA384 = 3, H_MD5 = 4, H_LEGACY = 5 };
 enum { GCM = 1, CHACHA = 2, CBC = 3 };
 enum { MAXRECORDS = 32, LARGEST = (1 << 14) + 2048 };
 
@@ -29,7 +31,7 @@ typedef struct {
 } tls_record;
 
 typedef struct {
-    uint32_t version; /* 0x0303 or 0x0304 */
+    uint32_t version; /* 0x0301 to 0x0304 */
     uint32_t suite;
     uint32_t etm;
     uint32_t nrecords;
@@ -85,22 +87,32 @@ static const suite_info SUITES[] = {
     {0xc024, 12, CBC, 32, 0, H_SHA384, H_SHA384},
     {0xc027, 12, CBC, 16, 0, H_SHA256, H_SHA256},
     {0xc028, 12, CBC, 32, 0, H_SHA384, H_SHA384},
+    /* TLS 1.0 and 1.1, whose key block has the IVs that TLS 1.0 uses for its first records. */
+    {0x002f, 10, CBC, 16, 16, H_SHA1, H_LEGACY},
+    {0x0033, 10, CBC, 16, 16, H_SHA1, H_LEGACY},
+    {0x0035, 10, CBC, 32, 16, H_SHA1, H_LEGACY},
+    {0x0039, 10, CBC, 32, 16, H_SHA1, H_LEGACY},
+    {0xc009, 10, CBC, 16, 16, H_SHA1, H_LEGACY},
+    {0xc00a, 10, CBC, 32, 16, H_SHA1, H_LEGACY},
+    {0xc013, 10, CBC, 16, 16, H_SHA1, H_LEGACY},
+    {0xc014, 10, CBC, 32, 16, H_SHA1, H_LEGACY},
 };
 
 static const suite_info *suite_of(uint32_t version, uint32_t suite) {
     for (size_t i = 0; i < sizeof SUITES / sizeof *SUITES; i++)
-        if (SUITES[i].suite == suite && SUITES[i].version == (version == 0x0304 ? 13 : 12))
+        if (SUITES[i].suite == suite && SUITES[i].version == (version == 0x0304 ? 13 : version == 0x0303 ? 12 : 10))
             return &SUITES[i];
     return NULL;
 }
 
 int tlsscan_supported(uint32_t version, uint32_t suite) {
-    return (version == 0x0303 || version == 0x0304) && suite_of(version, suite) != NULL;
+    return version >= 0x0301 && version <= 0x0304 && suite_of(version, suite) != NULL;
 }
 
 /* HMAC on the low level hash functions, whose keyed states are copied instead of rebuilt, since the scan computes
  * millions of them with a handful of keys each. */
 typedef union {
+    MD5_CTX md5;
     SHA_CTX s1;
     SHA256_CTX s256;
     SHA512_CTX s512;
@@ -111,11 +123,13 @@ typedef struct {
     sha_ctx inner, outer;
 } hmac_key;
 
-static size_t hash_size(int hash) { return hash == H_SHA1 ? 20 : hash == H_SHA256 ? 32 : 48; }
+static size_t hash_size(int hash) { return hash == H_MD5 ? 16 : hash == H_SHA1 ? 20 : hash == H_SHA256 ? 32 : 48; }
 static size_t hash_block(int hash) { return hash == H_SHA384 ? 128 : 64; }
 
 static void sha_init(int hash, sha_ctx *c) {
-    if (hash == H_SHA1)
+    if (hash == H_MD5)
+        MD5_Init(&c->md5);
+    else if (hash == H_SHA1)
         SHA1_Init(&c->s1);
     else if (hash == H_SHA256)
         SHA256_Init(&c->s256);
@@ -124,7 +138,9 @@ static void sha_init(int hash, sha_ctx *c) {
 }
 
 static void sha_update(int hash, sha_ctx *c, const void *data, size_t length) {
-    if (hash == H_SHA1)
+    if (hash == H_MD5)
+        MD5_Update(&c->md5, data, length);
+    else if (hash == H_SHA1)
         SHA1_Update(&c->s1, data, length);
     else if (hash == H_SHA256)
         SHA256_Update(&c->s256, data, length);
@@ -133,7 +149,9 @@ static void sha_update(int hash, sha_ctx *c, const void *data, size_t length) {
 }
 
 static void sha_final(int hash, sha_ctx *c, uint8_t *out) {
-    if (hash == H_SHA1)
+    if (hash == H_MD5)
+        MD5_Final(out, &c->md5);
+    else if (hash == H_SHA1)
         SHA1_Final(out, &c->s1);
     else if (hash == H_SHA256)
         SHA256_Final(out, &c->s256);
@@ -187,12 +205,12 @@ static void expand_label(const hmac_key *k, const char *label, size_t length, ui
     memcpy(out, full, length);
 }
 
-/* The PRF of RFC 5246 5 over "key expansion", for the key block of TLS 1.2. */
-static void key_block(int hash, const uint8_t master[48], const uint8_t *seed, size_t seedlen, uint8_t *out, size_t length) {
+/* P_hash of RFC 5246 5. */
+static void p_hash(int hash, const uint8_t *secret, size_t secretlen, const uint8_t *seed, size_t seedlen, uint8_t *out, size_t length) {
     hmac_key k;
     uint8_t a[64], block[64];
     size_t size = hash_size(hash);
-    hmac_setup(&k, hash, master, 48);
+    hmac_setup(&k, hash, secret, secretlen);
     hmac(&k, seed, seedlen, NULL, 0, a);
     while (length) {
         size_t take = length < size ? length : size;
@@ -203,6 +221,20 @@ static void key_block(int hash, const uint8_t master[48], const uint8_t *seed, s
         if (length)
             hmac(&k, a, size, NULL, 0, a);
     }
+}
+
+/* The key block of TLS 1.0 to 1.2 from the master secret: the PRF over "key expansion", which TLS 1.0 and 1.1 make of
+ * P_MD5 over the master secret's first half and P_SHA1 over its second, XORed (RFC 2246 5). */
+static void key_block(int hash, const uint8_t master[48], const uint8_t *seed, size_t seedlen, uint8_t *out, size_t length) {
+    if (hash != H_LEGACY) {
+        p_hash(hash, master, 48, seed, seedlen, out, length);
+        return;
+    }
+    uint8_t other[256];
+    p_hash(H_MD5, master, 24, seed, seedlen, out, length);
+    p_hash(H_SHA1, master + 24, 24, seed, seedlen, other, length);
+    for (size_t i = 0; i < length; i++)
+        out[i] ^= other[i];
 }
 
 typedef struct {
@@ -341,7 +373,7 @@ static void report(job *j, prepared *t, uint32_t record, uint32_t inner, uint32_
 /* Done when the secrets that decrypt the traffic are found: TLS 1.2's master secret, or both traffic secrets of TLS 1.3.
  * The last target done stops the scan. */
 static void settle(job *j, prepared *t) {
-    int finished = t->target->version == 0x0303 ? atomic_load(&t->solved) != 0 : atomic_load(&t->client) && atomic_load(&t->server);
+    int finished = t->target->version != 0x0304 ? atomic_load(&t->solved) != 0 : atomic_load(&t->client) && atomic_load(&t->server);
     if (!finished || atomic_exchange(&t->done, 1))
         return;
     for (size_t i = 0; i < j->ntargets; i++)
@@ -397,7 +429,8 @@ static void try13(job *j, crypto *c, prepared *t, const uint8_t *key, const uint
     }
 }
 
-/* TLS 1.2: the master secret's keys open the first encrypted record of a direction, its Finished, at sequence number 0. */
+/* TLS 1.0 to 1.2: the master secret's keys open the first encrypted record of a direction, its Finished, at sequence
+ * number 0. */
 static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t offset) {
     static const uint8_t header[4] = {20, 0, 0, 12};
     const suite_info *s = t->suite;
@@ -415,7 +448,7 @@ static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t 
         int server = x->direction == 1;
         const uint8_t *mackey = block + (server ? maclen : 0), *key = block + 2 * maclen + (server ? s->keylen : 0),
                       *fixed = block + 2 * maclen + 2 * s->keylen + (server ? s->ivlen : 0);
-        uint8_t nonce[12], stream[16], first[16], aad[13] = {0, 0, 0, 0, 0, 0, 0, 0, 22, 3, 3, 0, 0};
+        uint8_t nonce[12], stream[16], first[16], aad[13] = {0, 0, 0, 0, 0, 0, 0, 0, 22, 3, (uint8_t)t->target->version, 0, 0};
         if (s->mode == GCM) {
             if (x->length < 8 + 16 + 4)
                 continue;
@@ -450,11 +483,12 @@ static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t 
             if (!aead_open(c, CHACHA, s->keylen, key, nonce, aad, 13, x->body, x->length))
                 continue;
         } else {
-            size_t tail = t->target->etm ? maclen : 0;
-            if (x->length < 16 + 16 + tail || (x->length - 16 - tail) % 16)
+            /* TLS 1.0 has no IV in its records, and its first record's IV is the key block's. */
+            size_t tail = t->target->etm ? maclen : 0, explicit = t->target->version >= 0x0302 ? 16 : 0;
+            if (x->length < explicit + 16 + tail || (x->length - explicit - tail) % 16)
                 continue;
-            const uint8_t *iv = x->body, *enc = x->body + 16;
-            size_t enclen = x->length - 16 - tail;
+            const uint8_t *iv = explicit ? x->body : fixed, *enc = x->body + explicit;
+            size_t enclen = x->length - explicit - tail;
             if (!aes_block(c, 0, s->keylen, key, enc, first))
                 continue;
             for (int i = 0; i < 16; i++)
@@ -505,7 +539,7 @@ static void candidate(job *j, crypto *c, const uint8_t *p, size_t n, size_t offs
         prepared *t = &j->targets[i];
         if (atomic_load(&t->done))
             continue;
-        if (t->target->version == 0x0303) {
+        if (t->target->version != 0x0304) {
             if (n == 48)
                 try12(j, c, t, p, offset);
             continue;
@@ -536,7 +570,7 @@ static void *work(void *argument) {
     for (size_t i = 0; i < j->ntargets; i++) {
         if (atomic_load(&j->targets[i].done))
             continue;
-        size_t n = j->targets[i].target->version == 0x0303 ? 48 : hash_size(j->targets[i].suite->prf);
+        size_t n = j->targets[i].target->version != 0x0304 ? 48 : hash_size(j->targets[i].suite->prf);
         want32 |= n == 32;
         want48 |= n == 48;
     }

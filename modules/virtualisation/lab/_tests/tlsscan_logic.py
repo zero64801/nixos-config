@@ -109,13 +109,17 @@ CASES = [
     (relay, 0x0303, 0xC028, ["-tls1_2", "-cipher", "ECDHE-RSA-AES256-SHA384", "-no_etm"]),
     (relay, 0x0303, 0x003C, ["-tls1_2", "-cipher", "AES128-SHA256:@SECLEVEL=0", "-no_etm"]),
     (relay, 0x0303, 0x0035, ["-tls1_2", "-cipher", "AES256-SHA:@SECLEVEL=0"]),
+    (relay, 0x0302, 0xC013, ["-tls1_1", "-cipher", "ECDHE-RSA-AES128-SHA:@SECLEVEL=0"]),
+    (relay, 0x0302, 0xC014, ["-tls1_1", "-cipher", "ECDHE-RSA-AES256-SHA:@SECLEVEL=0", "-no_etm"]),
+    (relay, 0x0301, 0x002F, ["-tls1", "-cipher", "AES128-SHA:@SECLEVEL=0", "-no_etm"]),
+    (relay, 0x0301, 0xC014, ["-tls1", "-cipher", "ECDHE-RSA-AES256-SHA:@SECLEVEL=0"]),
 ]
 sessions, logs = [], []
 for via, version, suite, options in CASES:
     found, log = talk(via, *options)
     assert (found.version, found.suite) == (version, suite), (options, found)
     assert scanner.supported(found), options
-    assert found.etm == ("-no_etm" not in options and version == 0x0303 and suite in (0xC013, 0x0035)), (options, found.etm)
+    assert found.etm == ("-no_etm" not in options and version != 0x0304 and suite in (0xC013, 0xC014, 0x0035, 0x002F)), (options, found.etm)
     sessions.append(found)
     logs.append(log)
 plain_server.kill()
@@ -141,7 +145,7 @@ for _ in range(64):
 
 wanted = {}
 for number, (found, log) in enumerate(zip(sessions, logs)):
-    labels = ["CLIENT_RANDOM"] if found.version == 0x0303 else \
+    labels = ["CLIENT_RANDOM"] if found.version != 0x0304 else \
         ["CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"]
     structure = bytearray(found.client_random + os.urandom(32))
     for label in labels:
@@ -166,7 +170,7 @@ for hit in hits:
     assert wanted[(number, hit.label)] + base == hit.address, f"session {number}: {hit.label} at {hit.address:#x}"
 for number, found in enumerate(sessions):
     labels = {hit.label for hit in hits if hit.session is found}
-    needed = {"CLIENT_RANDOM"} if found.version == 0x0303 else {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"}
+    needed = {"CLIENT_RANDOM"} if found.version != 0x0304 else {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"}
     assert needed <= labels, f"session {number} {CASES[number][3]}: found only {labels}"
 
 anchors = scanner.find(memory, len(memory), base, [found.client_random for found in sessions], threads=threads)

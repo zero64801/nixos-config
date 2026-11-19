@@ -99,7 +99,7 @@ def server_hello(body):
 
 
 def session(client, server):
-    """A flow's TLS from what the client and the server sent, or None when it is no TLS 1.2 or 1.3 handshake."""
+    """A flow's TLS from what the client and the server sent, or None when it is no handshake of TLS 1.0 to 1.3."""
     sent, got = list(records(client)), list(records(server))
     hello = next((client_hello(body) for kind, body in messages(sent) if kind == CLIENT_HELLO), None)
     if not hello:
@@ -111,7 +111,7 @@ def session(client, server):
             if parsed and parsed[1] != RETRY:
                 chosen = parsed
                 break
-    if not chosen or chosen[0] not in (0x0303, 0x0304):
+    if not chosen or chosen[0] not in (0x0301, 0x0302, 0x0303, 0x0304):
         return None
     found = Session()
     found.client_random, (found.version, found.server_random, found.suite, accepted) = hello[0], chosen
@@ -126,7 +126,7 @@ def session(client, server):
 
 
 def encrypted(stream, version):
-    """The first encrypted records of one direction: in TLS 1.3 those of type application data, in TLS 1.2 the one after
+    """The first encrypted records of one direction: in TLS 1.3 those of type application data, before it the one after
     the ChangeCipherSpec, which is the Finished."""
     if version == 0x0304:
         return [(kind, v, body) for kind, v, body in stream if kind == APPLICATION_DATA][:KEPT]
@@ -138,7 +138,7 @@ def encrypted(stream, version):
 
 def label(found, direction, index, inner, first):
     """The key log label of a secret that opened the record at this index of this direction at sequence number 0."""
-    if found.version == 0x0303:
+    if found.version != 0x0304:
         return "CLIENT_RANDOM"
     if direction == 1:
         return "SERVER_HANDSHAKE_TRAFFIC_SECRET" if index == 0 else "SERVER_TRAFFIC_SECRET_0"
