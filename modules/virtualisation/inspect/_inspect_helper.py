@@ -176,11 +176,23 @@ class Agent:
         self.missing = None
 
     def command(self, text):
-        """What the agent answers to one command, as text that is not looked into, or None and why there is none."""
+        """What the agent answers to one command, as text that is not looked into, or None and why there is none. A guest
+        held still for a moment, as keys scan --pause holds it, is waited for up to ten seconds, since libvirt refuses
+        every agent command meanwhile."""
+        until = time.monotonic() + 10
+        while True:
+            try:
+                return libvirt_qemu.qemuAgentCommand(self.guest, text, 30, 0), None
+            except libvirt.libvirtError as e:
+                if time.monotonic() > until or not self.paused():
+                    return None, str(e)
+                time.sleep(0.05)
+
+    def paused(self):
         try:
-            return libvirt_qemu.qemuAgentCommand(self.guest, text, 30, 0), None
-        except libvirt.libvirtError as e:
-            return None, str(e)
+            return self.guest.state()[0] == libvirt.VIR_DOMAIN_PAUSED
+        except libvirt.libvirtError:
+            return False
 
     def close(self):
         """Takes the session's channel out again. By its alias: a description would have to name the socket libvirt gave it."""
