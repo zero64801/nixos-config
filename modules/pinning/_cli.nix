@@ -127,7 +127,7 @@ writeShellApplication {
           base="''${url%%\?*}"
           new=$(echo "$base" | sed -E "s|[a-f0-9]{40}|$rev|g")
           if [[ "$new" == "$base" ]]; then
-            warn "Could not substitute rev in tarball URL for '$input' — pin may not take effect"
+            warn "Could not substitute rev in tarball URL for '$input' - pin may not take effect"
           fi
           echo "$new"
           ;;
@@ -200,7 +200,7 @@ writeShellApplication {
         pt=$(get_pin_type "$pi")
         pr=$(get_pin_rev "$pi")
         if [[ -z "$pr" ]]; then
-          warn "Could not restore $pi — no saved revision"
+          warn "Could not restore $pi - no saved revision"
           continue
         fi
         local ref
@@ -260,7 +260,7 @@ writeShellApplication {
         fi
 
         printf "  %-22s %-21s %-12s %-20s %b\n" \
-          "$input" "$status_str" "$rev_display" "''${locked_date:-—}" "$reason_display"
+          "$input" "$status_str" "$rev_display" "''${locked_date:--}" "$reason_display"
       done <<< "$inputs"
 
       echo
@@ -590,7 +590,7 @@ writeShellApplication {
       pinned_rev=$(get_pin_rev "$input")
 
       if [[ -z "$pin_type" ]]; then
-        echo -e "''${bold}$input''${reset} is not pinned — nothing to compare."
+        echo -e "''${bold}$input''${reset} is not pinned - nothing to compare."
         return
       fi
 
@@ -607,7 +607,7 @@ writeShellApplication {
       echo -e "  Locked rev: ''${cyan}''${locked_rev:0:12}''${reset}"
 
       if [[ "$pinned_rev" == "$locked_rev" ]]; then
-        echo -e "\n  ''${green}Lock matches pin — in sync.''${reset}"
+        echo -e "\n  ''${green}Lock matches pin - in sync.''${reset}"
       else
         echo -e "\n  ''${yellow}Lock differs from pin.''${reset}"
         echo -e "  ''${DIM}Run 'pin update' to restore pin, or 'pin unpin $input' to track latest.''${NC}"
@@ -638,7 +638,7 @@ writeShellApplication {
       pinned_inputs=$(get_all_pinned_inputs)
 
       if [[ -z "$pinned_inputs" ]]; then
-        echo -e "''${green}No pins defined — nothing to check.''${reset}"
+        echo -e "''${green}No pins defined - nothing to check.''${reset}"
         report_subflakes
         return
       fi
@@ -650,7 +650,7 @@ writeShellApplication {
         locked_rev=$(get_locked_rev "$input")
 
         if [[ -z "$locked_rev" ]]; then
-          echo -e "  ''${red}✗''${reset} ''${bold}$input''${reset} — not found in flake.lock (stale pin?)"
+          echo -e "  ''${red}✗''${reset} ''${bold}$input''${reset} - not found in flake.lock (stale pin?)"
           all_ok=false
           continue
         fi
@@ -658,7 +658,7 @@ writeShellApplication {
         if [[ "$pin_rev" == "$locked_rev" ]]; then
           echo -e "  ''${green}✓''${reset} ''${bold}$input''${reset} ($pin_type @ ''${pin_rev:0:12})"
         else
-          echo -e "  ''${yellow}⚠''${reset} ''${bold}$input''${reset} ($pin_type) — expected ''${pin_rev:0:12}, locked ''${locked_rev:0:12}"
+          echo -e "  ''${yellow}⚠''${reset} ''${bold}$input''${reset} ($pin_type) - expected ''${pin_rev:0:12}, locked ''${locked_rev:0:12}"
           all_ok=false
         fi
       done <<< "$pinned_inputs"
@@ -679,7 +679,7 @@ writeShellApplication {
       while IFS= read -r lock; do
         [[ -n "$lock" ]] || continue
         if [[ "$found" == "false" ]]; then
-          echo -e "\n''${bold}Sub-flakes (report only — update with 'nix flake update' in their directory)''${reset}"
+          echo -e "\n''${bold}Sub-flakes (report only - update with 'nix flake update' in their directory)''${reset}"
           found=true
         fi
         dir=$(dirname "$lock")
@@ -819,7 +819,7 @@ writeShellApplication {
     }
 
     show_help() {
-      echo -e "''${bold}pin''${reset} — Manage flake input pinning
+      echo -e "''${bold}pin''${reset} - Manage flake input pinning
 
 ''${green}''${bold}Usage:''${reset} pin [COMMAND] [OPTIONS] [ARGS]
 

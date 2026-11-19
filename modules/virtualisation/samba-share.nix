@@ -38,7 +38,7 @@ in
       default = "/mnt/storage/share/drop";
       description = ''
         Host -> guest one-way folder. You can write to it normally as
-        yourself; clients can only read — smbd refuses write ops on it
+        yourself; clients can only read - smbd refuses write ops on it
         server-side, permanently, regardless of what a client tries.
       '';
     };

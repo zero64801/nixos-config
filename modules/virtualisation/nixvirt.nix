@@ -650,7 +650,7 @@ let
           live=1
           case "$sub" in
             commit|rotate)
-              echo "domain '$dom' is running — using live blockcommit (QEMU merges internally, no downtime)."
+              echo "domain '$dom' is running - using live blockcommit (QEMU merges internally, no downtime)."
               echo
               ;;
           esac
@@ -665,20 +665,20 @@ let
       if [ -z "$cur" ]; then
         if [ "$sub" = "rotate" ]; then
           rotname="''${pos[2]:-''${as_name:-}}"
-          [ -n "$rotname" ] || { echo "rotate: no snapshots exist — pass a name to create the first one" >&2; exit 1; }
+          [ -n "$rotname" ] || { echo "rotate: no snapshots exist - pass a name to create the first one" >&2; exit 1; }
           confirm "No snapshots exist; create snapshot '$rotname' of '$dom'?"
           virsh snapshot-create-as "$dom" "$rotname" --disk-only --atomic
           exit 0
         fi
         if [ "$sub" = "revert" ]; then
-          echo "$dom has no snapshots — nothing to revert to" >&2
+          echo "$dom has no snapshots - nothing to revert to" >&2
           exit 1
         fi
         if [ "$sub" = "delete" ]; then
-          echo "$dom has no snapshots — nothing to delete" >&2
+          echo "$dom has no snapshots - nothing to delete" >&2
           exit 1
         fi
-        echo "$dom has no current snapshot — nothing to commit" >&2
+        echo "$dom has no current snapshot - nothing to commit" >&2
         exit 0
       fi
 
@@ -733,7 +733,7 @@ let
           sname="''${chain_path[i]}"
           sxml=$(virsh snapshot-dumpxml "$dom" "$sname" 2>/dev/null || true)
           if printf '%s\n' "$sxml" | grep -q "snapshot='internal'"; then
-            echo "snapshot '$sname' is internal — revert it with virsh snapshot-revert instead" >&2
+            echo "snapshot '$sname' is internal - revert it with virsh snapshot-revert instead" >&2
             exit 1
           fi
           if [ "$i" -eq "$tidx" ]; then
@@ -752,7 +752,7 @@ let
           done
         fi
         if [ -n "$tmem" ]; then
-          echo "note: '$target' also saved RAM state ($tmem) — this disk-only revert boots fresh; use virsh snapshot-revert to resume that RAM state instead."
+          echo "note: '$target' also saved RAM state ($tmem) - this disk-only revert boots fresh; use virsh snapshot-revert to resume that RAM state instead."
         fi
         echo
         confirm "Proceed and revert to '$target'?"
@@ -798,7 +798,7 @@ let
           devtype=$(printf '%s\n' "$snapxml" | xmlstarlet sel -t \
             -m "/domainsnapshot/domain/devices/disk[target/@dev='$tdev']" -v "@device" -n)
           if [ -z "$base" ]; then
-            echo "  [$tdev] SKIP — no pre-snapshot source recorded"
+            echo "  [$tdev] SKIP - no pre-snapshot source recorded"
             continue
           fi
           if [ "$devtype" = "disk" ] && [ "$overlay" != "$base" ]; then
@@ -817,7 +817,7 @@ let
           fi
         done
 
-        echo "$dom: reverted to '$target' — start the VM to boot that state."
+        echo "$dom: reverted to '$target' - start the VM to boot that state."
         exit 0
       fi
 
@@ -861,7 +861,7 @@ let
         if [ -z "$cur" ]; then return 1; fi
         snapxml=$(virsh snapshot-dumpxml "$dom" "$cur")
         if printf '%s\n' "$snapxml" | grep -q "snapshot='internal'"; then
-          echo "snapshot '$cur' is internal — manage it with virsh (snapshot-revert / snapshot-delete) directly" >&2
+          echo "snapshot '$cur' is internal - manage it with virsh (snapshot-revert / snapshot-delete) directly" >&2
           exit 1
         fi
         memfile=$(printf '%s\n' "$snapxml" | xmlstarlet sel -t -v "/domainsnapshot/memory/@file" 2>/dev/null || true)
@@ -889,7 +889,7 @@ let
           plan+=("$target|$overlay|$base|$devtype")
 
           if [ -z "$base" ]; then
-            echo "  [$target] SKIP — no pre-snapshot source recorded"
+            echo "  [$target] SKIP - no pre-snapshot source recorded"
             continue
           fi
           if [ "$devtype" != "disk" ] || [ "$overlay" = "$base" ]; then
@@ -916,7 +916,7 @@ let
             mismatch=1
             echo "            !! DANGER: the domain's live disk for $target is"
             echo "            !!   $live"
-            echo "            !! not this snapshot's overlay — layer(s) sit ABOVE this"
+            echo "            !! not this snapshot's overlay - layer(s) sit ABOVE this"
             echo "            !! snapshot and committing it would corrupt them."
           fi
           imm=$(qemu-img info -U "$overlay" 2>/dev/null | sed -n 's/^backing file: //p' || true)
@@ -941,15 +941,15 @@ let
           { [ -n "$base" ] && [ -f "$overlay" ] && [ "$overlay" != "$base" ]; } || continue
           bak="$base.precommit"
           if [ -e "$bak" ]; then
-            echo "ABORT: $bak already exists — a previous commit may have been interrupted." >&2
-            echo "       Restore: sudo mv $bak $base   — or remove it before retrying." >&2
+            echo "ABORT: $bak already exists - a previous commit may have been interrupted." >&2
+            echo "       Restore: sudo mv $bak $base   - or remove it before retrying." >&2
             exit 1
           fi
           if cp --reflink=always "$base" "$bak" 2>/dev/null; then
             backups+=("$bak")
             echo "safety: reflinked $base -> $bak"
           else
-            echo "WARNING: no reflink support for $base — proceeding WITHOUT a crash-safety copy for $target." >&2
+            echo "WARNING: no reflink support for $base - proceeding WITHOUT a crash-safety copy for $target." >&2
           fi
         done
         sync
@@ -958,7 +958,7 @@ let
           [ ''${#backups[@]} -gt 0 ] || return 0
           local b
           echo "" >&2
-          echo "commit did NOT complete — pre-commit safety copies kept:" >&2
+          echo "commit did NOT complete - pre-commit safety copies kept:" >&2
           for b in "''${backups[@]}"; do echo "  $b" >&2; done
           echo "restore a base with:  sudo mv <copy> <its-base>   (the overlay is still present)" >&2
         }
@@ -998,7 +998,7 @@ let
               echo "  run nixvirt-resize $dom with the shrunk size again while the VM is off" >&2
             fi
             if ! virsh blockjob "$dom" "$target" --pivot; then
-              echo "$dom: pivot failed for $target — the job is still synchronized; retry 'virsh blockjob $dom $target --pivot' or cancel with --abort" >&2
+              echo "$dom: pivot failed for $target - the job is still synchronized; retry 'virsh blockjob $dom $target --pivot' or cancel with --abort" >&2
               exit 1
             fi
             rm -f "$overlay"
@@ -1085,20 +1085,20 @@ let
           i=$((i + 1))
         done
         if [ "$didx" -lt 0 ]; then
-          echo "snapshot '$dtarget' exists but is not on the current chain (another branch?) — not supported" >&2
+          echo "snapshot '$dtarget' exists but is not on the current chain (another branch?) - not supported" >&2
           exit 1
         fi
 
         if [ "$didx" -eq 0 ]; then
           if [ "$live" -eq 1 ]; then
-            echo "domain '$dom' is running — using live blockcommit (QEMU merges internally, no downtime)."
+            echo "domain '$dom' is running - using live blockcommit (QEMU merges internally, no downtime)."
             echo
           fi
           echo "Deleting '$dtarget' = committing its overlay into its base (current data is kept)."
           echo
           build_plan || exit 1
           if [ "$mismatch" -eq 1 ] && [ "$live" -eq 1 ]; then
-            echo "ABORT: inconsistent chain — refusing to live-commit; shut the VM off to inspect." >&2
+            echo "ABORT: inconsistent chain - refusing to live-commit; shut the VM off to inspect." >&2
             exit 1
           fi
           if [ "$mismatch" -eq 1 ]; then
@@ -1117,7 +1117,7 @@ let
         child="''${chain_path[$((didx - 1))]}"
         childxml=$(virsh snapshot-dumpxml "$dom" "$child")
         if printf '%s\n' "$childxml" | grep -q "snapshot='internal'"; then
-          echo "snapshot '$child' (above '$dtarget') is internal — mixed chains are not supported" >&2
+          echo "snapshot '$child' (above '$dtarget') is internal - mixed chains are not supported" >&2
           exit 1
         fi
 
@@ -1144,7 +1144,7 @@ let
           ovC=$(printf '%s\n' "$childxml" | xmlstarlet sel -t \
             -m "/domainsnapshot/disks/disk[@name='$tdev']" -v "source/@file" -n 2>/dev/null || true)
           if [ -z "$ovC" ]; then
-            echo "  [$tdev] ABORT: child '$child' has no overlay for this disk — inconsistent chain" >&2
+            echo "  [$tdev] ABORT: child '$child' has no overlay for this disk - inconsistent chain" >&2
             exit 1
           fi
           cbase=$(printf '%s\n' "$childxml" | xmlstarlet sel -t \
@@ -1165,7 +1165,7 @@ let
         # shellcheck disable=SC2329
         dhint() {
           echo "" >&2
-          echo "delete did NOT complete — any .precommit safety copies were kept; restore a base with: sudo mv <copy> <its-base>" >&2
+          echo "delete did NOT complete - any .precommit safety copies were kept; restore a base with: sudo mv <copy> <its-base>" >&2
         }
         trap dhint ERR
 
@@ -1173,13 +1173,13 @@ let
           IFS="|" read -r tdev ovS P ovC <<<"$row"
           bak="$P.precommit"
           if [ -e "$bak" ]; then
-            echo "ABORT: $bak already exists — a previous commit may have been interrupted." >&2
+            echo "ABORT: $bak already exists - a previous commit may have been interrupted." >&2
             exit 1
           fi
           if cp --reflink=always "$P" "$bak" 2>/dev/null; then
             echo "safety: reflinked $P -> $bak"
           else
-            echo "WARNING: no reflink support for $P — proceeding WITHOUT a crash-safety copy." >&2
+            echo "WARNING: no reflink support for $P - proceeding WITHOUT a crash-safety copy." >&2
           fi
         done
         sync
@@ -1234,7 +1234,7 @@ let
             if [ "''${chain_path[i]}" = "$newname" ]; then collides=0; break; fi
           done
           if [ "$collides" -eq 1 ]; then
-            echo "rotate: snapshot '$newname' already exists — recreating under that name would collide" >&2
+            echo "rotate: snapshot '$newname' already exists - recreating under that name would collide" >&2
             exit 1
           fi
         fi
@@ -1264,7 +1264,7 @@ let
             exit 1
           fi
           if [ "$mismatch" -eq 1 ]; then
-            echo "ABORT at '$cur': chain/metadata inconsistency — fix manually before continuing." >&2
+            echo "ABORT at '$cur': chain/metadata inconsistency - fix manually before continuing." >&2
             exit 1
           fi
           execute_plan
@@ -1285,8 +1285,8 @@ let
           echo
         fi
         if [ "$mismatch" -eq 1 ] && [ "$live" -eq 1 ]; then
-          echo "ABORT: inconsistent chain — refusing to live-commit; shut the VM off to inspect." >&2
-          echo "(an interrupted live commit can cause this — check 'nixvirt-snapshot list $dom' for stale metadata)" >&2
+          echo "ABORT: inconsistent chain - refusing to live-commit; shut the VM off to inspect." >&2
+          echo "(an interrupted live commit can cause this - check 'nixvirt-snapshot list $dom' for stale metadata)" >&2
           exit 1
         fi
         if [ "$mismatch" -eq 1 ]; then
@@ -1415,7 +1415,7 @@ let
         done < <(virsh list --all --name)
       done < <(virsh domblklist "$dom" --details 2>/dev/null | tail -n +3 | awk '$1=="file" && $2=="disk" {print $4}')
       if [ -d "$base" ] && findmnt -rno TARGET 2>/dev/null | grep -qF "$base/"; then
-        echo "$dom already mounted under $base — run: sudo nixvirt-mount -u $dom" >&2
+        echo "$dom already mounted under $base - run: sudo nixvirt-mount -u $dom" >&2
         exit 1
       fi
 
@@ -1457,8 +1457,8 @@ let
         [ -n "$source" ] && [ "$source" != "-" ] && [ -f "$source" ] || continue
 
         if [ "$untrusted" -eq 1 ]; then
-          # The libguestfs appliance parses the guest's filesystems in its own kernel, so a crafted one has to escape a VM
-          # rather than exploit a host driver. The appliance gets no network.
+          # The libguestfs appliance parses the guest's filesystems in its own kernel, so a crafted one has to escape a VM rather than exploit a host driver.
+          # The appliance gets no network.
           mp="$base/$target"
           mkdir -p "$mp"
           fmt=$(qemu-img info -U "$source" 2>/dev/null | sed -n 's/^file format: //p')

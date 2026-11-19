@@ -100,7 +100,7 @@ writeShellApplication {
     }
 
     usage() {
-      echo -e "''${bold}addon-pin''${reset} — Pin Firefox addons straight from addons.mozilla.org
+      echo -e "''${bold}addon-pin''${reset} - Pin Firefox addons straight from addons.mozilla.org
 
 ''${green}''${bold}Usage:''${reset} addon-pin [COMMAND] [ARGS]
 

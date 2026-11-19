@@ -98,7 +98,7 @@ writeShellApplication {
 ''${green}''${bold}Commands:''${reset}
   ''${yellow}list, ls''${reset}                        List all active persistent paths (system + modules).
   ''${yellow}add [PATH]''${reset}                      Copy PATH to storage and register it in persist.json.
-  ''${yellow}add --copy-only [PATH]''${reset}           Copy PATH to storage only — skip persist.json update.
+  ''${yellow}add --copy-only [PATH]''${reset}           Copy PATH to storage only - skip persist.json update.
                                      Useful for seeding a path already declared in a Nix module.
   ''${yellow}remove, rm [PATH]''${reset}               Remove a path from persist.json (optionally delete from storage).
                                      Omit PATH to pick interactively with fzf.
@@ -359,7 +359,7 @@ writeShellApplication {
             ;;
         esac
       else
-        echo -e "''${DIM}No corresponding path found under $PERSIST_PATH — nothing to clean up.''${NC}"
+        echo -e "''${DIM}No corresponding path found under $PERSIST_PATH - nothing to clean up.''${NC}"
       fi
     }
 

@@ -65,7 +65,7 @@ in
           internet via NAT and get DHCP/DNS from the libvirt bridge.
 
           When disabled, virbr0 is added to firewall.trustedInterfaces
-          (libvirt's default) — VMs can reach everything.
+          (libvirt's default) - VMs can reach everything.
         '';
       };
 

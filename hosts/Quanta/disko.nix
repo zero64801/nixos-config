@@ -42,7 +42,7 @@ let
         cryptsetup open --key-file "$KEY" "$PART" ${cryptName}
         mkfs.btrfs -L ${label} /dev/mapper/${cryptName}
 
-        echo "Enrolling FIDO2 — touch the key when it blinks."
+        echo "Enrolling FIDO2 - touch the key when it blinks."
         systemd-cryptenroll --unlock-key-file="$KEY" --fido2-device=auto "$PART"
         cryptsetup luksRemoveKey "$PART" "$KEY"
 

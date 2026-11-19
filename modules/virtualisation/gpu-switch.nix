@@ -138,7 +138,7 @@ let
         echo "  unbind $addr (was $drv)"
         # Userspace holders (pipewire on HDMI audio, nvidia during VRAM teardown) can wedge the sysfs unbind, so time it out and fall back to module removal.
         if ! timeout 5 bash -c "echo '$addr' > /sys/bus/pci/devices/$addr/driver/unbind"; then
-          echo "  unbind $addr timed out — forcing via rmmod $drv"
+          echo "  unbind $addr timed out, forcing via rmmod $drv"
           case "$drv" in
             snd_hda_intel)
               modprobe -r snd_hda_intel 2>/dev/null || true
