@@ -31,6 +31,7 @@ let
           inherit helper;
           pkexec = "${config.security.wrapperDir}/pkexec";
           capture_limit = cfg.capture.limit;
+          capture_keep = cfg.capture.keep;
         }
       )
     } "$@"
@@ -93,8 +94,16 @@ in
       defaultText = lib.literalExpression "4 * 1024 * 1024 * 1024";
       description = ''
         Bytes a session that records the guest writes at most, network and USB together. It stops recording when it
-        gets there, or when less than 512 MiB are left on the disk, and says so. Older captures are kept until
-        they are deleted.
+        gets there, or when less than 512 MiB are left on the disk, and says so.
+      '';
+    };
+
+    capture.keep = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether a session's capture stays when the session ends, until it is deleted. When false it is deleted with the
+        session, for captures that only tools read while it lasts, and `--keep` keeps one.
       '';
     };
 

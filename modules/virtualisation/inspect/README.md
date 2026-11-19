@@ -46,7 +46,8 @@ A capture goes to `~/.local/state/vm-inspect/captures/DOMAIN/DATE-TIME/`, writte
 Tools add to a capture only through the session's control socket, which takes a mark, lines of a TLS key log and plain fields about connections, and nothing else.
 `$VM_INSPECT_CAPTURE` names the folder, in a program that joins the session too.
 A session writes at most `my.virtualisation.inspect.capture.limit` bytes, 4 GiB by default, and stops recording when less than 512 MiB are left on the disk.
-Captures are kept until they are deleted.
+Captures are kept until they are deleted, unless `capture.keep` is false, which deletes each with its session: for captures only tools read while the session lasts.
+`--keep` keeps one then.
 `guest-net` and `guest-usb` of `../lab` read them.
 
 ## The guest tools

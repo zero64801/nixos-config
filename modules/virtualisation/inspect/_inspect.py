@@ -449,6 +449,7 @@ def main():
     parser.add_argument("--plug", action="append", default=[], metavar="DEVICE",
                         help="pass a USB device of this system to the guest for the session, by vendor and product as 046d:c52b "
                              "or by its place as 3-1.4. It is gone from this system until the session ends")
+    parser.add_argument("--keep", action="store_true", help="keep what the session records when it ends, which capture.keep decides otherwise")
     parser.add_argument("--join", action="store_true", help="use the session that is already open, without opening the guest again")
     parser.add_argument("domain")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -457,6 +458,7 @@ def main():
         settings = json.load(f)
     if args.domain not in settings["domains"]:
         fail(f"{args.domain} is not among the domains that may be inspected ({', '.join(settings['domains']) or 'none'})")
+    keep = args.keep or settings.get("capture_keep", True)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     command = command or [os.environ.get("SHELL") or "/bin/sh"]
     runtime = os.environ.get("XDG_RUNTIME_DIR")
@@ -498,7 +500,8 @@ def main():
             print("vm-inspect: the guest has no network device to record", file=sys.stderr)
         if args.usb and not info["recorded"]["usb"]:
             print("vm-inspect: the guest has no USB device yet, one passed to it later is recorded from then on", file=sys.stderr)
-        print(f"vm-inspect: recording into {capture.folder}", file=sys.stderr)
+        print(f"vm-inspect: recording into {capture.folder}{'' if keep else ', deleted when the session ends unless it is opened with --keep'}",
+              file=sys.stderr)
     servers = [(listen(os.path.join(folder, "ram.sock")), hand_over(handed["ram"])),
                (listen(os.path.join(folder, "qmp.sock")), memory_map(info["mtree"])),
                (listen(os.path.join(folder, "control.sock")), control(ours, session_log(args.domain), capture))]
@@ -532,7 +535,12 @@ def main():
         if capture:
             taking.join(30)
             capture.close(time.time())
-            print(f"vm-inspect: recorded {capture.written} bytes into {capture.folder}", file=sys.stderr)
+            if keep:
+                print(f"vm-inspect: recorded {capture.written} bytes into {capture.folder}", file=sys.stderr)
+            else:
+                shutil.rmtree(capture.folder, ignore_errors=True)
+                print(f"vm-inspect: recorded {capture.written} bytes, deleted with the session as capture.keep says, --keep keeps them",
+                      file=sys.stderr)
     sys.exit(status)
 
 

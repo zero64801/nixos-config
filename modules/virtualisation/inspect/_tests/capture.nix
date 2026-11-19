@@ -15,6 +15,7 @@ import ./fixture.nix { inherit host; } {
 
   machine = {
     my.virtualisation.inspect.capture.limit = 48 * 1024 * 1024;
+    my.virtualisation.inspect.capture.keep = false;
     environment.systemPackages = [
       pkgs.curl
       pkgs.python3
@@ -26,9 +27,10 @@ import ./fixture.nix { inherit host; } {
     import json
 
 
-    # vm-inspect's own words come with the command's, which the session helper above leaves out.
-    def recorded(options, script):
-        return machine.succeed(lab(f"vm-inspect {options} driven -- sh -c {shlex.quote('{ ' + script + '; } 2>&1')} 2>&1"))
+    # vm-inspect's own words come with the command's, which the session helper above leaves out. This machine deletes a
+    # capture with its session, so the sessions whose capture is looked at afterwards keep theirs.
+    def recorded(options, script, keep="--keep"):
+        return machine.succeed(lab(f"vm-inspect {keep} {options} driven -- sh -c {shlex.quote('{ ' + script + '; } 2>&1')} 2>&1"))
 
 
     def capture_of(out):
@@ -94,8 +96,16 @@ import ./fixture.nix { inherit host; } {
         assert "the capture stopped, the limit of 50331648 bytes was reached" in out and "fetched" in out, out
         assert said["stopped"] == "the limit of 50331648 bytes was reached" and said["bytes"] <= 48 * 1024 * 1024, said
 
+    with subtest("as capture.keep says, a capture is deleted with its session unless that is opened with --keep, and says so"):
+        out = recorded("--net --control", "guest-exec --shell 'wget -q -O - http://site.test:8000/hello.txt'; ls $VM_INSPECT_CAPTURE", keep="")
+        folder = capture_of(out)
+        assert "hello from the site" in out and "net.pcapng" in out and "deleted when the session ends unless" in out, out
+        assert "deleted with the session as capture.keep says" in out, out
+        machine.fail(f"test -e {folder}")
+        assert machine.succeed(f"ls {folder.rsplit('/', 1)[0]}").split(), "the kept captures went too"
+
     with subtest("a program that joins the session records into the same capture, and a session that records nothing says so"):
-        machine.succeed(lab("vm-inspect --net driven -- sleep 20 > /tmp/held.log 2>&1 &"))
+        machine.succeed(lab("vm-inspect --keep --net driven -- sleep 20 > /tmp/held.log 2>&1 &"))
         machine.wait_until_succeeds("grep -q 'recording into' /tmp/held.log", timeout=30)
         folder = capture_of(machine.succeed("cat /tmp/held.log"))
         out = machine.succeed(lab("vm-inspect --join driven -- sh -c 'echo $VM_INSPECT_CAPTURE; guest-mark joined'"))
@@ -127,7 +137,7 @@ import ./fixture.nix { inherit host; } {
         place = machine.succeed("for d in /sys/bus/usb/devices/*; do [ \"$(cat $d/product 2>/dev/null)\" = 'QEMU USB Keyboard' ] && basename $d; done; true").strip()
         bus, keyboard = (int(machine.succeed(f"cat /sys/bus/usb/devices/{place}/{n}")) for n in ("busnum", "devnum"))
         tablet = int(machine.succeed(f"for d in /sys/bus/usb/devices/{bus}-*; do [ \"$(cat $d/product 2>/dev/null)\" = 'QEMU USB Tablet' ] && cat $d/devnum; done; true"))
-        machine.succeed(lab(f"vm-inspect --usb --plug {place} driven -- sleep 25 > /tmp/usb.log 2>&1 &"))
+        machine.succeed(lab(f"vm-inspect --keep --usb --plug {place} driven -- sleep 25 > /tmp/usb.log 2>&1 &"))
         machine.wait_until_succeeds("virsh dumpxml driven | grep -q ua-vm-inspect-usb-0", timeout=30)
         machine.wait_until_succeeds(f"test -e /dev/usbmon{bus}", timeout=30)
         # Everything on the bus, read as root, to show that this side did use the tablet meanwhile.

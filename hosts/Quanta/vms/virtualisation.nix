@@ -78,6 +78,7 @@
       domains = [
         "win11-re"
       ];
+      capture.keep = false;
     };
 
     lab = {

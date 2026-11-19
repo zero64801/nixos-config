@@ -202,7 +202,7 @@ let
 
   vmLab = pkgs.writeShellScriptBin "vm-lab" ''
     usage() {
-      echo "usage: vm-lab ${lib.optionalString sandboxed "[--online] [--x11] [--full] "}[--control] [--net] [--usb] [--plug DEVICE]... [--join] [--tool INSTALLABLE]... DOMAIN [COMMAND...]"
+      echo "usage: vm-lab ${lib.optionalString sandboxed "[--online] [--x11] [--full] "}[--control] [--net] [--usb] [--plug DEVICE]... [--keep] [--join] [--tool INSTALLABLE]... DOMAIN [COMMAND...]"
       ${lib.concatMapStrings (name: ''
         echo "       vm-lab --${name} [--join] DOMAIN [ARGUMENT...]"
       '') (lib.attrNames modes)}
@@ -225,6 +225,7 @@ let
       echo "  --net      record what the guest sends and gets over its network, read with guest-net"
       echo "  --usb      record the traffic of the USB devices passed to the guest, read with guest-usb"
       echo "  --plug     pass a USB device of this system to the guest for the session, as 046d:c52b or by its place as 3-1.4"
+      echo "  --keep     keep what the session records when it ends, which my.virtualisation.inspect.capture.keep decides otherwise"
       echo "  --join     only enter a session that is open already, and open none"
       ${lib.concatStrings (lib.mapAttrsToList (name: mode: ''
         printf '%s\n' ${lib.escapeShellArg (entry 13 "--${name}" mode.summary)}
@@ -267,7 +268,7 @@ let
           --full) full=f ;;
         ''}
         --control) control=1 ;;
-        --net | --usb) recording+=("$1") ;;
+        --net | --usb | --keep) recording+=("$1") ;;
         --plug)
           [ "$#" -ge 2 ] || usage
           recording+=("--plug=$2")
