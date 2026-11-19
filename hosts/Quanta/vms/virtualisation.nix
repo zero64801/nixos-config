@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 
 {
   boot.kernelParams = [ "vfio-pci.ids=1022:15b7" ];
@@ -78,6 +78,15 @@
       domains = [
         "win11-re"
       ];
+    };
+
+    lab = {
+      enable = true;
+      agent = {
+        enable = true;
+        tokenFile = "/mnt/vault/secrets/claude/lab-agent";
+        proxy = config.my.apps.proxySwitch.switches.claude.port;
+      };
     };
 
     nixvirt = {
