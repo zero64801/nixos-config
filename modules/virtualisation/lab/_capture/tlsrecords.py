@@ -20,7 +20,7 @@ class Session:
         self.client_random = self.server_random = b""
         self.version = self.suite = 0
         self.etm = self.early = False
-        self.name = ""
+        self.name, self.quic = "", 0
         self.records = []
 
     def __repr__(self):
@@ -117,9 +117,7 @@ def session(client, server):
     found.client_random, (found.version, found.server_random, found.suite, accepted) = hello[0], chosen
     found.etm = ENCRYPT_THEN_MAC in hello[1] and ENCRYPT_THEN_MAC in accepted
     found.early = EARLY_DATA in hello[1]
-    named = hello[1].get(SERVER_NAME, b"")
-    if len(named) > 5 and named[2] == 0:
-        found.name = named[5: 5 + int.from_bytes(named[3:5], "big")].decode("ascii", "replace")
+    found.name = server_name(hello[1])
     for direction, stream in ((0, sent), (1, got)):
         found.records += [(direction, kind, version, body) for kind, version, body in encrypted(stream, found.version)]
     return found
@@ -137,7 +135,11 @@ def encrypted(stream, version):
 
 
 def label(found, direction, index, inner, first):
-    """The key log label of a secret that opened the record at this index of this direction at sequence number 0."""
+    """The key log label of a secret that opened the record at this index of this direction at sequence number 0, or for
+    QUIC the packet of this kind."""
+    if found.quic:
+        side = "SERVER" if direction == 1 else "CLIENT"
+        return f"{side}_TRAFFIC_SECRET_0" if inner == SHORT_PACKET else f"{side}_HANDSHAKE_TRAFFIC_SECRET"
     if found.version != 0x0304:
         return "CLIENT_RANDOM"
     if direction == 1:
@@ -145,3 +147,159 @@ def label(found, direction, index, inner, first):
     if inner == HANDSHAKE and first == FINISHED:
         return "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
     return "CLIENT_EARLY_TRAFFIC_SECRET" if found.early and index == 0 else "CLIENT_TRAFFIC_SECRET_0"
+
+
+# QUIC's versions 1 (RFC 9000) and 2 (RFC 9369), and what the two type bits of a long header mean in each.
+QUIC_VERSIONS = {0x00000001: 1, 0x6B3343CF: 2}
+LONG_TYPES = {1: {0: "initial", 1: "early", 2: "handshake", 3: "retry"}, 2: {1: "initial", 2: "early", 3: "handshake", 0: "retry"}}
+HANDSHAKE_PACKET, SHORT_PACKET = 2, 3
+
+
+def varint(data, at):
+    """A variable length integer of QUIC (RFC 9000 16) and where it ends."""
+    if at >= len(data):
+        raise IndexError
+    size = 1 << (data[at] >> 6)
+    if at + size > len(data):
+        raise IndexError
+    value = data[at] & 0x3F
+    for i in range(1, size):
+        value = value << 8 | data[at + i]
+    return value, at + size
+
+
+def quic_packets(datagram, short_cid):
+    """The packets coalesced in a datagram, as (kind, version, where the packet number starts, the packet, its destination
+    and source connection IDs), up to the first that does not parse. A short header packet runs to the datagram's end and
+    has a destination ID of the length the connection chose."""
+    at = 0
+    while at < len(datagram):
+        first = datagram[at]
+        if not first & 0x80:
+            if short_cid is None or at + 1 + short_cid >= len(datagram):
+                return
+            destination, end = datagram[at + 1: at + 1 + short_cid], len(datagram)
+            # What the guest's network card sends in one batch, as GSO does, is several datagrams of the same connection
+            # back to back, and the next starts where its ID is again after a first byte of a short header.
+            if short_cid >= 4:
+                found = datagram.find(destination, at + 21)
+                while found != -1 and datagram[found - 1] & 0xC0 != 0x40:
+                    found = datagram.find(destination, found + 1)
+                if found != -1:
+                    end = found - 1
+            yield "short", None, 1 + short_cid, datagram[at:end], destination, b""
+            at = end
+            continue
+        try:
+            version = QUIC_VERSIONS.get(int.from_bytes(datagram[at + 1: at + 5], "big"))
+            if version is None:
+                return
+            kind = LONG_TYPES[version][(first >> 4) & 3]
+            pos = at + 5
+            destination = datagram[pos + 1: pos + 1 + datagram[pos]]
+            pos += 1 + datagram[pos]
+            source = datagram[pos + 1: pos + 1 + datagram[pos]]
+            pos += 1 + datagram[pos]
+            if kind == "retry":
+                return
+            if kind == "initial":
+                token, pos = varint(datagram, pos)
+                pos += token
+            length, pos = varint(datagram, pos)
+        except IndexError:
+            return
+        if pos + length > len(datagram) or length < 20:
+            return
+        yield kind, version, pos - at, datagram[at: pos + length], destination, source
+        at = pos + length
+
+
+def server_name(found):
+    """The name a ClientHello's extensions asked for, or an empty one."""
+    named = found.get(SERVER_NAME, b"")
+    if len(named) > 5 and named[2] == 0:
+        return named[5: 5 + int.from_bytes(named[3:5], "big")].decode("ascii", "replace")
+    return ""
+
+
+def quic_session(datagrams, client_random, suite, name=""):
+    """A QUIC connection's session from its datagrams in order, as (0 from the client or 1 from the server, bytes), with the
+    client random and the suite tshark read from the Initial packets it can open, or None."""
+    found, ids, version = Session(), [None, None], None
+    found.version, found.suite, found.client_random, found.quic, found.name = 0x0304, suite, client_random, 0, name
+    kept = {(side, kind): 0 for side in (0, 1) for kind in (HANDSHAKE_PACKET, SHORT_PACKET)}
+    for side, datagram in datagrams:
+        # A short header carries the ID its receiver chose: the server's in what the client sends, and the other way.
+        for kind, packet_version, at, packet, _, source in quic_packets(datagram, None if ids[1 - side] is None else len(ids[1 - side])):
+            if packet_version:
+                version = version or packet_version
+                if ids[side] is None and kind in ("initial", "handshake"):
+                    ids[side] = source
+            code = {"handshake": HANDSHAKE_PACKET, "short": SHORT_PACKET}.get(kind)
+            if code and kept[(side, code)] < (4 if code == HANDSHAKE_PACKET else KEPT):
+                kept[(side, code)] += 1
+                found.records.append((side, code, at, packet))
+    if not version or not found.records:
+        return None
+    found.quic = version
+    return found
+
+
+def crypto_frames(plain):
+    """The CRYPTO frames of an Initial packet's plaintext, as (offset, data), up to the first frame this cannot step over."""
+    found, at = [], 0
+    try:
+        while at < len(plain):
+            kind = plain[at]
+            if kind in (0x00, 0x01):
+                at += 1
+            elif kind in (0x02, 0x03):
+                # Largest acknowledged, delay, how many more ranges, the first range, then a gap and a length for each more.
+                _, at = varint(plain, at + 1)
+                _, at = varint(plain, at)
+                ranges, at = varint(plain, at)
+                _, at = varint(plain, at)
+                for _ in range(2 * ranges + (3 if kind == 0x03 else 0)):
+                    _, at = varint(plain, at)
+            elif kind == 0x06:
+                offset, at = varint(plain, at + 1)
+                length, at = varint(plain, at)
+                found.append((offset, plain[at: at + length]))
+                at += length
+            else:
+                break
+    except IndexError:
+        pass
+    return found
+
+
+def quic_hellos(datagrams, opener):
+    """The client random and the suite of a QUIC connection, read from the hellos in its Initial packets, which opener
+    opens as (packet, where its number starts, version, the client's first destination ID, from the server), or None."""
+    original, pieces = None, ([], [])
+    for side, datagram in datagrams:
+        for kind, version, at, packet, destination, _ in quic_packets(datagram, None):
+            if kind != "initial":
+                continue
+            if original is None and side == 0:
+                original = destination
+            if original is None:
+                continue
+            plain = opener(packet, at, version, original, side == 1)
+            if plain:
+                pieces[side].extend(crypto_frames(plain))
+    hellos = []
+    for side, frames in enumerate(pieces):
+        data, expected = bytearray(), 0
+        for offset, chunk in sorted(frames, key=lambda frame: frame[0]):
+            if offset > expected:
+                break
+            if offset + len(chunk) > expected:
+                data += chunk[expected - offset:]
+                expected = offset + len(chunk)
+        hellos.append(list(messages([(HANDSHAKE, 0x0303, bytes(data))])))
+    hello = next((client_hello(body) for kind, body in hellos[0] if kind == CLIENT_HELLO), None)
+    answer = next((server_hello(body) for kind, body in hellos[1] if kind == SERVER_HELLO), None)
+    if not hello or not answer:
+        return None
+    return hello[0], answer[2], server_name(hello[1])

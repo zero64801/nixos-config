@@ -32,7 +32,7 @@ class Record(ctypes.Structure):
 
 class Target(ctypes.Structure):
     _fields_ = [("version", u32), ("suite", u32), ("etm", u32), ("nrecords", u32), ("records", ctypes.POINTER(Record)),
-                ("client_random", ctypes.c_uint8 * 32), ("server_random", ctypes.c_uint8 * 32)]
+                ("client_random", ctypes.c_uint8 * 32), ("server_random", ctypes.c_uint8 * 32), ("quic", u32)]
 
 
 class Hit(ctypes.Structure):
@@ -72,6 +72,9 @@ class Scanner:
         lib.tlsscan_scan.restype = ctypes.c_size_t
         lib.tlsscan_scan.argtypes = [ctypes.c_void_p, ctypes.c_size_t, u64, ctypes.c_size_t, ctypes.c_uint, ctypes.POINTER(Target),
                                      ctypes.c_size_t, ctypes.POINTER(Hit), ctypes.c_size_t, ctypes.POINTER(u64)]
+        lib.tlsscan_quic_initial.restype = ctypes.c_long
+        lib.tlsscan_quic_initial.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_size_t, u32, ctypes.c_char_p, ctypes.c_size_t,
+                                             ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t]
         lib.tlsscan_find.restype = ctypes.c_size_t
         lib.tlsscan_find.argtypes = [ctypes.c_void_p, ctypes.c_size_t, u64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint,
                                      ctypes.POINTER(u64), ctypes.POINTER(u32), ctypes.c_size_t]
@@ -95,11 +98,18 @@ class Scanner:
             target.version, target.suite, target.etm, target.nrecords = session.version, session.suite, int(session.etm), len(session.records)
             target.records = records
             target.client_random[:] = session.client_random
-            target.server_random[:] = session.server_random
+            target.server_random[:] = session.server_random or bytes(32)
+            target.quic = session.quic
         hits, tested = (Hit * 256)(), u64()
         count = self.lib.tlsscan_scan(address(buffer) + at, length, base, step, threads, targets, len(sessions), hits, 256, ctypes.byref(tested))
         self.tested += tested.value
         return [Found(sessions[hit.target], hit) for hit in hits[: min(count, 256)]]
+
+    def quic_initial(self, packet, at, version, destination, from_server):
+        """The plaintext of a QUIC Initial packet, or None."""
+        out = ctypes.create_string_buffer(len(packet))
+        count = self.lib.tlsscan_quic_initial(packet, len(packet), at, version, destination, len(destination), int(from_server), out, len(packet))
+        return out.raw[:count] if count >= 0 else None
 
     def find(self, buffer, length, base, needles, threads=1, at=0):
         """The addresses where one of the 32 byte needles is, as (address, index of the needle)."""
@@ -183,6 +193,48 @@ def sessions(capture, args, flows):
         if not args.again and WANTED[found.version] <= have.get(found.client_random.hex(), set()):
             continue
         picked.append(found)
+    return picked + quic_sessions(capture, args, flows, have)
+
+
+# The packets of a QUIC flow's first seconds hold its handshake and its first packets under the traffic secrets.
+QUIC_OPENING = 10
+
+
+def quic_sessions(capture, args, flows, have):
+    """The QUIC flows to look for, with the client random and the suite tshark read from the Initial packets, which it opens
+    by itself, and the flow's first datagrams, whose other packets the secrets have to open."""
+    hellos = {}
+    display = " && ".join(f"({part})" for part in (capture.window(args), "quic && (tls.handshake.type == 1 || tls.handshake.type == 2)") if part)
+    for packet in capture.ek(NET, ["udp.stream", "frame.time_epoch", "frame.packet_flags_direction", "tls.handshake.type",
+                                   "tls.handshake.random", "tls.handshake.ciphersuite"], display):
+        hello = hellos.setdefault(first(packet, "udp.stream"), {"time": float(first(packet, "frame.time_epoch", "0"))})
+        kinds = packet["tls.handshake.type"]
+        if "1" in kinds and packet["tls.handshake.random"] and "random" not in hello:
+            hello["random"] = bytes.fromhex(first(packet, "tls.handshake.random").replace(":", ""))
+            hello["guest_is_client"] = first(packet, "frame.packet_flags_direction") == SENT
+        elif "2" in kinds and packet["tls.handshake.ciphersuite"]:
+            hello["suite"] = int(first(packet, "tls.handshake.ciphersuite"), 0)
+    by_id = {flow["id"]: flow for flow in flows}
+    chosen = {stream: hello for stream, hello in hellos.items() if "random" in hello and "suite" in hello and f"u{stream}" in by_id
+              and (not args.flow or f"u{stream}" in args.flow)
+              and (args.again or not WANTED[0x0304] <= have.get(hello["random"].hex(), set()))}
+    datagrams, streams = {}, sorted(chosen, key=int)
+    for at in range(0, len(streams), 50):
+        display = " || ".join(f"(udp.stream == {s} && frame.time_epoch <= {chosen[s]['time'] + QUIC_OPENING:.6f})" for s in streams[at: at + 50])
+        for packet in capture.ek(NET, ["udp.stream", "frame.packet_flags_direction", "udp.payload"], display):
+            try:
+                data = bytes.fromhex(first(packet, "udp.payload").replace(":", ""))
+            except ValueError:
+                continue
+            stream = first(packet, "udp.stream")
+            from_guest = first(packet, "frame.packet_flags_direction") == SENT
+            datagrams.setdefault(stream, []).append((0 if from_guest == chosen[stream]["guest_is_client"] else 1, data))
+    picked = []
+    for stream in streams:
+        found = tlsrecords.quic_session(datagrams.get(stream, []), chosen[stream]["random"], chosen[stream]["suite"])
+        if found:
+            found.flow, found.found, found.guest_is_client = by_id[f"u{stream}"], {}, chosen[stream]["guest_is_client"]
+            picked.append(found)
     return picked
 
 
@@ -421,15 +473,27 @@ def took(found, picked):
             hit.session.found.setdefault(hit.label, hit)
 
 
+def socket_of(live, flow):
+    """The entry of the socket a flow went through among those of the guest: by its two ends, or, as a UDP socket is
+    often bound to every address, by its port alone. flow is a Flow of follow or a flow of the capture."""
+    proto, guest, remote = (flow.proto, flow.guest, flow.remote) if isinstance(flow, Flow) else (flow["proto"], flow["guest"], flow["remote"])
+    port = guest.rsplit(":", 1)[-1]
+    for entry in live:
+        if entry["proto"] == proto and entry["local"] == guest and entry["remote"] in ("", remote):
+            return entry
+    for entry in live:
+        if entry["proto"] == proto and entry["local"] in (f"0.0.0.0:{port}", f"[::]:{port}") and entry["remote"] in ("", remote):
+            return entry
+    return None
+
+
 def owner(flow, live):
     """The process a flow belonged to: as owners saw it, or as the guest's memory shows it now."""
     matched = re.search(r"\[(\d+)\]$", flow.get("owner") or "")
     if matched:
         return int(matched.group(1))
-    for entry in live:
-        if entry["proto"] == "tcp" and entry["local"] == flow["guest"] and entry["remote"] in ("", flow["remote"]):
-            return entry["pid"]
-    return None
+    entry = socket_of(live, flow)
+    return entry["pid"] if entry else None
 
 
 def linux(picked, args):
@@ -492,9 +556,9 @@ def run(capture, args, flows):
         names = plain(",".join(s.flow["names"]) or s.flow["remote"], 60)
         if s.found:
             where = ", ".join(f"{label} at {hit.address:#x}" for label, hit in sorted(s.found.items()))
-            print(f"{s.flow['id']:<6} {names}  TLS {VERSIONS[s.version]}  {where}")
+            print(f"{s.flow['id']:<6} {names}  {'QUIC' if s.quic else 'TLS ' + VERSIONS[s.version]}  {where}")
         else:
-            print(f"{s.flow['id']:<6} {names}  TLS {VERSIONS[s.version]}  not found")
+            print(f"{s.flow['id']:<6} {names}  {'QUIC' if s.quic else 'TLS ' + VERSIONS[s.version]}  not found")
     print(f"{len(lines)} secrets added to the capture", file=sys.stderr)
 
 
@@ -554,16 +618,26 @@ class Pending:
 
 
 class Flow:
-    """What follow knows of one TCP connection: its two ends, where each side's sequence numbers began, and the bytes each
-    sent first."""
+    """What follow knows of one connection: its two ends, and for TCP where each side's sequence numbers began and the bytes
+    each sent first, for QUIC the datagrams of its first seconds, each with whether the guest sent it."""
 
-    def __init__(self, guest, remote):
-        self.guest, self.remote, self.pieces, self.start = guest, remote, ([], []), [None, None]
+    def __init__(self, guest, remote, proto="tcp"):
+        self.guest, self.remote, self.proto, self.pieces, self.start = guest, remote, proto, ([], []), [None, None]
+        self.datagrams, self.hellos, self.first = [], None, None
         # How many records the client had encrypted when the server's first encrypted record came.
         self.before = None
         self.trigger = time.time()
 
-    def session(self):
+    def oriented(self):
+        """The datagrams as from the client, 0, or the server, 1: the client is the side whose first datagram is an Initial."""
+        guest_is_client = next((from_guest for from_guest, data in self.datagrams if data[:1] and data[0] & 0x80), True)
+        return [(0 if from_guest == guest_is_client else 1, data) for from_guest, data in self.datagrams]
+
+    def session(self, opener=None):
+        if self.proto == "udp":
+            if self.hellos is None and opener:
+                self.hellos = tlsrecords.quic_hellos(self.oriented(), opener)
+            return tlsrecords.quic_session(self.oriented(), *self.hellos) if self.hellos else None
         guest, other = (contiguous(side) for side in self.pieces)
         return tlsrecords.session(guest, other) or tlsrecords.session(other, guest)
 
@@ -581,6 +655,8 @@ class Follower:
     def __init__(self, capture, args, scanner):
         self.capture, self.args, self.scanner = capture, args, scanner
         self.flows, self.pending, self.handled, self.ready, self.later = {}, {}, set(), [], []
+        # The process whose connection was seen last, and the flows put to it without a socket of their own.
+        self.recent, self.guessed = None, set()
         self.memory = self.physical = self.pause = None
         if args.physical:
             self.physical = Physical()
@@ -631,7 +707,10 @@ class Follower:
     def packet(self, packet):
         """Takes one packet into its connection, and puts the connection up for copying once its client has begun to
         encrypt. A connection is followed from its SYN, so that its sequence numbers can be placed."""
-        key, side = (packet.guest, packet.remote), 0 if packet.sent else 1
+        key, side = (packet.proto, packet.guest, packet.remote), 0 if packet.sent else 1
+        if packet.proto == "udp":
+            self.datagram(key, packet)
+            return
         flow = self.flows.get(key)
         if packet.syn:
             if flow is None or (flow.start[side] is not None and flow.start[side] != packet.seq):
@@ -661,6 +740,33 @@ class Follower:
                 self.ready.append((key, found))
             else:
                 print(f"{flow}: TLS {found.version:#06x} with suite {found.suite:#06x} is not one keys scan knows", file=sys.stderr)
+
+    def datagram(self, key, packet):
+        """Takes one datagram into its QUIC connection, and puts the connection up for copying once its client sends a packet
+        with a short header, which it does only with its traffic secrets."""
+        flow = self.flows.get(key)
+        if flow is None:
+            if key in self.handled:
+                return
+            data = packet.payload
+            # Only a connection seen from its start is followed: its first datagram has a long header of a known version.
+            if not (len(data) > 5 and data[0] & 0x80 and int.from_bytes(data[1:5], "big") in tlsrecords.QUIC_VERSIONS):
+                self.handled.add(key)
+                return
+            flow = self.flows[key] = Flow(packet.guest, packet.remote, "udp")
+            flow.first = packet.time
+        if packet.time - flow.first <= QUIC_OPENING and len(flow.datagrams) < 400:
+            flow.datagrams.append((packet.sent, packet.payload))
+        if key in self.handled:
+            return
+        found = flow.session(self.scanner.quic_initial)
+        if found and any(side == 0 and kind == tlsrecords.SHORT_PACKET for side, kind, _, _ in found.records):
+            self.handled.add(key)
+            flow.trigger = packet.time
+            if self.scanner.supported(found):
+                self.ready.append((key, found))
+            else:
+                print(f"{flow}: QUIC with suite {found.suite:#06x} is not one keys scan knows", file=sys.stderr)
 
     def copy(self, batch):
         """Copies the memory that may hold the secrets of a batch of flows: around their client randoms in the memory of their
@@ -721,28 +827,43 @@ class Follower:
                   f"found{', all of its memory kept' if whole else ''}, copied {waited * 1000:.0f} ms after the handshake in {took_ms:.0f} ms",
                   file=sys.stderr)
             for stream, _ in members:
+                if stream in self.guessed and not windows[stream]:
+                    print(f"{self.flows[stream]}: no socket of it was seen, and its client random is not in {source}", file=sys.stderr)
+                    continue
                 self.pending[stream] = Pending(self.flows[stream], windows[stream], whole, source)
 
     def owners(self, batch):
         """The flows of a batch by the process their connection belongs to, as the guest's memory shows it now, which is
         also kept in the capture, with the size of each process's writable memory, smallest first."""
         windows, by = self.memory.windows, {}
-        live = {entry["local"]: entry for entry in self.memory.sample() if entry["proto"] == "tcp"}
-        # MemProcFS leaves out the connections of a process it does not know yet, as a program just started.
-        if any(self.flows[stream].guest not in live for stream, _ in batch):
+        live = self.memory.sample()
+        # MemProcFS leaves out the connections of a process it does not know yet, as a program just started. Its list of UDP
+        # sockets misses many of QUIC's anyway, so only TCP is worth the time this takes.
+        if any(socket_of(live, self.flows[stream]) is None and self.flows[stream].proto == "tcp" for stream, _ in batch):
             windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_PROCESSES, 1)
-            live = {entry["local"]: entry for entry in self.memory.sample() if entry["proto"] == "tcp"}
+            live = self.memory.sample()
+        entries = {}
         for stream, found in batch:
-            entry = live.get(self.flows[stream].guest)
+            entry = entries[stream] = socket_of(live, self.flows[stream])
+            if entry is None and self.flows[stream].proto == "udp" and self.recent is not None:
+                # A QUIC connection of a browser is its network process's like its others, which its client random proves.
+                self.guessed.add(stream)
+                by.setdefault(self.recent, []).append((stream, found))
+                continue
             if entry is None:
                 late = (time.time() - self.flows[stream].trigger) * 1000
-                print(f"{self.flows[stream]} {plain(found.name or '', 60)}: closed before its program was seen, {late:.0f} ms after its handshake",
-                      file=sys.stderr)
+                port = self.flows[stream].guest.rsplit(":", 1)[-1]
+                near = [f"{e['proto']} {e['local']} -> {e['remote'] or '*'} {e['process']}[{e['pid']}]" for e in live if e["local"].endswith(f":{port}")]
+                print(f"{self.flows[stream]} {plain(found.name or '', 60)}: closed before its program was seen, {late:.0f} ms after its handshake"
+                      f"{', its port has ' + '; '.join(near) if near else ''}", file=sys.stderr)
                 continue
             by.setdefault(entry["pid"], []).append((stream, found))
         if not by:
             return []
-        tell({"do": "note", "kind": "owners", "entries": [live[self.flows[s].guest] for group in by.values() for s, _ in group]})
+        seen = [entries[s] for group in by.values() for s, _ in group if entries[s]]
+        if seen:
+            self.recent = seen[-1]["pid"]
+            tell({"do": "note", "kind": "owners", "entries": seen})
         windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_TLB, 1)
         groups = []
         for pid, members in by.items():
@@ -752,7 +873,7 @@ class Follower:
 
     def check(self, pending, stream, final=False):
         """Tries the copy against the flow's records when more have come, and adds what opens them. Whether it is done."""
-        found = pending.flow.session()
+        found = pending.flow.session(self.scanner.quic_initial)
         if not found:
             return False
         if len(found.records) == pending.records and not final:
@@ -774,7 +895,7 @@ class Follower:
         if fresh:
             tell({"do": "note", "kind": "keys", "lines": [hit.line for hit in fresh.values()]})
             pending.told |= set(fresh)
-            print(f"{pending.flow}  {plain(found.name or '-', 60)}  TLS {VERSIONS[found.version]}  "
+            print(f"{pending.flow}  {plain(found.name or '-', 60)}  {'QUIC' if found.quic else 'TLS ' + VERSIONS[found.version]}  "
                   f"{', '.join(sorted(fresh))} in {pending.source}")
             sys.stdout.flush()
         done = WANTED[found.version] <= pending.told
@@ -787,7 +908,7 @@ class Follower:
         for stream, pending in list(self.pending.items()):
             late = final or time.monotonic() - pending.since > self.PATIENCE
             if late and not self.check(pending, stream, final=True):
-                found = pending.flow.session()
+                found = pending.flow.session(self.scanner.quic_initial)
                 counts = [sum(1 for record in found.records if record[0] == side) for side in (0, 1)] if found else [0, 0]
                 # A client that sent only its Finished has nothing its traffic secret could open, nor anything to decrypt.
                 if pending.told == {"SERVER_TRAFFIC_SECRET_0"} and counts[0] <= 1:

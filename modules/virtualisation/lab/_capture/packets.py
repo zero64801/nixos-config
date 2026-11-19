@@ -1,4 +1,4 @@
-"""The TCP payloads of a capture as it grows, read straight from its pcapng blocks, for keys scan --follow, which has to
+"""The TCP payloads and UDP datagrams of a capture as it grows, read straight from its pcapng blocks, for keys scan --follow, which has to
 act within a few milliseconds of a handshake and so cannot wait on tshark. The frames are the guest's, so every length is
 checked before it is used and anything that does not parse is passed over."""
 import ipaddress
@@ -6,7 +6,7 @@ import os
 import struct
 
 INTERFACE, ENHANCED_PACKET = 1, 6
-ETHERNET, IPV4, IPV6, VLAN, TCP = 1, 0x0800, 0x86DD, 0x8100, 6
+ETHERNET, IPV4, IPV6, VLAN, TCP, UDP = 1, 0x0800, 0x86DD, 0x8100, 6, 17
 SYN = 0x02
 # epb_flags, whose two lowest bits are the direction: 2 for what the guest sent.
 FLAGS, OUTBOUND = 2, 2
@@ -15,10 +15,11 @@ RESOLUTION = 9
 
 
 class Packet:
-    __slots__ = ("guest", "payload", "remote", "sent", "seq", "syn", "time")
+    __slots__ = ("guest", "payload", "proto", "remote", "sent", "seq", "syn", "time")
 
-    def __init__(self, time, sent, guest, remote, seq, payload, syn):
+    def __init__(self, time, sent, guest, remote, seq, payload, syn, proto="tcp"):
         self.time, self.sent, self.guest, self.remote, self.seq, self.payload, self.syn = time, sent, guest, remote, seq, payload, syn
+        self.proto = proto
 
 
 def endpoint(address, port):
@@ -67,7 +68,7 @@ class Reader:
         os.close(self.descriptor)
 
     def poll(self):
-        """The TCP packets with a payload, or a SYN, in the blocks written since the last call."""
+        """The TCP packets with a payload, or a SYN, and the UDP datagrams, in the blocks written since the last call."""
         more = os.pread(self.descriptor, 1 << 22, self.offset)
         self.offset += len(more)
         data = self.rest + more
@@ -104,7 +105,7 @@ class Reader:
 
 
 def parse(frame, when, sent):
-    """A TCP packet of an Ethernet frame, or None."""
+    """A TCP packet or UDP datagram of an Ethernet frame, or None."""
     if len(frame) < 14:
         return None
     at, kind = 14, struct.unpack_from(">H", frame, 12)[0]
@@ -114,18 +115,26 @@ def parse(frame, when, sent):
         header = (frame[at] & 0x0F) * 4
         total = struct.unpack_from(">H", frame, at + 2)[0]
         fragment = struct.unpack_from(">H", frame, at + 6)[0] & 0x3FFF
-        if frame[at + 9] != TCP or header < 20 or fragment:
+        protocol = frame[at + 9]
+        if protocol not in (TCP, UDP) or header < 20 or fragment:
             return None
         source, target, end = ipv4(frame[at + 12: at + 16]), ipv4(frame[at + 16: at + 20]), min(len(frame), at + total)
         at += header
     elif kind == IPV6 and len(frame) >= at + 40:
-        if frame[at + 6] != TCP:
+        protocol = frame[at + 6]
+        if protocol not in (TCP, UDP):
             return None
         source, target = ipv6(frame[at + 8: at + 24]), ipv6(frame[at + 24: at + 40])
         end = min(len(frame), at + 40 + struct.unpack_from(">H", frame, at + 4)[0])
         at += 40
     else:
         return None
+    if protocol == UDP:
+        if end < at + 8:
+            return None
+        here, there = struct.unpack_from(">HH", frame, at)
+        ours, theirs = (endpoint(source, here), endpoint(target, there)) if sent else (endpoint(target, there), endpoint(source, here))
+        return Packet(when, sent, ours, theirs, 0, frame[at + 8: end], False, "udp")
     if end < at + 20:
         return None
     ports, seq, _, offset, flags = struct.unpack_from(">4sIIBB", frame, at)

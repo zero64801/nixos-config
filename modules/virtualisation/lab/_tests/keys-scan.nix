@@ -25,6 +25,21 @@ let
     sleep 3
   '';
 
+  # A server of QUIC that takes HTTP/3's handshake and the client's first streams, which is all the test needs of it.
+  quicServer = pkgs.writeText "quic.py" ''
+    import asyncio
+    from aioquic.asyncio import serve
+    from aioquic.quic.configuration import QuicConfiguration
+
+    async def main():
+        configuration = QuicConfiguration(alpn_protocols=["h3"], is_client=False)
+        configuration.load_cert_chain("${certificate}/cert.pem", "${certificate}/key.pem")
+        await serve("10.9.9.1", 8444, configuration=configuration)
+        await asyncio.Event().wait()
+
+    asyncio.run(main())
+  '';
+
   # Answers after a second and closes, so that the client lives long enough to be held still and no longer.
   slow = pkgs.writeText "slow.py" ''
     import socket, ssl, threading, time
@@ -51,7 +66,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
     machine = {
       environment.systemPackages = [
         pkgs.curl
-        pkgs.python3
+        (pkgs.python3.withPackages (packages: [ packages.aioquic ]))
       ];
       services.nginx = {
         enable = true;
@@ -76,6 +91,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
     testScript = ''
       machine.succeed(
           "systemd-run --unit=slow python3 ${slow}",
+          "systemd-run --unit=quic python3 ${quicServer}",
           "install -d -o alice /tmp/work/out",
       )
       machine.wait_for_unit("nginx.service")
@@ -88,9 +104,11 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == deep; guest-net keys scan --physical --deep",
           "echo == process; guest-net keys scan --again",
           "echo == follow; (guest-net keys scan --follow --physical --pause --seconds 15 &"
-          " sleep 3; guest-exec --shell 'SSLKEYLOGFILE=/tmp/short.log curl -sk --resolve tls.test:9443:10.9.9.1 https://tls.test:9443/' > /dev/null; wait)",
+          " sleep 3; guest-exec --shell 'SSLKEYLOGFILE=/tmp/short.log curl -sk --resolve tls.test:9443:10.9.9.1 https://tls.test:9443/' > /dev/null;"
+          " guest-exec --shell 'SSLKEYLOGFILE=/tmp/quic.log curl3 -sk --http3-only --max-time 3 --resolve tls.test:8444:10.9.9.1 https://tls.test:8444/' > /dev/null; wait)",
           "echo == held; guest-exec --shell 'cat /tmp/held1_3.log /tmp/held1_2.log'",
           "echo == short; guest-exec --shell 'cat /tmp/short.log'",
+          "echo == quic; guest-exec --shell 'cat /tmp/quic.log'",
           "echo == tls; guest-net tls",
           "echo == keys; cat $VM_INSPECT_CAPTURE/keys.log",
       ])
@@ -106,7 +124,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           return {line for line in lines if only is None or line.split()[0] in only}
 
       traffic = ("CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0", "CLIENT_RANDOM")
-      everything = secrets(section["held"] + section["short"])
+      everything = secrets(section["held"] + section["short"] + section["quic"])
       found = secrets(section["keys"])
       held, short = secrets(section["held"], traffic), secrets(section["short"], traffic)
 
@@ -126,6 +144,11 @@ host.needs [ "modules/virtualisation/inspect" ] (
       with subtest("following the capture, curl's keys are found though curl is gone before they are checked"):
           assert len(short) == 2 and short <= found, f"missing {short - found}: {section['follow']}"
           assert re.search(r"10\.9\.9\.50:\d+ -> 10\.9\.9\.1:9443 .*TLS 1\.3 .*CLIENT_TRAFFIC_SECRET_0, SERVER_TRAFFIC_SECRET_0 in the guest's RAM", section["follow"]), section["follow"]
+
+      with subtest("following the capture, a QUIC connection's keys are found too, read from its Initial packets and the RAM"):
+          quic = secrets(section["quic"], traffic)
+          assert len(quic) == 2 and quic <= found, f"missing {quic - found}: {section['follow']}"
+          assert re.search(r"10\.9\.9\.50:\d+ -> 10\.9\.9\.1:8444  tls\.test  QUIC  CLIENT_TRAFFIC_SECRET_0, SERVER_TRAFFIC_SECRET_0", section["follow"]), section["follow"]
 
       with subtest("the flows read as decrypted"):
           assert section["tls"].count("decrypted") >= 3, section["tls"]

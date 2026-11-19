@@ -22,6 +22,8 @@ enum { H_SHA1 = 1, H_SHA256 = 2, H_SHA384 = 3, H_MD5 = 4, H_LEGACY = 5 };
 enum { GCM = 1, CHACHA = 2, CBC = 3 };
 enum { MAXRECORDS = 32, LARGEST = (1 << 14) + 2048 };
 
+/* A record of TLS, or for QUIC a whole protected packet: then type is 2 for a Handshake packet and 3 for one with a
+ * short header, and version is where its packet number starts. */
 typedef struct {
     uint32_t direction; /* 0 the client sent it, 1 the server */
     uint32_t type;      /* the outer content type */
@@ -38,6 +40,7 @@ typedef struct {
     const tls_record *records;
     uint8_t client_random[32];
     uint8_t server_random[32];
+    uint32_t quic; /* 0 for TLS, else the QUIC version as 1 or 2 */
 } tls_target;
 
 typedef struct {
@@ -287,6 +290,14 @@ static int chacha_block(crypto *c, const uint8_t key[32], const uint8_t nonce[12
     return x && EVP_EncryptInit_ex(x, NULL, NULL, key, iv) && EVP_EncryptUpdate(x, out, &n, zero, 64) && n == 64;
 }
 
+/* A ChaCha20 keystream block at a counter and nonce given whole, as QUIC's header protection takes them. */
+static int chacha_raw(crypto *c, const uint8_t key[32], const uint8_t sample[16], uint8_t out[64]) {
+    static const uint8_t zero[64];
+    int n;
+    EVP_CIPHER_CTX *x = ready(&c->chacha, EVP_chacha20(), 1);
+    return x && EVP_EncryptInit_ex(x, NULL, NULL, key, sample) && EVP_EncryptUpdate(x, out, &n, zero, 64) && n == 64;
+}
+
 /* The whole AEAD record, tag included. The plaintext is left in c->plain. */
 static int aead_open(crypto *c, int mode, size_t keylen, const uint8_t *key, const uint8_t nonce[12], const uint8_t *aad,
                      size_t aadlen, const uint8_t *body, size_t length) {
@@ -429,6 +440,46 @@ static void try13(job *j, crypto *c, prepared *t, const uint8_t *key, const uint
     }
 }
 
+/* QUIC (RFC 9001 5): the secret's key, IV and header protection key open a protected packet at its own packet number,
+ * which the start of a connection keeps small enough to be whole in the packet. */
+static void tryquic(job *j, crypto *c, prepared *t, const uint8_t *key, const uint8_t *iv, const uint8_t *hp, const uint8_t *secret,
+                    size_t offset) {
+    const suite_info *s = t->suite;
+    for (uint32_t r = 0; r < t->nrecords; r++) {
+        const tls_record *x = &t->target->records[r];
+        size_t at = x->version;
+        /* RFC 9001 5.4.2: the sample is the 16 bytes from 4 after the packet number's start, the tag among them in a short packet. */
+        if (atomic_load(&t->solved) >> r & 1 || at > 64 || at + 4 + 16 > x->length || x->length > LARGEST)
+            continue;
+        uint8_t mask[64];
+        if (s->mode == GCM ? !aes_block(c, 1, s->keylen, hp, x->body + at + 4, mask) : !chacha_raw(c, hp, x->body + at + 4, mask))
+            continue;
+        int long_header = x->body[0] & 0x80;
+        uint8_t first = x->body[0] ^ (mask[0] & (long_header ? 0x0f : 0x1f));
+        /* The reserved bits are zero in a packet whose protection came off, which throws away most candidates for one AES block. */
+        if (first & (long_header ? 0x0c : 0x18))
+            continue;
+        size_t length = (size_t)(first & 3) + 1;
+        uint8_t header[128], nonce[12];
+        uint64_t number = 0;
+        memcpy(header, x->body, at + length);
+        header[0] = first;
+        for (size_t i = 0; i < length; i++) {
+            header[at + i] = x->body[at + i] ^ mask[1 + i];
+            number = number << 8 | header[at + i];
+        }
+        memcpy(nonce, iv, 12);
+        for (int i = 0; i < 8; i++)
+            nonce[11 - i] ^= (uint8_t)(number >> (8 * i));
+        if (!aead_open(c, s->mode, s->keylen, key, nonce, header, at + length, x->body + at + length, x->length - at - length))
+            continue;
+        report(j, t, r, x->type, 0, secret, hash_size(s->prf), offset);
+        if (x->type == 3)
+            atomic_store(x->direction ? &t->server : &t->client, 1);
+        settle(j, t);
+    }
+}
+
 /* TLS 1.0 to 1.2: the master secret's keys open the first encrypted record of a direction, its Finished, at sequence
  * number 0. */
 static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t offset) {
@@ -533,8 +584,8 @@ static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t 
 static void candidate(job *j, crypto *c, const uint8_t *p, size_t n, size_t offset) {
     hmac_key k;
     int keyed = 0;
-    uint8_t key[2][32], iv[2][12];
-    int have[2] = {0, 0};
+    uint8_t key[2][32], iv[2][12], qkey[3][2][32], qiv[3][2][12], qhp[3][2][32];
+    int have[2] = {0, 0}, qhave[3][2] = {{0, 0}, {0, 0}, {0, 0}};
     for (size_t i = 0; i < j->ntargets; i++) {
         prepared *t = &j->targets[i];
         if (atomic_load(&t->done))
@@ -551,6 +602,18 @@ static void candidate(job *j, crypto *c, const uint8_t *p, size_t n, size_t offs
             keyed = 1;
         }
         int big = t->suite->keylen == 32;
+        uint32_t quic = t->target->quic;
+        if (quic == 1 || quic == 2) {
+            if (!qhave[quic][big]) {
+                /* QUIC version 2 names its keys apart (RFC 9369 3.3.2), and ChaCha20's header key is as long as its key. */
+                expand_label(&k, quic == 1 ? "quic key" : "quicv2 key", t->suite->keylen, qkey[quic][big]);
+                expand_label(&k, quic == 1 ? "quic iv" : "quicv2 iv", 12, qiv[quic][big]);
+                expand_label(&k, quic == 1 ? "quic hp" : "quicv2 hp", t->suite->keylen, qhp[quic][big]);
+                qhave[quic][big] = 1;
+            }
+            tryquic(j, c, t, qkey[quic][big], qiv[quic][big], qhp[quic][big], p, offset);
+            continue;
+        }
         if (!have[big]) {
             expand_label(&k, "key", t->suite->keylen, key[big]);
             expand_label(&k, "iv", 12, iv[big]);
@@ -655,6 +718,57 @@ size_t tlsscan_scan(const uint8_t *memory, size_t length, uint64_t base, size_t 
     if (tested)
         *tested = atomic_load(&count);
     return atomic_load(&nhits);
+}
+
+/*
+ * Opens a QUIC Initial packet (RFC 9001 5.2), whose keys come from the client's first destination connection ID, which
+ * anyone on the path knows, to read the hellos in it. at is where its packet number starts. Returns the length of the
+ * plaintext written to out, or -1.
+ */
+long tlsscan_quic_initial(const uint8_t *packet, size_t length, size_t at, uint32_t version, const uint8_t *dcid, size_t dcidlen,
+                          int from_server, uint8_t *out, size_t room) {
+    static const uint8_t salt1[20] = {0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
+                                      0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a};
+    static const uint8_t salt2[20] = {0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
+                                      0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9};
+    hmac_key k;
+    uint8_t initial[32], secret[32], key[16], iv[12], hp[16], mask[16], header[128], nonce[12];
+    long result = -1;
+    if ((version != 1 && version != 2) || at > 64 || at + 4 + 16 > length || length > LARGEST || dcidlen > 20)
+        return -1;
+    hmac_setup(&k, H_SHA256, version == 1 ? salt1 : salt2, 20);
+    hmac(&k, dcid, dcidlen, NULL, 0, initial);
+    hmac_setup(&k, H_SHA256, initial, 32);
+    expand_label(&k, from_server ? "server in" : "client in", 32, secret);
+    hmac_setup(&k, H_SHA256, secret, 32);
+    expand_label(&k, version == 1 ? "quic key" : "quicv2 key", 16, key);
+    expand_label(&k, version == 1 ? "quic iv" : "quicv2 iv", 12, iv);
+    expand_label(&k, version == 1 ? "quic hp" : "quicv2 hp", 16, hp);
+    crypto *c = calloc(1, sizeof *c);
+    if (!c)
+        return -1;
+    if (aes_block(c, 1, 16, hp, packet + at + 4, mask)) {
+        uint8_t first = packet[0] ^ (mask[0] & 0x0f);
+        size_t pnlen = (size_t)(first & 3) + 1;
+        uint64_t number = 0;
+        memcpy(header, packet, at + pnlen);
+        header[0] = first;
+        for (size_t i = 0; i < pnlen; i++) {
+            header[at + i] = packet[at + i] ^ mask[1 + i];
+            number = number << 8 | header[at + i];
+        }
+        memcpy(nonce, iv, 12);
+        for (int i = 0; i < 8; i++)
+            nonce[11 - i] ^= (uint8_t)(number >> (8 * i));
+        size_t clen = length - at - pnlen - 16;
+        if (clen <= room && aead_open(c, GCM, 16, key, nonce, header, at + pnlen, packet + at + pnlen, length - at - pnlen)) {
+            memcpy(out, c->plain, clen);
+            result = (long)clen;
+        }
+    }
+    crypto_free(c);
+    free(c);
+    return result;
 }
 
 typedef struct {
