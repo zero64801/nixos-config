@@ -35,6 +35,8 @@ def for_exec(parser):
     """Run a program in the guest, wait for it and print what it printed. Its exit status becomes this one's."""
     parser.add_argument("--shell", action="store_true", help="the words are one line for the guest's shell, cmd in Windows and sh elsewhere")
     parser.add_argument("--powershell", action="store_true", help="the words are a PowerShell script")
+    parser.add_argument("--suspended", action="store_true", help="with --job: hold the program still before its first instruction, say "
+                                                                  "its process, and let it run on guest-job resume")
     running(parser)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="the program and its arguments, or the line or script")
 
@@ -49,7 +51,7 @@ def for_py(parser):
 
 def for_job(parser):
     """Tell how what was started with --job is doing, show what one printed, stop one, or clear the finished away."""
-    parser.add_argument("action", choices=["status", "log", "stop", "clean"])
+    parser.add_argument("action", choices=["status", "log", "stop", "clean", "resume"])
     parser.add_argument("id", nargs="?", help="the job, as it was named when it started")
     parser.add_argument("--tail", type=int, default=40, metavar="LINES", help="lines of the log to show, the last 40 by default")
     parser.add_argument("--max", type=size, default=agent.SHOWN, help="bytes of the log to read at most, 1M by default")

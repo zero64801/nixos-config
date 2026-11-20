@@ -15,6 +15,7 @@ import secrets
 import shlex
 import subprocess
 import sys
+import time
 
 from agent import POWERSHELL, SHOWN, UTF8, WRITE, Guest, plain, shape, show
 from session import Refused, fail
@@ -51,6 +52,15 @@ for f in $2.pid; do
   else state=gone; fi
   echo "$id  $state"
 done''')
+# The process a job started held: in Windows the one the helper wrote down, elsewhere the one of its tree that is stopped.
+TREE = '''tree() { for child in $(pgrep -P "$1"); do tree "$child"; done; echo "$1"; }
+stopped() { for one in $(tree "$(cat "$2.pid")"); do grep -qs '^State:[[:space:]]*T' "/proc/$one/status" && echo "$one"; done; }
+'''
+HELD = ("Get-Content -LiteralPath (Join-Path $a[0] ($a[1] + '.program')) -ErrorAction SilentlyContinue",
+        'cd "$1" 2>/dev/null || exit 0\n' + TREE + 'stopped "$1" "$2" | head -n 1')
+RESUME = (("$files = Join-Path $a[0] $a[1]; if (-not (Test-Path -LiteralPath ($files + '.program'))) { 'no such job held'; exit 1 }; "
+           "New-Item -ItemType File -Force -Path ($files + '.resume') | Out-Null; 'resumed ' + (Get-Content -LiteralPath ($files + '.program') -Raw).Trim()"),
+          'cd "$1" && [ -e "$2.pid" ] || exit 1\n' + TREE + 'for one in $(stopped "$1" "$2"); do kill -CONT "$one" && echo "resumed $one"; done')
 # Whether the job had ended is looked at before the stop, since a job that is being stopped can still write down an end of its own.
 STOP = (("$files = Join-Path $a[0] $a[1]; $ended = Test-Path -LiteralPath ($files + '.exit'); "
          "& taskkill.exe /pid ([int](Get-Content -LiteralPath ($files + '.pid') -Raw)) /t /f | Out-Null; "
@@ -175,11 +185,16 @@ def on_windows(program, line, whom, args, grant=(), delete=(), job=None, fed=Fal
         words += ["--env", pair]
     if job:
         words += ["--job", f"{HOME}\\jobs\\{job}"] + (["--feed"] if fed else [])
+    if getattr(args, "suspended", False):
+        words.append("--suspended")
     return [*words, program, line]
 
 
 def elsewhere(line, whom, args, grant=(), delete=(), job=None, fed=False, env=()):
     """A shell's words for starting a line in a guest that has one."""
+    if getattr(args, "suspended", False):
+        # Held still before its first instruction: the shell that becomes it stops itself first, and guest-job resume goes on.
+        line = f"sh -c {shlex.quote('kill -STOP $$ && exec sh -c \"$1\"')} sh {shlex.quote(line)}"
     if env:
         line = f"env {shlex.join(env)} {line}"
     if args.cwd:
@@ -247,6 +262,8 @@ def execute(args):
     given = sys.stdin.buffer.read(WRITE) if args.stdin else None
     line = " ".join(args.command)
     job = secrets.token_hex(3) if args.job else None
+    if args.suspended and not job:
+        fail("--suspended goes with --job, which guest-job resume then lets run")
     if whom is not None or job:
         if guest.windows():
             if args.powershell:
@@ -263,6 +280,8 @@ def execute(args):
         else:
             argv = elsewhere(line if args.shell else shlex.join(args.command), whom, args, job=job)
         carried_out("exec", guest, args, argv, given, job)
+        if args.suspended:
+            held(guest, job)
         return
     if args.powershell:
         move = "Set-Location -LiteralPath $a[0]; " if args.cwd else ""
@@ -281,6 +300,19 @@ def execute(args):
     else:
         result = guest.run(args.command, given, args.timeout)
     shown("exec", args, *result)
+
+
+def held(guest, job):
+    """Says which process a job holds before its first instruction, once the guest has it."""
+    home = f"{HOME}\\jobs" if guest.windows() else JOBS
+    for _ in range(100):
+        code, out, _, _ = guest.script(*HELD, home, job)
+        pid = (plain(out).split() or [""])[0] if code == 0 else ""
+        if pid.isdigit():
+            print(f"job {job} holds its program as process {pid}, before its first instruction. guest-job resume {job} lets it run")
+            return
+        time.sleep(0.1)
+    fail(f"job {job} started, and its program was not seen held")
 
 
 def found_python(guest, whom):
@@ -320,7 +352,7 @@ def python(args):
 
 def job(args):
     guest = Guest()
-    if args.action in ("log", "stop") and not args.id:
+    if args.action in ("log", "stop", "resume") and not args.id:
         fail(f"{args.action} takes the name of a job")
     if args.id and not JOB.fullmatch(args.id):
         fail("a job's name is six letters and digits, as guest-job status lists them")
@@ -330,7 +362,7 @@ def job(args):
         print("guest-job: what follows was written by the guest", file=sys.stderr)
         sys.stdout.write("".join(said.splitlines(keepends=True)[-args.tail:]))
         return
-    windows, posix = {"status": STATUS, "stop": STOP, "clean": CLEAN}[args.action]
+    windows, posix = {"status": STATUS, "stop": STOP, "clean": CLEAN, "resume": RESUME}[args.action]
     code, out, err, _ = guest.script(windows, posix, home, args.id or "*")
     if args.action == "status" and args.id and code == 0 and not out.strip():
         fail("there is no job of that name")

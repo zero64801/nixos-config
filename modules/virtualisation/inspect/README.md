@@ -68,7 +68,7 @@ A module can build another tool on a session from `my.virtualisation.inspect.gue
 | `guest-input` | Keys, text, pointer moves, clicks, the wheel and drags | yes |
 | `guest-exec` | Runs a program, a shell line or a PowerShell script and passes on its exit status | yes |
 | `guest-py` | Runs a Python script of this side with the Python the guest has | yes |
-| `guest-job` | Follows what was started with `--job`: status, log, stop, clean | yes |
+| `guest-job` | Follows what was started with `--job`: status, log, stop, clean, and resume for one started held | yes |
 | `guest-wait` | Waits in the guest for a process, a file or a window | yes |
 | `guest-windows` | Lists the windows of a Windows desktop with their place in screen pixels | yes |
 | `guest-read`, `guest-ls`, `guest-stat`, `guest-hash`, `guest-grep`, `guest-find` | Files of the guest, searched and filtered in the guest | yes |
@@ -98,6 +98,8 @@ In Windows that account lives in a session without a desktop, so it sees no wind
 - `--user NAME` runs it as that account, which in Windows has to be logged in.
 - `--elevated` gives it that user's administrator rights, in Windows.
 - `--job` starts it and returns at once with a name for `guest-job`.
+- `--job --suspended` starts it held still before its first instruction and says its process, for breakpoints, a memory read or `keys scan` to be set first, and `guest-job resume ID` lets it run.
+  In Windows the helper creates it suspended and resumes its first thread, elsewhere the shell that becomes the program stops itself before it does.
 
 In Windows this is done by a helper, `_guest/helper.cs`.
 The guest compiles it itself the first time it is needed, with the C# compiler every Windows carries, into the system account's own profile.

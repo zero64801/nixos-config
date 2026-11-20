@@ -105,7 +105,7 @@ A program that guards itself against debuggers is worked on from outside:
 |---|---|
 | `guest-exec PROGRAM ARGS` | Runs a program and passes on its exit status. `--shell` takes one line for cmd or sh, `--powershell` a script. |
 | `guest-py SCRIPT ARGS` | Runs a Python script of this side with the Python the guest has. `-` reads the script from standard input. |
-| `guest-job status\|log\|stop\|clean [ID]` | Follows what was started with `--job`. |
+| `guest-job status\|log\|stop\|clean\|resume [ID]` | Follows what was started with `--job`, and lets one started with `--suspended` run. |
 | `guest-wait --process NAME \| --file PATH \| --window TEXT` | Waits in the guest. `--gone` waits for the opposite. Exit status 1 when it took too long. |
 
 `guest-exec` and `guest-py` share these options:
@@ -114,6 +114,7 @@ A program that guards itself against debuggers is worked on from outside:
 - `--user NAME` runs as that account.
 - `--elevated` adds that user's administrator rights, in Windows.
 - `--job` starts it and returns at once with a name for `guest-job`.
+- `--job --suspended` holds the program before its first instruction and prints its process number: set `guest-dbg` breakpoints, read it with MemProcFS or start `keys scan --follow` first, then `guest-job resume ID`. This is the way to see what a sample does at its very start, its anti-analysis checks and unpacking among them.
 - `--cwd DIR`, `--stdin`, `--timeout SECONDS` (60 by default), `--max BYTES`, `--json`.
 
 ### Files

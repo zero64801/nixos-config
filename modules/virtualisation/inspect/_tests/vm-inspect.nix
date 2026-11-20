@@ -285,6 +285,12 @@ import ./fixture.nix { inherit host; } {
             "raced=$(guest-exec --job --shell 'f=$(grep -lx $$ /run/vm-inspect-jobs/*.pid); trap \"echo 143 > ''${f%.pid}.exit; exit 143\" TERM; sleep 300 & wait' | cut -d' ' -f2)",
             "guest-wait --process sleep --timeout 20 > /dev/null; guest-job stop $raced > /dev/null; guest-job status $raced | sed 's/^[0-9a-f]* /raced/'",
             "guest-wait --process no-such --timeout 1; echo waited=$?",
+            # A program started held has not run when it is said to be held, and does once resumed.
+            "said=$(guest-exec --job --suspended --shell 'echo ran > /tmp/held.txt'); echo \"$said\" | tail -n 1",
+            "held=$(echo \"$said\" | head -n 1 | cut -d' ' -f2); pid=$(echo \"$said\" | tail -n 1 | cut -d' ' -f8 | tr -d ,)",
+            "guest-exec --shell \"test -e /tmp/held.txt && echo early; grep State /proc/$pid/status\"",
+            "guest-job resume $held; guest-wait --file /tmp/held.txt --timeout 20 && echo resumed-ran",
+            "guest-exec --suspended true; echo unheld=$?",
             "guest-job clean > /dev/null; guest-job status; echo cleared",
             "guest-windows; echo windows=$?",
         ])))
@@ -292,9 +298,12 @@ import ./fixture.nix { inherit host; } {
         for wanted in ["tester\n", "/tmp\nhome=/tmp", "nobody is logged in", "nobody=1", "--elevated goes with", "elevated=1", "no Python was found", "nopython=1",
                        "script got one as root", "py=7", "script got two as tester", "user=7", "script got found as root", "found=7",
                        "  running", "  exit 3", "begun\nended", "sleeping as tester", "sleep is gone", "gone=0", "listed exit 3", "listed stopped", "raced stopped",
-                       "was still missing after 1 seconds", "waited=1", "only a Windows guest", "windows=1"]:
+                       "was still missing after 1 seconds", "waited=1", "only a Windows guest", "windows=1",
+                       "holds its program as process", "before its first instruction", "State:\tT (stopped)", "resumed-ran",
+                       "--suspended goes with --job", "unheld=1"]:
             assert wanted in out, f"{wanted} is missing from: {out}"
         assert "/tmp/vm-inspect-" not in out, "a script was left in the guest"
+        assert "early" not in out, "a program held before its first instruction had run"
         assert re.search(r"what follows was written by the guest\ncleared", out), "the finished jobs were not cleared away"
 
     with subtest("a program given a number the guest used before gets its own answer, not one an earlier program left with the agent"):

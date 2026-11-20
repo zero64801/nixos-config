@@ -69,6 +69,8 @@ static class Helper
     static extern bool GetExitCodeProcess(IntPtr process, out int code);
     [DllImport("kernel32.dll")]
     static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern int ResumeThread(IntPtr thread);
     [DllImport("user32.dll")]
     static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")]
@@ -103,7 +105,7 @@ static class Helper
 
     sealed class Asked
     {
-        public bool Desktop, Elevated, Gone, Feed, Detached;
+        public bool Desktop, Elevated, Gone, Feed, Detached, Suspended;
         public string User, Directory, Job, Title, Process, File, Out, Crop;
         public long Handle, From;
         public double Seconds = 60;
@@ -147,6 +149,7 @@ static class Helper
             else if (name == "--gone") asked.Gone = true;
             else if (name == "--feed") asked.Feed = true;
             else if (name == "--detached") asked.Detached = true;
+            else if (name == "--suspended") asked.Suspended = true;
             else if (at + 1 >= args.Length) throw new ArgumentException(name + " takes a value");
             else if (name == "--user") asked.User = args[++at];
             else if (name == "--cwd") asked.Directory = args[++at];
@@ -429,11 +432,20 @@ static class Helper
         }
         var line = new StringBuilder(asked.Rest[1]);
         PROCESS_INFORMATION made;
-        // 0x08000000 gives a console program a console without a window, 0x400 says the environment is wide text.
+        if (asked.Suspended && asked.Job == null) throw new ArgumentException("--suspended goes with --job");
+        // 0x08000000 gives a console program a console without a window, 0x400 says the environment is wide text, 0x4 holds its first thread.
+        int held = asked.Suspended ? 0x4 : 0;
         bool started = token != IntPtr.Zero
-            ? CreateProcessAsUser(token, program, line, IntPtr.Zero, IntPtr.Zero, true, 0x08000400, environment, directory, ref startup, out made)
-            : CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, directory, ref startup, out made);
+            ? CreateProcessAsUser(token, program, line, IntPtr.Zero, IntPtr.Zero, true, 0x08000400 | held, environment, directory, ref startup, out made)
+            : CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, 0x08000000 | held, IntPtr.Zero, directory, ref startup, out made);
         if (!started) throw Problem(asked.Rest[0] + " could not be started");
+        if (asked.Job != null) File.WriteAllText(asked.Job + ".program", made.dwProcessId.ToString());
+        // A program started held waits for guest-job resume, which leaves a file beside the job's.
+        if (asked.Suspended)
+        {
+            while (!File.Exists(asked.Job + ".resume")) System.Threading.Thread.Sleep(100);
+            ResumeThread(made.hThread);
+        }
         CloseHandle(made.hThread);
         if (feed != null)
         {
