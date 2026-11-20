@@ -215,3 +215,16 @@ assert [(r["method"], r["url"], r["status"], r["version"]) for r in later] == [(
 _, _, _, answer = net.both_ways(inner, later[0], None)
 assert answer == b"hello from after the update", answer
 print("HTTP/2 opened after a key update reads from the middle of its connection")
+
+# A request whose host is an entry HPACK put in its table before the update is still listed, its host then that of the TLS
+# hello, with the server's port when it is not 443.
+tabled = bytes([0x82, 0x87, 0x84, 0xBE])
+os.makedirs("tabled", exist_ok=True)
+plaintext.write("tabled", recorded.said["started"], [("10.9.9.50:41001", "10.9.9.1:8443", [(start + 50, True, h2frame(1, 0x05, 17, tabled))])])
+inner = capture.Capture("tabled")
+inner.options = plaintext.OPTIONS
+asked = net.exchanges(inner, argparse.Namespace(since=None, until=None))
+assert [(r["method"], r["url"]) for r in asked] == [("GET", "https://?/")], asked
+assert net.from_hello(asked[0]["url"], net.authority("h2.test", "8443")) == ("https://h2.test:8443/", True)
+assert net.from_hello("https://h2.test/", net.authority("other.test", "443")) == ("https://h2.test/", False), "a host the request named stays"
+print("a host from HPACK's table before the update is taken from the TLS hello")

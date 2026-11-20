@@ -240,13 +240,13 @@ def quic_streams(capture, keys, only):
         opened[connection["flow"]] = {event[2] for event in events}
         out.append({"flow": connection["flow"], "events": events})
     by_flow = {connection["flow"]: connection for connection in out}
-    for flow, (events, missed) in quic_after_updates(capture, keys, only, opened).items():
+    for flow, (events, missed, name) in quic_after_updates(capture, keys, only, opened).items():
         connection = by_flow.get(flow) or {"flow": flow, "events": []}
         if flow not in by_flow:
             out.append(connection)
         connection["events"] = sorted(connection["events"] + [[when, number, side, stream, offset, base64.b64encode(data).decode(), fin]
                                                               for when, number, side, stream, offset, data, fin in events], key=lambda e: (e[0], e[1]))
-        connection["late"] = True
+        connection["late"], connection["name"] = True, name
         if missed:
             print(f"guest-net: {flow}: {missed} packets after the key updates did not open", file=sys.stderr)
     return out
@@ -255,7 +255,7 @@ def quic_streams(capture, keys, only):
 def quic_after_updates(capture, keys, only, opened):
     """The stream data of the QUIC flows keys scan found secrets of after their key updates, of the sides tshark opened
     nothing of, which guest-net opens itself, as {flow: ([(time, frame number, side, stream, offset, data, fin)], how many
-    packets did not open)}. opened says which sides tshark opened of each flow."""
+    packets did not open, the name its hello asked for)}. opened says which sides tshark opened of each flow."""
     later = scan.updated(capture)
     if not later:
         return {}
@@ -270,8 +270,32 @@ def quic_after_updates(capture, keys, only, opened):
         if not any(secrets.values()):
             continue
         datagrams = [(0 if from_guest == hello["guest_is_client"] else 1, data, when, number) for from_guest, data, when, number in taken.get(stream, [])]
-        out[f"u{stream}"] = quiclate.read(scanner, hello["suite"], secrets, datagrams, 0 if hello["guest_is_client"] else 1)
+        out[f"u{stream}"] = (*quiclate.read(scanner, hello["suite"], secrets, datagrams, 0 if hello["guest_is_client"] else 1),
+                             authority(hello.get("name", ""), hello.get("port", "")))
     return out
+
+
+# What a URL, a listing and a HAR file say of a host taken from the TLS hello.
+FROM_HELLO = "the host is the one the TLS hello named, since the request's own was in a table of headers from before the key update"
+
+
+def authority(name, port):
+    """The host part of a URL for a name a TLS hello asked for and the server's port, which goes with it unless it is 443."""
+    return f"{name}:{port}" if name and port and port != "443" else name
+
+
+def from_hello(url, name):
+    """A URL whose host was in a table of headers from before a key update, which guest-net reads a flow from, with the
+    name the flow's TLS hello asked for instead, and whether it took that name. A browser may ask a connection for other
+    hosts its certificate covers, so the name is the likely host, not a sure one."""
+    scheme, sep, rest = url.partition("://")
+    if sep and name and rest.split("/", 1)[0] == "?":
+        return f"{scheme}://{name}{rest[1:]}", True
+    return url, False
+
+
+def shown_url(request, limit):
+    return plain(request["url"], limit) + (" (host from the TLS hello)" if request.get("hello") else "")
 
 
 def http3(capture, args, keys=None, only=""):
@@ -280,6 +304,7 @@ def http3(capture, args, keys=None, only=""):
     connections = quic_streams(capture, keys, only)
     if not connections:
         return []
+    names = {connection["flow"]: connection.get("name") for connection in connections if connection.get("late")}
     command = [shared.SETTINGS.box, "--", sys.executable, "-I", "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)), "h3.py")]
     done = subprocess.run(command, input=json.dumps({"connections": connections}).encode(), capture_output=True, check=False)
     if done.returncode != 0:
@@ -296,7 +321,8 @@ def http3(capture, args, keys=None, only=""):
             continue
         answer = dict(request["headers"])
         body = base64.b64decode(request["body"])
-        found.append({"id": request["id"], "time": str(request["time"]), "flow": request["flow"], "method": request["method"], "url": request["url"],
+        url, hello = from_hello(request["url"], names.get(request["flow"]))
+        found.append({"id": request["id"], "time": str(request["time"]), "flow": request["flow"], "method": request["method"], "url": url, "hello": hello,
                       "status": answer.get(":status", ""), "type": answer.get("content-type", ""),
                       "size": answer.get("content-length", "") or (str(len(body)) if body else ""), "answer": None, "version": "3",
                       "took": request["took"], "sent": request["request_headers"] + request.get("request_trailers", []),
@@ -348,7 +374,7 @@ def http(capture, args):
     inner, later = later_exchanges(capture, args, {f["id"] for f in kept} if only else None)
     flows_by_id = {f["id"]: f for f in every}
     if args.id and args.id.startswith("k"):
-        detail(inner, argparse.Namespace(**{**vars(args), "keys": None}), [dict(r["inner"], url=r["url"]) for r in later if r["id"] == args.id])
+        detail(inner, argparse.Namespace(**{**vars(args), "keys": None}), [dict(r["inner"], url=r["url"], hello=r["hello"]) for r in later if r["id"] == args.id])
         return
     if args.id:
         detail(capture, args, [r for r in found if r["id"] == args.id])
@@ -359,7 +385,7 @@ def http(capture, args):
         took = f" in {request['took'] * 1000:.0f} ms" if request["took"] is not None else ""
         if request["status"].startswith("101") or request.get("protocol") == "websocket":
             took += f" websocket, guest-net ws {request['flow'] if request['version'] == '1' else request['id']}"
-        print(f"{request['id']:<10} {capture.relative(request['time']):>9} {request['flow']:<6} {request['method']} {plain(request['url'], 160)} -> "
+        print(f"{request['id']:<10} {capture.relative(request['time']):>9} {request['flow']:<6} {request['method']} {shown_url(request, 160)} -> "
               f"{plain(request['status'] or 'no answer', 40)}{took} {plain(request['type'], 60)} {request['size'] and size(int(request['size']))}  {plain(owner or '', 60)}")
     if not found:
         encrypted = sum(1 for f in (scoped(capture, args, flows(capture, args))[0]) if f["names"] and f["proto"] == "tcp")
@@ -470,6 +496,8 @@ def har(capture, args):
                               "headersSize": -1, "bodySize": len(answer)},
                  "cache": {}, "timings": {"blocked": -1, "dns": -1, "connect": -1, "ssl": -1, "send": 0, "wait": took, "receive": 0},
                  "connection": request["flow"], "_program": owners.owner_of(known, flow) if flow else ""}
+        if request.get("hello"):
+            entry["comment"] = FROM_HELLO
         if asked:
             entry["request"]["postData"] = content(asked, sent, True)
         if flow:
@@ -490,7 +518,7 @@ def detail(capture, args, found):
     if request["version"] in ("2", "3"):
         sent, got, asked, answer = (request["sent"], request["got"], request["asked"], request["body"]) if request["version"] == "3" else \
             both_ways(capture, request, args.keys)
-        print(f"{request['method']} {plain(request['url'], 400)}")
+        print(f"{request['method']} {shown_url(request, 400)}")
         for name, value in sent:
             print(f"  {plain(name, 100)}: {plain(value, 400)}")
         path = request["url"].split("://", 1)[-1].partition("/")[2]
@@ -957,14 +985,18 @@ def chunks(capture, flow, decrypted, keys):
 
 def opened(capture, keys):
     """A capture of its own of what guest-net opens itself, the flows of TLS 1.3 after their key updates, which tshark then
-    reads HTTP in as in any, with which of its flows is which of the capture's, or (None, {})."""
+    reads HTTP in as in any, with which of its flows is which of the capture's, each with the name its hello asked for
+    under hello, or (None, {})."""
     secrets = scan.updated(capture)
     if not secrets:
         return None, {}
-    streams = {first(packet, "tls.handshake.random").replace(":", "").lower(): first(packet, "tcp.stream")
-               for packet in capture.ek(NET, ["tcp.stream", "tls.handshake.random"], "tls.handshake.type == 1", keys)}
+    hellos = list(capture.ek(NET, ["tcp.stream", "tls.handshake.random", "tls.handshake.extensions_server_name", "tcp.dstport"],
+                             "tls.handshake.type == 1", keys))
+    streams = {first(packet, "tls.handshake.random").replace(":", "").lower(): first(packet, "tcp.stream") for packet in hellos}
+    named = {f"t{first(packet, 'tcp.stream')}": authority(first(packet, "tls.handshake.extensions_server_name"), first(packet, "tcp.dstport"))
+             for packet in hellos}
     by_id = {f["id"]: f for f in flows(capture, None, keys)}
-    chosen = [by_id[f"t{stream}"] for random, stream in streams.items() if random in secrets and f"t{stream}" in by_id]
+    chosen = [dict(by_id[f"t{stream}"], hello=named.get(f"t{stream}", "")) for random, stream in streams.items() if random in secrets and f"t{stream}" in by_id]
     taken = [(flow, after_updates(capture, flow)) for flow in chosen]
     taken = [(flow, chunks) for flow, chunks in taken if chunks]
     if not taken:
@@ -975,7 +1007,7 @@ def opened(capture, keys):
     inner = shared.Capture(folder)
     inner.options = plaintext.OPTIONS
     # The guest's end of each flow is its own in both captures.
-    mine = {flow["guest"]: flow["id"] for flow, _ in taken}
+    mine = {flow["guest"]: flow for flow, _ in taken}
     return inner, {flow["id"]: mine[flow["guest"]] for flow in flows(inner, None) if flow["guest"] in mine}
 
 
@@ -991,11 +1023,12 @@ def later_exchanges(capture, args, kept=None):
     for request in exchanges(inner, argparse.Namespace(since=None, until=None)):
         flow = mapping.get(request["flow"])
         when = float(request["time"])
-        if flow is None or (kept is not None and flow not in kept) or (since and when < since) or (until and when > until):
+        if flow is None or (kept is not None and flow["id"] not in kept) or (since and when < since) or (until and when > until):
             continue
         # They all came inside TLS, though the capture of their plaintext has them as plain HTTP.
         url = "https://" + request["url"][len("http://"):] if request["url"].startswith("http://") else request["url"]
-        out.append(dict(request, id="k" + request["id"][1:], flow=flow, url=url, inner=request))
+        url, hello = from_hello(url, flow["hello"])
+        out.append(dict(request, id="k" + request["id"][1:], flow=flow["id"], url=url, hello=hello, inner=request))
     return inner, out
 
 

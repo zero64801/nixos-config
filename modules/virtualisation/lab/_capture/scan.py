@@ -327,16 +327,18 @@ QUIC_OPENING = 10
 
 def quic_hellos(capture, display="", keys=None):
     """What tshark reads of the hellos in QUIC's Initial packets, which it opens by itself, by UDP stream: {stream: {"time",
-    "random", "guest_is_client", "suite"}}, of the flows the display filter keeps."""
+    "random", "guest_is_client", "name", "port", "suite"}}, of the flows the display filter keeps, port being the server's."""
     hellos = {}
     display = " && ".join(f"({part})" for part in (display, "quic && (tls.handshake.type == 1 || tls.handshake.type == 2)") if part)
     for packet in capture.ek(NET, ["udp.stream", "frame.time_epoch", "frame.packet_flags_direction", "tls.handshake.type",
-                                   "tls.handshake.random", "tls.handshake.ciphersuite"], display, keys):
+                                   "tls.handshake.random", "tls.handshake.extensions_server_name", "tls.handshake.ciphersuite", "udp.dstport"],
+                           display, keys):
         hello = hellos.setdefault(first(packet, "udp.stream"), {"time": float(first(packet, "frame.time_epoch", "0"))})
         kinds = packet["tls.handshake.type"]
         if "1" in kinds and packet["tls.handshake.random"] and "random" not in hello:
             hello["random"] = bytes.fromhex(first(packet, "tls.handshake.random").replace(":", ""))
             hello["guest_is_client"] = first(packet, "frame.packet_flags_direction") == SENT
+            hello["name"], hello["port"] = first(packet, "tls.handshake.extensions_server_name"), first(packet, "udp.dstport")
         elif "2" in kinds and packet["tls.handshake.ciphersuite"]:
             hello["suite"] = int(first(packet, "tls.handshake.ciphersuite"), 0)
     return hellos

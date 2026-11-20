@@ -336,14 +336,21 @@ tshark_alone = subprocess.run([f"{wireshark}/tshark", "-n", "-r", "late/net.pcap
 assert not tshark_alone.strip(), "tshark opened QUIC with secrets after an update, so this test no longer tests what it should"
 after = net.exchanges(moved, args)
 listed = [(r["method"], r["url"].rsplit("/", 1)[-1], r["status"], r["version"]) for r in after]
-# The first request went before the update and only its answer after, and the host each named was in the client's table.
+# The first request went before the update and only its answer after. The host each named was in the client's table, so it
+# comes from the TLS hello, with the server's port in the capture, which has the server on 443 while curl named the relay's.
 assert listed == [("?", "(asked before the key update it was read from)", "200", "3"), ("GET", "second", "200", "3"),
                   ("GET", "third", "200", "3"), ("POST", "form", "200", "3")], listed
-assert after[1]["url"].startswith("https://?/") and after[0]["flow"] == after[1]["flow"] == found[0]["flow"], after
+named = [r["url"].replace(f":{r['url'].split('/')[2].rpartition(':')[2]}/", "/", 1) for r in found]
+assert [r["url"] for r in after[1:]] == named[1:] and named[1].startswith("https://localhost/"), (named, after)
+assert [r["hello"] for r in after] == [False, True, True, True], after
+assert after[0]["flow"] == after[1]["flow"] == found[0]["flow"], after
+with contextlib.redirect_stdout(io.StringIO()) as out:
+    net.http(moved, args)
+assert f"GET {named[1]} (host from the TLS hello) -> 200" in out.getvalue(), out.getvalue()
 with contextlib.redirect_stdout(io.StringIO()) as out:
     net.http(moved, argparse.Namespace(**{**vars(args), "id": after[3]["id"]}))
 form = out.getvalue()
-assert "POST https://?/form" in form and "name=alice&pin=1234" in form and '"got": "name=alice&pin=1234"' in form, form
+assert f"POST {named[3]} (host from the TLS hello)" in form and "name=alice&pin=1234" in form and '"got": "name=alice&pin=1234"' in form, form
 assert "?: (set before the update)" in form and "x-answered: by aioquic" in form, form
 print("after a key update, the requests and answers from then on are read with the secrets after it alone")
 
