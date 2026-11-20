@@ -140,7 +140,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | `guest-mark LABEL` | Marks a moment. The readers take `--since LABEL` and `--until LABEL`, or seconds from the start. |
 | `--process NAME`, `--children`, `--host NAME` | Keep a reader (`summary`, `flows`, `dns`, `http`, `tls`, `packets`, `export`, `keys scan`) to one program's traffic, and that of the programs it started, or to a host, its subdomains, an address or a network. |
 | `guest-net summary`, `flows`, `dns` | What the capture holds, every TCP and UDP flow with its ends, names, bytes each way and program, the names looked up. |
-| `guest-net http [ID]` | The requests of HTTP/1 and HTTP/2, their answers and how long each took, or one in full: headers and bodies both ways, undone of gzip, deflate, brotli and zstd, JSON laid out. `--save NAME` writes the bodies to `./out`. |
+| `guest-net http [ID]` | The requests of HTTP/1, HTTP/2 and HTTP/3, their answers and how long each took, or one in full: headers and bodies both ways, undone of gzip, deflate, brotli and zstd, JSON laid out. `--save NAME` writes the bodies to `./out`. |
 | `guest-net tls`, `stream ID` | Each handshake and whether the keys open it, what went each way in one flow (`--decrypted`, `--hex`). |
 | `guest-net packets FILTER`, `tshark ARGS`, `export` | Wireshark's display filters, any tshark options on the capture, a copy with its keys into `./out`. |
 | `guest-net watch` | Names, requests and handshakes as they happen. |
@@ -229,8 +229,7 @@ Deleting that folder removes it.
 - A window that blocks capture, such as protected video, will likely come out black.
   The screen's picture cut to that window's place is the way around it.
 - A program with its own crypto over plain TCP or UDP stays unreadable: `keys scan` opens TLS and QUIC only.
-- tshark reads QUIC's streams as HTTP/3 only when `keys scan` found the handshake secrets too.
-  With the traffic secrets alone it shows the decrypted stream frames, not the requests.
+- `guest-net http` reads HTTP/3 with the traffic secrets alone, while tshark's own reading of it (`packets`, `tshark`, an export in Wireshark) needs the handshake secrets too.
 - A TLS 1.3 connection that updated its keys holds only the newer ones, which open none of its start, and `--follow` is the way to catch it before.
 
 ## Running something that came out of the guest

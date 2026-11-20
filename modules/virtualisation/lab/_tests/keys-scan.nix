@@ -25,16 +25,29 @@ let
     sleep 3
   '';
 
-  # A server of QUIC that takes HTTP/3's handshake and the client's first streams, which is all the test needs of it.
+  # A server of HTTP/3 that answers every request with a page of its own.
   quicServer = pkgs.writeText "quic.py" ''
     import asyncio
-    from aioquic.asyncio import serve
+    from aioquic.asyncio import QuicConnectionProtocol, serve
+    from aioquic.h3.connection import H3_ALPN, H3Connection
+    from aioquic.h3.events import DataReceived, HeadersReceived
     from aioquic.quic.configuration import QuicConfiguration
 
+    class Server(QuicConnectionProtocol):
+        h3 = None
+
+        def quic_event_received(self, event):
+            self.h3 = self.h3 or H3Connection(self._quic)
+            for e in self.h3.handle_event(event):
+                if isinstance(e, (HeadersReceived, DataReceived)) and e.stream_ended:
+                    self.h3.send_headers(e.stream_id, [(b":status", b"200"), (b"content-type", b"text/plain")])
+                    self.h3.send_data(e.stream_id, b"over HTTP/3\n", end_stream=True)
+                    self.transmit()
+
     async def main():
-        configuration = QuicConfiguration(alpn_protocols=["h3"], is_client=False)
+        configuration = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=False)
         configuration.load_cert_chain("${certificate}/cert.pem", "${certificate}/key.pem")
-        await serve("10.9.9.1", 8444, configuration=configuration)
+        await serve("10.9.9.1", 8444, configuration=configuration, create_protocol=Server)
         await asyncio.Event().wait()
 
     asyncio.run(main())
@@ -105,11 +118,12 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == process; guest-net keys scan --again",
           "echo == follow; (guest-net keys scan --follow --physical --pause --seconds 15 &"
           " sleep 3; guest-exec --shell 'SSLKEYLOGFILE=/tmp/short.log curl -sk --resolve tls.test:9443:10.9.9.1 https://tls.test:9443/' > /dev/null;"
-          " guest-exec --shell 'SSLKEYLOGFILE=/tmp/quic.log curl3 -sk --http3-only --max-time 3 --resolve tls.test:8444:10.9.9.1 https://tls.test:8444/' > /dev/null; wait)",
+          " guest-exec --shell 'SSLKEYLOGFILE=/tmp/quic.log curl -sk --http3-only --max-time 3 --resolve tls.test:8444:10.9.9.1 https://tls.test:8444/over' > /dev/null; wait)",
           "echo == held; guest-exec --shell 'cat /tmp/held1_3.log /tmp/held1_2.log'",
           "echo == short; guest-exec --shell 'cat /tmp/short.log'",
           "echo == quic; guest-exec --shell 'cat /tmp/quic.log'",
           "echo == tls; guest-net tls",
+          "echo == http3; guest-net http --host tls.test && guest-net http $(guest-net http | grep 'GET https://tls.test:8444/over' | cut -d' ' -f1)",
           "echo == keys; cat $VM_INSPECT_CAPTURE/keys.log",
       ])
       out = machine.succeed(lab(f"cd /tmp/work && vm-inspect --net --control --gdb driven -- sh -c {shlex.quote('{ ' + script + '; } 2>&1')} 2>&1"))
@@ -149,6 +163,10 @@ host.needs [ "modules/virtualisation/inspect" ] (
           quic = secrets(section["quic"], traffic)
           assert len(quic) == 2 and quic <= found, f"missing {quic - found}: {section['follow']}"
           assert re.search(r"10\.9\.9\.50:\d+ -> 10\.9\.9\.1:8444  tls\.test  QUIC  CLIENT_TRAFFIC_SECRET_0, SERVER_TRAFFIC_SECRET_0", section["follow"]), section["follow"]
+
+      with subtest("the HTTP/3 of the QUIC connection is read with the secrets found, though tshark reads it only with the handshake's"):
+          assert re.search(r"GET https://tls\.test:8444/over -> 200 in \d+ ms text/plain", section["http3"]), section["http3"]
+          assert "over HTTP/3" in section["http3"] and "user-agent: curl" in section["http3"], section["http3"]
 
       with subtest("the flows read as decrypted"):
           assert section["tls"].count("decrypted") >= 3, section["tls"]

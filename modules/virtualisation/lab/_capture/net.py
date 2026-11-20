@@ -4,6 +4,8 @@ A flow is named t then tshark's number for a TCP stream, or u for UDP. A request
 the packet it began in. Everything shown was sent or received by the guest. --process and --host keep the flows of some
 programs or to some hosts, as scope.py chooses them.
 """
+import base64
+import calendar
 import json
 import os
 import subprocess
@@ -161,9 +163,108 @@ def frames(packet):
         yield kind, stream, headers, data
 
 
+def epoch(text):
+    """frame.time_epoch, which tshark's JSON gives as a date in UTC and its ek as seconds."""
+    try:
+        return float(text)
+    except ValueError:
+        whole, _, fraction = str(text).rstrip("Z").partition(".")
+        return calendar.timegm(time.strptime(whole, "%Y-%m-%dT%H:%M:%S")) + float("0." + (fraction if fraction.isdigit() else "0"))
+
+
+def quic_streams(capture, keys, only):
+    """The stream data of each QUIC connection the keys open, as h3.py takes it: by connection, in the order of the packets,
+    each chunk with the side that sent it, 0 for the client. Only the side that opens a unidirectional stream sends on it,
+    and the client opens those of even number, which tells the sides apart even when the client's first requests went as
+    early data that the keys do not open."""
+    if not capture.keylog(keys):
+        return []
+    text = capture.output(NET, ["-Y", joined(None, only, "quic.stream_data"), "-T", "json", "--no-duplicate-keys", "-J", "frame udp quic"], keys)
+    try:
+        packets = json.loads(text) if text.strip() else []
+    except ValueError:
+        fail("tshark's JSON of the QUIC streams does not read")
+    connections = {}
+
+    def listed(value):
+        return value if isinstance(value, list) else [value] if isinstance(value, dict) else []
+
+    for packet in packets:
+        layers = packet.get("_source", {}).get("layers", {})
+        frame, udp = layers.get("frame", {}), layers.get("udp", {})
+        if not isinstance(frame, dict) or not isinstance(udp, dict):
+            continue
+        flow = f"u{udp.get('udp.stream', '?')}"
+        try:
+            sent = int(frame.get("frame.packet_flags", "0"), 16) & 3 == int(SENT, 16)
+        except ValueError:
+            sent = False
+        connection = connections.setdefault(flow, {"flow": flow, "chunks": [], "guest_is_client": None, "guessed": None})
+        for quic in listed(layers.get("quic")):
+            for each in listed(quic.get("quic.frame")):
+                data = each.get("quic.stream_data")
+                if not isinstance(data, str):
+                    continue
+                try:
+                    stream, offset = int(each.get("quic.stream.stream_id", "-1")), int(each.get("quic.stream.offset", "0"))
+                    when, number = epoch(frame.get("frame.time_epoch", "0")), int(frame.get("frame.number", "0"))
+                except ValueError:
+                    continue
+                if stream < 0:
+                    continue
+                if connection["guest_is_client"] is None and stream & 2:
+                    connection["guest_is_client"] = sent == (stream & 1 == 0)
+                if connection["guessed"] is None and not stream & 3:
+                    connection["guessed"] = sent
+                fin = str(each.get("quic.frame_type_tree", {}).get("quic.stream.fin", "0")) == "1"
+                connection["chunks"].append((when, number, sent, stream, offset, bytes.fromhex(data.replace(":", "")), fin))
+    out = []
+    for connection in connections.values():
+        known = connection["guest_is_client"] if connection["guest_is_client"] is not None else connection["guessed"]
+        guest_is_client = known is not False
+        events = [[when, number, 0 if sent == guest_is_client else 1, stream, offset, base64.b64encode(data).decode(), fin]
+                  for when, number, sent, stream, offset, data, fin in connection["chunks"]]
+        out.append({"flow": connection["flow"], "events": events})
+    return out
+
+
+def http3(capture, args, keys=None, only=""):
+    """The requests of HTTP/3 with their answers, from QUIC's streams, taken apart by h3.py inside lab-box. tshark reads HTTP/3
+    itself only with the secrets of the handshake, and this needs only those of the traffic."""
+    connections = quic_streams(capture, keys, only)
+    if not connections:
+        return []
+    command = [shared.SETTINGS.box, "--", sys.executable, "-I", "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)), "h3.py")]
+    done = subprocess.run(command, input=json.dumps({"connections": connections}).encode(), capture_output=True, check=False)
+    if done.returncode != 0:
+        fail(f"HTTP/3 could not be read: {plain(done.stderr.decode('utf-8', 'replace').strip().splitlines()[-1:] or 'no reason', 300)}")
+    try:
+        said = json.loads(done.stdout)
+    except ValueError:
+        fail("the reader of HTTP/3 gave no answer")
+    since = capture.moment(args.since) if getattr(args, "since", None) else None
+    until = capture.moment(args.until) if getattr(args, "until", None) else None
+    found = []
+    for request in said.get("requests", []):
+        if (since and request["time"] < since) or (until and request["time"] > until):
+            continue
+        answer = dict(request["headers"])
+        body = base64.b64decode(request["body"])
+        found.append({"id": request["id"], "time": str(request["time"]), "flow": request["flow"], "method": request["method"], "url": request["url"],
+                      "status": answer.get(":status", ""), "type": answer.get("content-type", ""),
+                      "size": answer.get("content-length", "") or (str(len(body)) if body else ""), "answer": None, "version": "3",
+                      "took": request["took"], "sent": request["request_headers"] + request["trailers"], "got": request["headers"],
+                      "asked": base64.b64decode(request["request_body"]), "body": body})
+    # Only what concerns the connections shown, and with one request asked for only its own.
+    shown = {r["flow"] for r in found if not getattr(args, "id", None) or r["id"] == args.id}
+    for note in [n for n in said.get("notes", []) if isinstance(n, str) and n.split(":")[0].split(" ")[0] in shown][:20]:
+        print(f"guest-net: {plain(note, 300)}", file=sys.stderr)
+    return found
+
+
 def exchanges(capture, args, keys=None, only=""):
-    """Each request of HTTP/1 and HTTP/2 with its answer, decrypted where the capture has the keys, of the flows the display
-    filter only keeps."""
+    """Each request of HTTP/1, HTTP/2 and HTTP/3 with its answer, decrypted where the capture has the keys, of the flows the
+    display filter only keeps."""
     requests, streams = {}, {}
     for packet in capture.ek(NET, HTTP_FIELDS + FRAME_FIELDS, joined(args, capture.window(args), only, "http || http2.type == 1"), keys):
         number, stamp, tcp = first(packet, "frame.number"), first(packet, "frame.time_epoch"), first(packet, "tcp.stream")
@@ -188,7 +289,7 @@ def exchanges(capture, args, keys=None, only=""):
             elif kind == 1 and ":status" in said and key in streams:
                 streams[key].update(status=said[":status"], type=said.get("content-type", ""), size=said.get("content-length", ""),
                                     took=float(stamp) - float(streams[key]["time"]))
-    return sorted(requests.values(), key=lambda r: float(r["time"]))
+    return sorted(list(requests.values()) + http3(capture, args, keys, only), key=lambda r: float(r["time"]))
 
 
 def http(capture, args):
@@ -234,8 +335,9 @@ def detail(capture, args, found):
     if not found:
         fail(f"there is no request {args.id}, guest-net http lists them")
     request = found[0]
-    if request["version"] == "2":
-        sent, got, asked, answer = both_ways(capture, request, args.keys)
+    if request["version"] in ("2", "3"):
+        sent, got, asked, answer = (request["sent"], request["got"], request["asked"], request["body"]) if request["version"] == "3" else \
+            both_ways(capture, request, args.keys)
         print(f"{request['method']} {plain(request['url'], 400)}")
         for name, value in sent:
             print(f"  {plain(name, 100)}: {plain(value, 400)}")
@@ -319,8 +421,8 @@ def tls(capture, args):
             line["certificate"] = ",".join(packet["x509ce.dNSName"][:4])
     opened = set()
     if capture.keylog(args.keys):
-        for packet in capture.ek(NET, ["tcp.stream"], joined(args, only, "http || http2"), args.keys):
-            opened.add(f"t{first(packet, 'tcp.stream')}")
+        for packet in capture.ek(NET, ["tcp.stream", "udp.stream"], joined(args, only, "http || http2 || quic.stream_data"), args.keys):
+            opened.add(f"t{first(packet, 'tcp.stream')}" if first(packet, "tcp.stream") else f"u{first(packet, 'udp.stream')}")
     for key, line in sorted(found.items(), key=lambda item: float(item[1]["time"] or 0))[: args.max]:
         state = "decrypted" if key in opened else ("encrypted" if capture.keylog(args.keys) else "encrypted, the capture has no keys")
         print(f"{key:<6} {capture.relative(line['time']):>9} {plain(line['name'] or '-', 80)}  TLS {line['version'] or '?'} {line['cipher']} "
@@ -407,7 +509,9 @@ def body(capture, args):
     if not found:
         fail(f"there is no request {args.id}, guest-net http lists them")
     name = args.save or f"body-{args.id}.bin"
-    if found[0]["version"] == "2":
+    if found[0]["version"] == "3":
+        data, headers = (found[0]["asked"], dict(found[0]["sent"])) if args.request else (found[0]["body"], dict(found[0]["got"]))
+    elif found[0]["version"] == "2":
         sent, got, asked, answer = both_ways(capture, found[0], args.keys)
         data, headers = (asked, dict(sent)) if args.request else (answer, dict(got))
     else:
@@ -634,7 +738,7 @@ def build(parser):
     sub = reader("dns", dns, "the names the guest looked up and the answers it got")
     sub.add_argument("--all", action="store_true", help="every lookup, not only the first of each answer")
     sub.add_argument("--max", type=int, default=500)
-    sub = reader("http", http, "the requests of HTTP/1 and HTTP/2 and their answers, or one of them in full")
+    sub = reader("http", http, "the requests of HTTP/1, HTTP/2 and HTTP/3 and their answers, or one of them in full")
     sub.add_argument("id", nargs="?", help="a request as the list names it, to show its headers and the answer's body")
     sub.add_argument("--save", metavar="NAME", help="write the answer's body to ./out under this name, and the request's as NAME.request")
     sub.add_argument("--body", type=int, default=4000, help="characters of a text body to show, 4000 by default")

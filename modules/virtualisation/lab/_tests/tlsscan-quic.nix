@@ -11,6 +11,6 @@ let
 in
 pkgs.runCommand "guest-net-tlsscan-quic" { nativeBuildInputs = [ pkgs.openssl ]; } ''
   cd "$(mktemp -d)"
-  ${python}/bin/python3 -I -B ${./tlsscan_quic_logic.py} ${../_capture} ${tlsscan}/lib/libtlsscan.so ${pkgs.curlHTTP3.bin}/bin/curl
+  ${python}/bin/python3 -I -B ${./tlsscan_quic_logic.py} ${../_capture} ${tlsscan}/lib/libtlsscan.so ${pkgs.curl.bin}/bin/curl
   touch $out
 ''

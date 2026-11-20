@@ -50,7 +50,7 @@ let
   loaded =
     lib.optionalString network " virtio_net"
     + lib.optionalString usb " xhci_pci usbhid hid_generic input_leds";
-  # With curl, curl of HTTP/3 and openssl, clients of TLS and QUIC that write their keys where SSLKEYLOGFILE and -keylogfile say.
+  # With curl, which speaks HTTP/3 too, and openssl, clients of TLS and QUIC that write their keys where SSLKEYLOGFILE and -keylogfile say.
   connected = lib.optionalString network ''
     ip link set lo up
     ip link set eth0 up
@@ -58,7 +58,6 @@ let
     echo "nameserver ${site}" > /etc/resolv.conf
     ln -s ${pkgs.curl.bin}/bin/curl /bin/curl
     ln -s ${pkgs.openssl.bin}/bin/openssl /bin/openssl
-    ln -s ${pkgs.curlHTTP3.bin}/bin/curl /bin/curl3
   '';
   init = pkgs.writeScript "init" ''
     #!${pkgs.busybox}/bin/sh

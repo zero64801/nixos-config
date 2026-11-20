@@ -17,7 +17,7 @@ What it says is shown with the characters a terminal acts on taken out.
 | `summary` | What the capture holds, its marks, keys, owners, flows and the names the guest reached |
 | `flows` | Each TCP and UDP flow: the guest's end and the other, the names it went by, what went each way, and the program it was of |
 | `dns` | The names looked up and what came back |
-| `http [ID]` | The requests of HTTP/1 and HTTP/2, their answers and how long each took, or one in full: the headers and bodies of both ways, undone of their encoding, JSON laid out, `--save NAME` writes them to `./out` |
+| `http [ID]` | The requests of HTTP/1, HTTP/2 and HTTP/3, their answers and how long each took, or one in full: the headers and bodies of both ways, undone of their encoding, JSON laid out, `--save NAME` writes them to `./out` |
 | `tls` | Each handshake: the name asked for, version, cipher, ALPN, JA4, the certificate's names where it is readable, and whether the keys open it |
 | `stream ID` | What went each way in one flow, `--decrypted` inside TLS, `--hex`, `--save NAME` |
 | `body ID` | The body of an answer into `./out`, or with `--request` the request's, undone of its encoding |
@@ -112,9 +112,10 @@ What it lists is what to send from Linux for the same effect.
 
 ## Limits
 
-- HTTP/3 shows as a QUIC flow with the name it asked for. `keys scan` finds QUIC's secrets, which open its packets, but tshark reads them as HTTP/3 only when the handshake secrets were found too.
-  It learns the protocol from the server's encrypted extensions, which only those open, and has no setting to name it instead.
-  With the traffic secrets alone it shows the decrypted stream frames, not HTTP/3's requests.
+- tshark reads QUIC's streams as HTTP/3 only with the handshake secrets, since it learns the protocol from the server's encrypted extensions, which only those open, and has no setting to name it instead.
+  `http` reads HTTP/3 itself, from the stream frames tshark decrypts with the traffic secrets alone: `h3.py` takes apart its frames and its headers' compression, inside `lab-box`, since that is ls-qpack, a library of C, on the guest's bytes.
+  A request a resumed connection sent as early data, before the handshake, needs the early data's secret as well.
+  Without it the answer shows alone, as asked in early data, and so do the answers whose requests need table entries the client sent then.
 - A secret that crosses a page boundary of the program's memory is in two places of the RAM, so `--physical` cannot find it, though the program's own memory, read through MemProcFS or the page map, can.
 - A TLS 1.3 connection whose keys were updated holds the newer secrets, which open no record of the start, so `keys scan` finds none of it.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.
@@ -142,5 +143,6 @@ The fifth undoes the encodings of bodies, gzip, deflate, brotli and zstd, alone 
 The sixth runs OpenSSL's client and server in every suite `keys scan` knows, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
 The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
 The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, splits datagrams sent in one batch, and has the search find each secret where it was put.
-The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote.
+The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found.
+The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
