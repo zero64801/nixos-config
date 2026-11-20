@@ -10,7 +10,9 @@ import os
 import re
 import signal
 import struct
+import subprocess
 import sys
+import threading
 import time
 
 import dotnet
@@ -75,7 +77,23 @@ def parse_arguments(words):
                                                  "as many as come before the time runs out by default")
     parser.add_argument("--timeout", type=float, default=60, help="seconds to wait for them, 60 by default")
     parser.add_argument("--busy", type=int, default=20000, help="stops in other processes after which it gives up, 20000 by default")
-    return parser.parse_args(words)
+    parser.add_argument("--resume", metavar="JOB", help="once the stops are set, let the program run that guest-exec --job --suspended holds as JOB")
+    args = parser.parse_args(words)
+    if args.resume and not re.fullmatch(r"[0-9a-f]{1,16}", args.resume):
+        parser.error("--resume takes the name of a job, as guest-exec printed it")
+    return args
+
+
+def resume(job):
+    """Lets the program a job holds run. The agent refuses while a stop holds the guest, which a session of an older build does
+    not wait out, so it is asked again for a while."""
+    for _ in range(20):
+        done = subprocess.run(["guest-job", "resume", job], capture_output=True, text=True, check=False)
+        if done.returncode == 0:
+            print(f"guest-dbg: job {job} runs", file=sys.stderr)
+            return
+        time.sleep(0.5)
+    print(f"guest-dbg: job {job} could not be let run: {STEERING.sub('', done.stderr.strip())[-300:]}", file=sys.stderr)
 
 
 class Debugger:
@@ -230,7 +248,7 @@ def main():
     debugger = Debugger(gdb, guest, pid, roots)
     if watch:
         watch.debugger = debugger
-    hits, foreign, pending, ended, missed = 0, 0, None, "timeout", 0
+    hits, foreign, pending, ended, missed, resuming = 0, 0, None, "timeout", 0, None
 
     def record(spec, reader, thread, where):
         extra, label = {}, spec.label
@@ -295,6 +313,9 @@ def main():
 
         deadline = time.monotonic() + args.timeout
         debugger.go()
+        if args.resume:
+            resuming = threading.Thread(target=resume, args=(args.resume,), daemon=True)
+            resuming.start()
         while True:
             stop = gdb.stopped(deadline)
             if stop is None:
@@ -393,6 +414,9 @@ def main():
         except mi.Failed:
             pass
         gdb.close()
+    # A program held by its job must not stay held because the stops came, or ended, before the agent let it run.
+    if resuming:
+        resuming.join(15)
 
     if writer:
         print(f"guest-dbg: {writer.count} buffers in {writer.folder}" + (f", {missed} returns missed while another was waited for" if missed else ""),

@@ -82,8 +82,9 @@ A program that guards itself against debuggers is worked on from outside:
   ASSEMBLY tells apart two of the same name, and `/2` the overload that takes two parameters.
   It is found in the assemblies of the process's memory, those loaded from bytes among them, so it can be one a loader decrypted.
   Its stop comes once the JIT compiles it, which is at its first call, and moves along when the runtime compiles it again as hot.
-  So start guest-dbg before the program calls it: start the program with `guest-exec --job --suspended`, or name a method it has not run yet.
+  So start guest-dbg before the program calls it: start the program with `guest-exec --job --suspended`, then `guest-dbg PID ... --resume JOB`, which sets its stops and only then lets the program run.
   A method it compiled before guest-dbg began is not stopped at in .NET Framework, and in .NET only once it is hot.
+  For a program you cannot start again, find the method's code another way: stop at a native function it calls (`bcrypt!BCryptEncrypt`, `ws2_32!send`, what the decompiled code shows) with `--do 'x/2gx $rsp'`, and the first word is a return address inside the method's compiled code, or its caller's, which `--break 0x...` then takes.
   Following the JIT takes two debug registers, so it is one method at a time.
   Its arguments are those of Windows' x64 convention, an instance method's object being `arg1`, as `dotnet:Lab.Client::Send,clrbytes:arg2,-` or `clrstring:ret@return` for what it returns.
   .NET Framework's own assemblies are precompiled, which the JIT never sees, so log those through the presets, as `bcrypt`.

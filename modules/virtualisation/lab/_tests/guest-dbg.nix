@@ -64,6 +64,24 @@ host.needs [ "modules/virtualisation/inspect" ] (
           # Ten bytes of a shell that reads the five of hello over and over have the word whole among them.
           assert "hello" in out.split("== reads")[1].split("== index")[0], "what read gave back was not the buffer written at its return"
           assert '"length": 12' in out.split("== index")[1], out
+
+      with subtest("guest-dbg --resume lets a program held before its first instruction run once its stops are set"):
+          out = machine.succeed(session("--gdb --control", "; ".join([
+              "symbol() { guest-exec --shell \"grep -E ' [TtDdBb] $1\\$' /proc/kallsyms | cut -d' ' -f1\" 2>/dev/null | head -n 1; }",
+              "umask=0x$(symbol __x64_sys_umask)",
+              "said=$(guest-exec --job --suspended --shell 'umask 022; echo ran'); job=$(echo \"$said\" | grep -o 'job [0-9a-f]*' | head -n 1 | cut -d' ' -f2)",
+              "sleep 2; echo == before; guest-job status $job",
+              "echo == dbg; guest-dbg - --break $umask --resume $job --timeout 30 2>&1; echo resumed=$?",
+              "sleep 2; echo == after; guest-job status $job",
+              "guest-dbg - --break $umask --resume 'x;y' 2>&1; echo refused=$?",
+          ])))
+          print(out)
+          # A held program's process is there, stopped, so its job is running until it was let run and ended.
+          assert re.search(r"^[0-9a-f]+  running$", out.split("== before")[1].split("== dbg")[0], re.MULTILINE), "the program ran before it was let"
+          dbg = out.split("== dbg")[1].split("== after")[0]
+          assert re.search(r"guest-dbg: job [0-9a-f]+ runs", dbg) and "hit 1: break" in dbg and "resumed=0" in dbg, dbg
+          assert re.search(r"^[0-9a-f]+  exit 0$", out.split("== after")[1], re.MULTILINE), out
+          assert "--resume takes the name of a job" in out and "refused=2" in out, out
     '';
   }
 )
