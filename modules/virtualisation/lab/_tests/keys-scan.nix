@@ -144,6 +144,9 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == keys; cat $VM_INSPECT_CAPTURE/keys.log",
           "echo == updated; cat $VM_INSPECT_CAPTURE/updated.log; echo == upd; guest-exec --shell 'cat /tmp/heldupd.log'",
           "echo == pad; guest-exec --shell 'cat /tmp/heldpad.log'",
+          "echo == http later; guest-net http",
+          "echo == http one; guest-net http $(guest-net http | grep '/updated' | cut -d' ' -f1)",
+          "echo == tls later; guest-net tls",
           "echo == padlate; guest-net stream $(guest-net flows | grep ':8446 ' | head -n 1 | cut -d' ' -f1) --decrypted",
           "echo == late; for f in $(guest-net flows | grep ':8443 ' | cut -d' ' -f1); do"
           " guest-net stream $f --decrypted 2>&1 | grep -q 'GET /updated' && guest-net stream $f --decrypted; done; true",
@@ -202,6 +205,12 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert f"CLIENT_TRAFFIC_SECRET_1 {random} " in section["updated"] and f"SERVER_TRAFFIC_SECRET_1 {random} " in section["updated"], section["updated"]
           assert re.search(r"TLS 1\.3 after key updates  CLIENT_TRAFFIC_SECRET_1 at 0x[0-9a-f]+, SERVER_TRAFFIC_SECRET_1 at", section["around"]), section["around"]
           assert "GET /updated HTTP/1.1" in section["late"] and "404 Not Found" in section["late"], section["late"]
+
+      with subtest("the requests of a flow opened after its key updates are listed and shown like any"):
+          assert re.search(r"k\d+ .* GET https://tls\.test(:8443)?/updated -> 404 Not Found", section["http later"]), section["http later"]
+          assert "GET https://tls.test/updated" in section["http one"] and "Host: tls.test" in section["http one"], section["http one"]
+          assert "404 Not Found" in section["http one"] and "<center>nginx</center>" in section["http one"], section["http one"]
+          assert "decrypted from its key updates on" in section["tls later"], section["tls later"]
 
       with subtest("after KeyUpdates sent padded the newest secret is found at more records, and the flow is read from it on"):
           random = next(line.split()[1] for line in section["pad"].splitlines() if line.startswith("CLIENT_TRAFFIC_SECRET_0"))

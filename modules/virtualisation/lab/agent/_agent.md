@@ -234,7 +234,7 @@ Deleting that folder removes it.
   The screen's picture cut to that window's place is the way around it.
 - A program with its own crypto over plain TCP or UDP stays unreadable: `keys scan` opens TLS and QUIC only.
 - `guest-net http` reads HTTP/3 with the traffic secrets alone, while tshark's own reading of it (`packets`, `tshark`, an export in Wireshark) needs the handshake secrets too.
-- A TLS 1.3 connection that updated its keys holds only the newer ones. `keys scan` finds them and `stream --decrypted` reads the flow from the last update on, not before. `--follow` catches the first ones before any update.
+- A TLS 1.3 connection that updated its keys holds only the newer ones. `keys scan` finds them, also after KeyUpdates sent padded, and guest-net reads the flow from the last update on, not before: `stream --decrypted`, `decode --decrypted`, and `http`, whose requests from there are named k. `--follow` catches the first ones before any update.
 
 ## Running something that came out of the guest
 

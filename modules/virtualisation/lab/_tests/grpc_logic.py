@@ -82,7 +82,9 @@ net.exchanges = lambda *args, **kwargs: [call]
 
 
 class Empty:
-    """A capture with nothing recorded beside the call, which exchanges gives."""
+    """A capture with nothing recorded beside the call, which exchanges gives, in a folder with no keys of its own."""
+
+    folder = "."
 
     def lines(self, name):
         return iter(())

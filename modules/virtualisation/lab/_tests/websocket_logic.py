@@ -192,3 +192,26 @@ try:
 except SystemExit as e:
     assert e.code == 1 and "the decoder gave up" in complaint.getvalue(), (e.code, complaint.getvalue())
 print("a decoder of a program's own protocol reads a flow both ways")
+
+# HTTP/2 that guest-net opened after a key update starts mid connection, without its preface, and has to read all the same.
+import plaintext
+
+
+def h2frame(kind, flags, stream, payload):
+    return len(payload).to_bytes(3, "big") + bytes([kind, flags]) + stream.to_bytes(4, "big") + payload
+
+
+# Headers from HPACK's static table and literals not put in its table, which a reader that missed the start can still read.
+asked = bytes([0x82, 0x87, 0x84, 0x01, 7]) + b"h2.test"
+answered = bytes([0x88, 0x0F, 0x10, 10]) + b"text/plain"
+later_chunks = [(start + 40, True, h2frame(1, 0x05, 15, asked)),
+                (start + 40.01, False, h2frame(1, 0x04, 15, answered) + h2frame(0, 0x01, 15, b"hello from after the update"))]
+os.makedirs("opened", exist_ok=True)
+plaintext.write("opened", recorded.said["started"], [("10.9.9.50:41000", "10.9.9.1:443", later_chunks)])
+inner = capture.Capture("opened")
+inner.options = plaintext.OPTIONS
+later = net.exchanges(inner, argparse.Namespace(since=None, until=None))
+assert [(r["method"], r["url"], r["status"], r["version"]) for r in later] == [("GET", "https://h2.test/", "200", "2")], later
+_, _, _, answer = net.both_ways(inner, later[0], None)
+assert answer == b"hello from after the update", answer
+print("HTTP/2 opened after a key update reads from the middle of its connection")

@@ -5,15 +5,18 @@ the packet it began in. Everything shown was sent or received by the guest. --pr
 programs or to some hosts, as scope.py chooses them.
 """
 import argparse
+import atexit
 import base64
 import bisect
 import calendar
 import datetime
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -22,6 +25,7 @@ import bodies
 import capture as shared
 import grpc
 import owners
+import plaintext
 import scan
 import schannel
 import scope
@@ -305,12 +309,17 @@ def exchanges(capture, args, keys=None, only=""):
 def http(capture, args):
     known = owners.known(capture)
     every = flows(capture, None, args.keys) if known or Scope(capture, args) else []
-    _, only = scoped(capture, args, every)
+    kept, only = scoped(capture, args, every)
     found = exchanges(capture, args, args.keys, only)
+    inner, later = later_exchanges(capture, args, {f["id"] for f in kept} if only else None)
     flows_by_id = {f["id"]: f for f in every}
+    if args.id and args.id.startswith("k"):
+        detail(inner, argparse.Namespace(**{**vars(args), "keys": None}), [dict(r["inner"], url=r["url"]) for r in later if r["id"] == args.id])
+        return
     if args.id:
         detail(capture, args, [r for r in found if r["id"] == args.id])
         return
+    found = sorted(found + later, key=lambda r: float(r["time"]))
     for request in found[: args.max]:
         owner = owners.owner_of(known, flows_by_id[request["flow"]]) if request["flow"] in flows_by_id else ""
         took = f" in {request['took'] * 1000:.0f} ms" if request["took"] is not None else ""
@@ -389,6 +398,11 @@ def har(capture, args):
     _, only = scoped(capture, args, every)
     found = exchanges(capture, args, args.keys, only)
     parts = http_parts(capture, args, args.keys, only, found)
+    inner, later = later_exchanges(capture, args, {f["id"] for f in scoped(capture, args, every)[0]} if only else None)
+    if later:
+        inside = http_parts(inner, argparse.Namespace(since=None, until=None), None, "", [r["inner"] for r in later])
+        parts.update({r["id"]: inside.get(r["inner"]["id"], [[], b"", [], b""]) for r in later})
+        found = sorted(found + later, key=lambda r: float(r["time"]))
     by_id = {f["id"]: f for f in every}
 
     def content(data, headers, request):
@@ -612,7 +626,7 @@ def tls(capture, args):
     """Each TLS handshake: the name asked for, the protocols offered, what the server chose, and whether the keys open it."""
     fields = ["frame.time_epoch", "tcp.stream", "udp.stream", "tls.handshake.type", "tls.handshake.extensions_server_name",
               "tls.handshake.extensions_alpn_str", "tls.handshake.ja4", "tls.handshake.extensions.supported_version",
-              "tls.handshake.ciphersuite", "tls.handshake.version", "x509ce.dNSName"]
+              "tls.handshake.ciphersuite", "tls.handshake.version", "x509ce.dNSName", "tls.handshake.random"]
     found = {}
     _, only = scoped(capture, args)
     for packet in capture.ek(NET, fields, joined(args, capture.window(args), only, "tls.handshake.type == 1 || tls.handshake.type == 2 || tls.handshake.type == 11"), args.keys):
@@ -622,7 +636,7 @@ def tls(capture, args):
         kinds = packet["tls.handshake.type"]
         if "1" in kinds:
             line.update(name=first(packet, "tls.handshake.extensions_server_name"), alpn=",".join(packet["tls.handshake.extensions_alpn_str"]),
-                        ja4=first(packet, "tls.handshake.ja4"))
+                        ja4=first(packet, "tls.handshake.ja4"), random=first(packet, "tls.handshake.random").replace(":", "").lower())
         if "2" in kinds:
             chosen = first(packet, "tls.handshake.extensions.supported_version") or first(packet, "tls.handshake.version")
             cipher = first(packet, "tls.handshake.ciphersuite")
@@ -634,8 +648,11 @@ def tls(capture, args):
     if capture.keylog(args.keys):
         for packet in capture.ek(NET, ["tcp.stream", "udp.stream"], joined(args, only, "http || http2 || quic.stream_data"), args.keys):
             opened.add(f"t{first(packet, 'tcp.stream')}" if first(packet, "tcp.stream") else f"u{first(packet, 'udp.stream')}")
+    later = scan.updated(capture)
     for key, line in sorted(found.items(), key=lambda item: float(item[1]["time"] or 0))[: args.max]:
         state = "decrypted" if key in opened else ("encrypted" if capture.keylog(args.keys) else "encrypted, the capture has no keys")
+        if key not in opened and line.get("random") in later:
+            state = "decrypted from its key updates on, by guest-net"
         print(f"{key:<6} {capture.relative(line['time']):>9} {plain(line['name'] or '-', 80)}  TLS {line['version'] or '?'} {line['cipher']} "
               f"{plain(line['alpn'], 40)}  ja4 {plain(line['ja4'], 60) or '-'}  {('cert ' + plain(line['certificate'], 120) + '  ') if line['certificate'] else ''}{state}")
 
@@ -700,7 +717,12 @@ def hexdump(data):
 
 def body(capture, args):
     """The body of an answer, or with --request of the request, written to ./out undone of its encoding."""
-    found = [r for r in exchanges(capture, args, args.keys) if r["id"] == args.id]
+    if args.id.startswith("k"):
+        capture, later = later_exchanges(capture, args)
+        args = argparse.Namespace(**{**vars(args), "keys": None})
+        found = [r["inner"] for r in later if r["id"] == args.id]
+    else:
+        found = [r for r in exchanges(capture, args, args.keys) if r["id"] == args.id]
     if not found:
         fail(f"there is no request {args.id}, guest-net http lists them")
     name = args.save or f"body-{args.id}.bin"
@@ -897,6 +919,50 @@ def chunks(capture, flow, decrypted, keys):
         sides = {from_guest for _, from_guest, _ in out}
         out = sorted(out + [c for c in after_updates(capture, flow) if c[1] not in sides], key=lambda c: c[0])
     return out
+
+
+def opened(capture, keys):
+    """A capture of its own of what guest-net opens itself, the flows of TLS 1.3 after their key updates, which tshark then
+    reads HTTP in as in any, with which of its flows is which of the capture's, or (None, {})."""
+    secrets = scan.updated(capture)
+    if not secrets:
+        return None, {}
+    streams = {first(packet, "tls.handshake.random").replace(":", "").lower(): first(packet, "tcp.stream")
+               for packet in capture.ek(NET, ["tcp.stream", "tls.handshake.random"], "tls.handshake.type == 1", keys)}
+    by_id = {f["id"]: f for f in flows(capture, None, keys)}
+    chosen = [by_id[f"t{stream}"] for random, stream in streams.items() if random in secrets and f"t{stream}" in by_id]
+    taken = [(flow, after_updates(capture, flow)) for flow in chosen]
+    taken = [(flow, chunks) for flow, chunks in taken if chunks]
+    if not taken:
+        return None, {}
+    folder = tempfile.mkdtemp(prefix="guest-net-opened-")
+    atexit.register(shutil.rmtree, folder, True)
+    plaintext.write(folder, capture.said["started"], [(flow["guest"], flow["remote"], chunks) for flow, chunks in taken])
+    inner = shared.Capture(folder)
+    inner.options = plaintext.OPTIONS
+    # The guest's end of each flow is its own in both captures.
+    mine = {flow["guest"]: flow["id"] for flow, _ in taken}
+    return inner, {flow["id"]: mine[flow["guest"]] for flow in flows(inner, None) if flow["guest"] in mine}
+
+
+def later_exchanges(capture, args, kept=None):
+    """The requests of flows guest-net opens itself after their key updates, from a capture of its own, named k and the
+    number tshark gives them there, their flows the capture's own, each with what it is in that capture under inner."""
+    inner, mapping = opened(capture, getattr(args, "keys", None))
+    if inner is None:
+        return None, []
+    since = capture.moment(args.since) if getattr(args, "since", None) else None
+    until = capture.moment(args.until) if getattr(args, "until", None) else None
+    out = []
+    for request in exchanges(inner, argparse.Namespace(since=None, until=None)):
+        flow = mapping.get(request["flow"])
+        when = float(request["time"])
+        if flow is None or (kept is not None and flow not in kept) or (since and when < since) or (until and when > until):
+            continue
+        # They all came inside TLS, though the capture of their plaintext has them as plain HTTP.
+        url = "https://" + request["url"][len("http://"):] if request["url"].startswith("http://") else request["url"]
+        out.append(dict(request, id="k" + request["id"][1:], flow=flow, url=url, inner=request))
+    return inner, out
 
 
 def after_updates(capture, flow):

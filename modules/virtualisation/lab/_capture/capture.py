@@ -70,6 +70,8 @@ class Capture:
             if isinstance(line.get("mark"), str) and type(line.get("time")) is int:
                 self.marks.append((line["mark"], line["time"] / 1e9))
         self.started = time.mktime(time.strptime(self.said["started"], "%Y-%m-%d %H:%M:%S"))
+        # More options of tshark for every reading, as a capture guest-net wrote itself needs to say how its ports read.
+        self.options = []
 
     def lines(self, name):
         try:
@@ -131,7 +133,7 @@ class Capture:
         for bind in binds:
             box += bind
         source = ["-i", "-"] if file is None else ["-r", self.file(file)]
-        command = [*box, "--", SETTINGS.tshark, "-n", *source, *options, *arguments]
+        command = [*box, "--", SETTINGS.tshark, "-n", *source, *options, *self.options, *arguments]
         return subprocess.Popen(command, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def keylog(self, extra):
