@@ -85,6 +85,19 @@ A program that guards itself against debuggers is worked on from outside:
   So start guest-dbg before the program calls it: start the program with `guest-exec --job --suspended`, then `guest-dbg PID ... --resume JOB`, which sets its stops and only then lets the program run.
   A method it compiled before guest-dbg began is not stopped at in .NET Framework, and in .NET only once it is hot.
   For a program you cannot start again, find the method's code another way: stop at a native function it calls (`bcrypt!BCryptEncrypt`, `ws2_32!send`, what the decompiled code shows) with `--do 'x/2gx $rsp'`, and the first word is a return address inside the method's compiled code, or its caller's, which `--break 0x...` then takes.
+  Two more ways find where the JIT put such a method, and `--break 0x...` at its start then stops in it.
+  Both were tried on a method of a PowerShell 5.1 `Add-Type` class that .NET Framework 4.8 had compiled long before.
+  From outside, by a number of its own: take one the method uses from the decompiled code, four bytes or more and seldom seen, as a magic value or a hash's seed, which its compiled code holds as it is.
+  With `guest-mount` running, write its bytes as they lie in memory to `~/guest/pid/PID/search/bin/search.txt` (`echo a1e7c75e >` for `0x5EC7E7A1`), wait for `COMPLETED` in `status.txt` beside it, and read the hits in `result.txt`.
+  Keep those on pages that `~/guest/pid/PID/memmap/pte.txt` marks with an `x`, since the JIT's region shows no rights in `memmap/vad.txt`, and another hit is mostly the method's IL in its assembly.
+  Read the code around a hit from `~/guest/pid/PID/memory.vmem`, where a byte's offset is its address: `dd if=$HOME/guest/pid/PID/memory.vmem bs=16 skip=$((0xADDRESS / 16)) count=4 > /tmp/code.bin`, then `r2 -n -a x86 -b 64 -m 0xADDRESS -qc 'pd 8 @ 0xADDRESS' /tmp/code.bin`, ADDRESS a multiple of 16 a little before the hit.
+  There the method began after zeros and an eight byte pointer.
+  In .NET a method compiled again as hot has a copy for each time, so break at each.
+  Inside the guest, the runtime's rundown over ETW names every method the JIT compiled in every .NET program, with its start and size, here for one named `Mix`:
+  `guest-exec --powershell 'logman start lab-rundown -p Microsoft-Windows-DotNETRuntimeRundown 0x118 0x5 -o C:\Windows\Temp\rundown.etl -ets; Start-Sleep 3; logman stop lab-rundown -ets; tracerpt C:\Windows\Temp\rundown.etl -o C:\Windows\Temp\rundown.xml -of XML -lr -y'`, then `guest-grep -C 9 'MethodName>Mix<' 'C:\Windows\Temp\rundown.xml'` shows the event's `ProcessID` and a line with `MethodStartAddress`, `MethodSize` and `MethodNamespace`.
+  The keywords are the loader's (0x8), the JIT's (0x10) and the end of the rundown (0x100), which the runtime writes as the session stops.
+  The guest sees the session, and a program that patched ETW out of its process gives nothing, which the number does not depend on.
+  Remove both files afterwards.
   Following the JIT takes two debug registers, so it is one method at a time.
   Its arguments are those of Windows' x64 convention, an instance method's object being `arg1`, as `dotnet:Lab.Client::Send,clrbytes:arg2,-` or `clrstring:ret@return` for what it returns.
   .NET Framework's own assemblies are precompiled, which the JIT never sees, so log those through the presets, as `bcrypt`.
