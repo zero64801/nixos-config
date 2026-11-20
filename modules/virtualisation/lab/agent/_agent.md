@@ -147,6 +147,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | `guest-net summary`, `flows`, `dns` | What the capture holds, every TCP and UDP flow with its ends, names, bytes each way and program, the names looked up. |
 | `guest-net http [ID]` | The requests of HTTP/1, HTTP/2 and HTTP/3, their answers and how long each took, or one in full: headers and bodies both ways, undone of gzip, deflate, brotli and zstd, JSON laid out. `--save NAME` writes the bodies to `./out`. |
 | `guest-net http ID --proto FOLDER` | A call of gRPC message by message, decoded by wire format alone, or by name with the program's .proto files. |
+| `guest-net decode ID --with SCRIPT` | Hands one flow's chunks both ways to a decoder you write for a program's own protocol, run in `lab-box`. `--save NAME` writes its input to `./out` first, `--decrypted` reads inside TLS. The README of guest-net shows the input. |
 | `guest-net ws [ID]` | The messages of each WebSocket both ways, undone of permessage-deflate, `--save NAME` writes them to `./out` as JSON lines. `http` marks the requests that became one. |
 | `guest-net tls`, `stream ID` | Each handshake and whether the keys open it, what went each way in one flow (`--decrypted`, `--hex`). |
 | `guest-net packets FILTER`, `tshark ARGS`, `export` | Wireshark's display filters, any tshark options on the capture, a copy with its keys into `./out`. |

@@ -74,6 +74,9 @@ host.needs [ "modules/virtualisation/inspect" ] (
           # Keeps every connection open, for a program of the guest to hold one.
           "systemd-run --unit=hold python3 -c 'import socket, time; s = socket.create_server((\"10.9.9.1\", 9000)); c = [s.accept() for _ in range(1)]; time.sleep(120)'",
           "install -d -o alice /tmp/work/out",
+          "printf '%s\\n' 'import base64, json, sys' 'flow = json.load(sys.stdin)'"
+          " 'sent = [base64.b64decode(c[\"data\"]) for c in flow[\"chunks\"] if c[\"sent\"]]'"
+          " 'print(flow[\"decrypted\"], sent[0][:14])' > /tmp/work/first.py",
       )
       machine.wait_for_unit("nginx.service")
       machine.wait_until_succeeds("curl -sf http://10.9.9.1:8000/hello.txt", timeout=30)
@@ -119,6 +122,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == packets; guest-net packets dns --max 4",
           "echo == export; guest-net export --decrypted all.pcapng",
           "echo == har; guest-net export --har all.har",
+          "echo == decoded; guest-net decode $(guest-net flows | grep ':8443 ' | head -n 1 | cut -d' ' -f1) --decrypted --with /tmp/work/first.py",
           "echo == inside; guest-net stream $(guest-net flows | grep ':8443 ' | tail -n 1 | cut -d' ' -f1) --decrypted",
           "echo == conversations; guest-net tshark -q -z conv,tcp",
           "echo == captures; guest-net captures",
@@ -164,6 +168,9 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert json.loads(posted["request"]["postData"]["text"]) == {"user": "alice", "pin": 1234}, posted["request"]
           assert by_url[("GET", "https://tls.test:8443/data.json")]["response"]["content"]["text"].startswith('{"name": "site"'), entries
           assert by_url[("POST", "http://site.test:8000/form")]["request"]["postData"]["text"] == "name=alice&pin=1234", entries
+
+      with subtest("a decoder of a program's own protocol reads a flow from inside TLS"):
+          assert "True b'PRI * HTTP/2.0'" in section["decoded"], section["decoded"]
 
       with subtest("a flow followed inside TLS is that flow, though tshark numbers the streams of TLS apart from those of TCP"):
           # The last connection to tls.test is the JSON POST of posts.sh, whose own body and answer have to be there. The server's

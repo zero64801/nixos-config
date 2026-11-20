@@ -893,6 +893,36 @@ def chunks(capture, flow, decrypted, keys):
     return out
 
 
+def decode(capture, args):
+    """A flow's bytes both ways handed to a decoder of the program's own protocol, run inside lab-box, and what it prints."""
+    flow = next((f for f in flows(capture, None, args.keys) if f["id"] == args.id), None)
+    if flow is None:
+        fail(f"there is no flow {args.id}, guest-net flows lists them")
+    since = capture.moment(args.since) if args.since else None
+    until = capture.moment(args.until) if args.until else None
+    taken = [(when, sent, data) for when, sent, data in chunks(capture, flow, args.decrypted, args.keys)
+             if (since is None or when >= since) and (until is None or when <= until)]
+    given = {"flow": flow["id"], "proto": flow["proto"], "guest": flow["guest"], "remote": flow["remote"], "names": flow["names"],
+             "decrypted": args.decrypted, "chunks": [{"time": when, "sent": sent, "data": base64.b64encode(data).decode()} for when, sent, data in taken]}
+    if args.save:
+        saved(args.save, json.dumps(given).encode())
+    if not args.decoder:
+        if not args.save:
+            fail("decode takes --with SCRIPT, a decoder of the program's protocol, or --save NAME for what one would be given")
+        return
+    script = os.path.realpath(args.decoder)
+    if not os.path.isfile(script):
+        fail(f"there is no decoder {args.decoder}")
+    command = [shared.SETTINGS.box, "--ro", script, "--", sys.executable, "-I", "-B", script, *args.arguments]
+    done = subprocess.run(command, input=json.dumps(given).encode(), capture_output=True, check=False)
+    for line in done.stdout.decode("utf-8", "replace").splitlines():
+        print(plain(line, 4000))
+    if done.returncode != 0:
+        for line in done.stderr.decode("utf-8", "replace").splitlines()[-8:]:
+            print(plain(line, 400), file=sys.stderr)
+        sys.exit(done.returncode)
+
+
 def trace(capture, args):
     """Arms keys scan --follow and owners --follow, starts the program in the guest as the user, waits for it to end or for
     the time to run out, and shows the flows, requests and handshakes of it and of the programs it started."""
@@ -1099,6 +1129,20 @@ def build(parser):
                                                                            "is no larger than this, 64 MiB by default, otherwise only "
                                                                            "around the client random")
     sub.set_defaults(run=keys)
+    sub = actions.add_parser("decode", help="hand a flow's bytes both ways to a decoder of the program's own protocol, run in the box",
+                             description="Hands one flow's chunks both ways, in order, with their times and whether the guest sent each, to a "
+                                         "decoder of the program's own protocol: a Python script run inside lab-box that reads them as one JSON "
+                                         "object on its standard input, {flow, proto, guest, remote, names, decrypted, chunks: [{time, sent, data "
+                                         "in base64}]}, and prints what it makes of them.")
+    common(sub)
+    timed(sub)
+    sub.add_argument("--keys", metavar="FILE", help="a TLS key log of this side, used with the capture's own keys")
+    sub.add_argument("id", help="the flow, as t12 or u3")
+    sub.add_argument("--with", dest="decoder", metavar="SCRIPT", help="the decoder, a Python script")
+    sub.add_argument("--decrypted", action="store_true", help="what went inside TLS, which takes the keys")
+    sub.add_argument("--save", metavar="NAME", help="write what a decoder is given to ./out as NAME, to write one against")
+    sub.add_argument("arguments", nargs="*", help="arguments for the decoder, after --")
+    sub.set_defaults(run=decode)
     sub = actions.add_parser("trace", help="start a program in the guest with keys scan and owners already following, and show its traffic",
                              description="Arms keys scan --follow and owners --follow, starts the program in the guest as the logged in user, waits "
                                          "for it to end or for the time to run out, and shows the flows, requests and handshakes of it and of the "

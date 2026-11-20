@@ -155,3 +155,40 @@ said = messages.add(True, True, 1, b"\xff\xfe not deflate")
 assert said[:3] == ("text", b"\xff\xfe not deflate", True) and said[3].startswith("not undone of permessage-deflate"), said
 assert messages.add(True, False, 0, b"stray continuation") is None, "a continuation without a start is no message"
 print("what a hostile guest sends breaks nothing")
+
+# A decoder of a program's own protocol gets the flow's chunks both ways and what it prints is shown.
+with open("decoder.py", "w") as f:
+    f.write("import base64, json, sys\n"
+            "flow = json.load(sys.stdin)\n"
+            "print('args', sys.argv[1:], flow['flow'], flow['guest'], flow['proto'])\n"
+            "for chunk in flow['chunks']:\n"
+            "    data = base64.b64decode(chunk['data'])\n"
+            "    print('->' if chunk['sent'] else '<-', len(data), data.split(b'\\r\\n')[0][:40])\n")
+
+
+def decoded(**changes):
+    args = argparse.Namespace(id="t0", decoder="decoder.py", decrypted=False, save=None, arguments=["--first"], since=None, until=None, keys=None)
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        net.decode(recorded, argparse.Namespace(**{**vars(args), **changes}))
+    return out.getvalue()
+
+
+said = decoded()
+lines = said.splitlines()
+assert lines[0] == "args ['--first'] t0 10.9.9.50:40000 tcp", lines[0]
+assert lines[1].startswith("-> ") and "b'GET /chat HTTP/1.1'" in lines[1], lines[1]
+assert lines[2].startswith("<- ") and "b'HTTP/1.1 101 Switching Protocols'" in lines[2], lines[2]
+assert sum(1 for line in lines if line.startswith(("->", "<-"))) == len(turns), said
+decoded(save="flow.json", decoder=None)
+with open("out/flow.json") as f:
+    given = json.load(f)
+assert given["remote"] == "10.9.9.1:80" and base64.b64decode(given["chunks"][0]["data"]) == request and given["chunks"][0]["sent"], given["chunks"][0]
+with open("broken.py", "w") as f:
+    f.write("raise SystemExit('the decoder gave up')\n")
+try:
+    with contextlib.redirect_stderr(io.StringIO()) as complaint:
+        decoded(decoder="broken.py")
+    raise AssertionError("a decoder that failed went by unseen")
+except SystemExit as e:
+    assert e.code == 1 and "the decoder gave up" in complaint.getvalue(), (e.code, complaint.getvalue())
+print("a decoder of a program's own protocol reads a flow both ways")

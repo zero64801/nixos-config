@@ -25,6 +25,7 @@ What it says is shown with the characters a terminal acts on taken out.
 | `body ID` | The body of an answer into `./out`, or with `--request` the request's, undone of its encoding |
 | `packets [FILTER]` | Wireshark's line for each packet, with a display filter |
 | `watch` | Names, requests and handshakes as the guest makes them |
+| `decode ID --with SCRIPT [-- ARGS]` | Hands one flow's chunks both ways, in order, to a decoder of a program's own protocol, a Python script run inside `lab-box`, and shows what it prints. `--decrypted` from inside TLS, `--save NAME` writes what a decoder is given to `./out` to write one against |
 | `trace [--pause] -- PROGRAM ARGS` | Starts a program in the guest as the logged in user once `keys scan --follow` and `owners --follow` both follow it, and shows the flows, requests and handshakes of it and of the programs it started, from the mark it set. `--user NAME`, `--agent`, `--physical` for a guest that is not Windows, `--seconds N`, 60 by default |
 | `owners [--follow]` | Which program each connection belongs to, kept in the capture for `flows` and `http` |
 | `keys add\|pull\|schannel\|scan\|list` | TLS secrets for the capture |
@@ -46,6 +47,29 @@ What it says is shown with the characters a terminal acts on taken out.
 - `keys scan --process` keeps flows whose program is not known as well and searches them in the program named, and `--follow` takes only new flows of the programs and hosts asked for, by the name the client asked for and the address.
 
 Nothing is left out while recording, which costs little and keeps the lookups and the programs a sample starts.
+
+### A decoder of a program's own protocol
+
+`decode` gives the decoder one JSON object on its standard input:
+
+```
+{"flow": "t12", "proto": "tcp", "guest": "10.0.0.5:51000", "remote": "203.0.113.7:4443", "names": ["c2.example"], "decrypted": false,
+ "chunks": [{"time": 1795130000.25, "sent": true, "data": "BASE64"}, ...]}
+```
+
+A chunk is what one packet carried, or inside TLS one record, so a message of the protocol may span several and the decoder joins each direction itself.
+A minimal one:
+
+```
+import base64, json, sys
+flow = json.load(sys.stdin)
+for chunk in flow["chunks"]:
+    data = base64.b64decode(chunk["data"])
+    print("->" if chunk["sent"] else "<-", len(data), data[:16].hex())
+```
+
+It runs with the readers' Python, inside `lab-box`, which sees the script and nothing else of the user's files.
+Written once for a sample, it reads every capture of it.
 
 ### Which program
 
@@ -153,7 +177,7 @@ The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each con
 The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, also of a client that sends a token in them, splits datagrams sent in one batch, has a client come back with a ticket and send early data, and has the search find each secret where it was put, that of the early data among them.
 The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found, then has `trace` start a shell that runs curl and show curl's flow under the shell.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
-The eleventh reads a WebSocket of HTTP/1 through tshark, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is.
+The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a flow both ways and pass on its failure, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is.
 The first also exports its requests as HAR, and the tenth those of HTTP/3.
 The twelfth decodes gRPC's messages by their wire format and by name with protoc, shows a call of HTTP/3 with a gzipped message and its status, reads gRPC-Web's text and trailers, and takes a hostile guest's lengths, wire types and nesting.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
