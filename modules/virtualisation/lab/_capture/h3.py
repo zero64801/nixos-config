@@ -178,7 +178,7 @@ class Connection:
         elif sender == 0 and request["waiting"]:
             request["request_headers"], request["waiting"] = said, False
         elif sender == 0:
-            request["trailers"] += said
+            request["request_trailers"] += said
         else:
             if request is None:
                 # The request went as early data, which keys found after the handshake do not open, and only its answer is here.
@@ -196,6 +196,7 @@ class Connection:
         state = self.streams[key]
         return {"stream": key[0], "frame": state.get("last_frame", state["frame"]), "time": state.get("last", state["first"]),
                 "request_headers": list(said), "request_body": bytearray(), "headers": [], "body": bytearray(), "answered": None, "trailers": [],
+                "request_trailers": [],
                 "early": early, "waiting": waiting}
 
 
@@ -216,6 +217,7 @@ def main():
             out.append({"id": f"h{request['frame']}.{stream}", "flow": connection.flow, "time": request["time"],
                         "method": asked.get(":method", "?"), "url": url,
                         "request_headers": request["request_headers"], "headers": request["headers"], "trailers": request["trailers"],
+                        "request_trailers": request["request_trailers"],
                         "request_body": base64.b64encode(request["request_body"]).decode(), "body": base64.b64encode(request["body"]).decode(),
                         "took": took})
         waiting = sum(1 for _, sender in connection.blocked if sender == 0)

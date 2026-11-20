@@ -20,11 +20,11 @@ KEYLOG = re.compile(r"(?:CLIENT_RANDOM|RSA|CLIENT_EARLY_TRAFFIC_SECRET|CLIENT_HA
 
 class Settings:
     """Where the programs are, as the wrapper gives them before the arguments. dbg is guest-dbg's folder, whose readers of gdb and
-    MemProcFS are used, and scan the library keys scan searches with."""
+    MemProcFS are used, scan the library keys scan searches with, and protoc what names gRPC's fields."""
 
-    def __init__(self, tool, wireshark, box, vmm, dbg, gdb, scan):
+    def __init__(self, tool, wireshark, box, vmm, dbg, gdb, scan, protoc):
         self.tool, self.tshark, self.editcap = tool, f"{wireshark}/tshark", f"{wireshark}/editcap"
-        self.box, self.vmm, self.dbg, self.gdb, self.scan = box, vmm, dbg, gdb, scan
+        self.box, self.vmm, self.dbg, self.gdb, self.scan, self.protoc = box, vmm, dbg, gdb, scan, protoc
 
 
 def fail(message):

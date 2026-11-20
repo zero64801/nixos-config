@@ -150,7 +150,7 @@ with open("keys.full") as f, open("capture/keys.log", "w") as out:
 with open("box", "w") as f:
     f.write('#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n')
 os.chmod("box", 0o755)
-capture.SETTINGS = capture.Settings("net", wireshark, os.path.abspath("box"), "-", "-", "-", "-")
+capture.SETTINGS = capture.Settings("net", wireshark, os.path.abspath("box"), "-", "-", "-", "-", "-")
 recorded = capture.Capture("capture")
 args = argparse.Namespace(since=None, until=None, keys=None, process=None, children=False, host=None, id=None, max=300, body=4000, save=None,
                           request=False)
@@ -283,3 +283,15 @@ assert [(r["url"], dict(map(tuple, r["headers"])).get(":status"), base64.b64deco
     ("(asked in early data)", "200", b"<html>")], early
 assert not early["notes"], early
 print("an answer whose request went as early data reads, its table sized by the server's first instruction")
+
+# The answer's trailers, where gRPC puts its status, belong to the answer, not to the request.
+plainly = pylsqpack.Encoder()
+plainly.apply_settings(0, 0)
+_, asked_block = plainly.encode(0, [(b":method", b"POST"), (b":scheme", b"https"), (b":authority", b"api.test"), (b":path", b"/demo.Greeter/Hello")])
+_, status_block = plainly.encode(0, [(b":status", b"200")])
+_, trailer_block = plainly.encode(0, [(b"grpc-status", b"0")])
+call = decoded([{"flow": "u4", "events": [chunk(1, 0, 0, 0, h3frame(0x01, asked_block), True),
+                                          chunk(2, 1, 0, 0, h3frame(0x01, status_block) + h3frame(0x00, b"x") + h3frame(0x01, trailer_block), True)]}])
+answered_call = call["requests"][0]
+assert answered_call["trailers"] == [["grpc-status", "0"]] and answered_call["request_trailers"] == [], answered_call
+print("an answer's trailers stay with the answer")

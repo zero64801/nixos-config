@@ -94,7 +94,7 @@ import threading
 
 import capture
 
-capture.SETTINGS = capture.Settings("net", "-", "-", "-", "-", "-", "-")
+capture.SETTINGS = capture.Settings("net", "-", "-", "-", "-", "-", "-", "-")
 folder = tempfile.mkdtemp()
 listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 listener.bind(os.path.join(folder, "control.sock"))

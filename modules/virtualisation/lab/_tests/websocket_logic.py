@@ -104,7 +104,7 @@ with open("capture/capture.json", "w") as f:
 with open("box", "w") as f:
     f.write('#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n')
 os.chmod("box", 0o755)
-capture.SETTINGS = capture.Settings("net", wireshark, os.path.abspath("box"), "-", "-", "-", "-")
+capture.SETTINGS = capture.Settings("net", wireshark, os.path.abspath("box"), "-", "-", "-", "-", "-")
 recorded = capture.Capture("capture")
 
 

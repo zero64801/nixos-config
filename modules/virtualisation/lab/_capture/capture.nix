@@ -8,6 +8,7 @@
   writeShellScriptBin,
   labBox,
   memprocfs,
+  protobuf,
 }:
 
 let
@@ -21,7 +22,7 @@ let
   tool =
     name:
     writeShellScriptBin "guest-${name}" ''
-      exec ${python}/bin/python3 -I -B ${./.} ${name} ${wireshark-cli}/bin ${labBox}/bin/lab-box ${memprocfs}/lib/memprocfs/vmm.so ${../_guest-dbg} ${gdb}/bin/gdb ${tlsscan}/lib/libtlsscan.so "$@"
+      exec ${python}/bin/python3 -I -B ${./.} ${name} ${wireshark-cli}/bin ${labBox}/bin/lab-box ${memprocfs}/lib/memprocfs/vmm.so ${../_guest-dbg} ${gdb}/bin/gdb ${tlsscan}/lib/libtlsscan.so ${protobuf}/bin/protoc "$@"
     '';
 in
 symlinkJoin {

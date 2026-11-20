@@ -15,6 +15,7 @@ import time
 
 import bodies
 import capture as shared
+import grpc
 import owners
 import scan
 import schannel
@@ -254,7 +255,8 @@ def http3(capture, args, keys=None, only=""):
         found.append({"id": request["id"], "time": str(request["time"]), "flow": request["flow"], "method": request["method"], "url": request["url"],
                       "status": answer.get(":status", ""), "type": answer.get("content-type", ""),
                       "size": answer.get("content-length", "") or (str(len(body)) if body else ""), "answer": None, "version": "3",
-                      "took": request["took"], "sent": request["request_headers"] + request["trailers"], "got": request["headers"],
+                      "took": request["took"], "sent": request["request_headers"] + request.get("request_trailers", []),
+                      "got": request["headers"] + request["trailers"],
                       "protocol": dict(request["request_headers"]).get(":protocol", ""),
                       "asked": base64.b64decode(request["request_body"]), "body": body})
     # Only what concerns the connections shown, and with one request asked for only its own.
@@ -345,11 +347,12 @@ def detail(capture, args, found):
         print(f"{request['method']} {plain(request['url'], 400)}")
         for name, value in sent:
             print(f"  {plain(name, 100)}: {plain(value, 400)}")
-        show_body(args, asked, dict(sent), request=True)
+        path = request["url"].split("://", 1)[-1].partition("/")[2]
+        show_body(args, asked, dict(sent), request=True, path="/" + path)
         print(f"-> {plain(request['status'] or 'no answer', 80)}")
         for name, value in got:
             print(f"  {plain(name, 100)}: {plain(value, 400)}")
-        show_body(args, answer, dict(got))
+        show_body(args, answer, dict(got), path="/" + path, asked=dict(sent))
         return
     number = request["id"][1:]
     fields = ["http.request.line", "http.response.line", "http.file_data", "http.content_type", "http.content_encoding", "frame.number"]
@@ -467,11 +470,19 @@ def ws(capture, args):
         saved(args.save, "".join(json.dumps(line) + "\n" for line in saved_lines).encode())
 
 
-def show_body(args, data, headers, request=False):
-    """A body: undone of its encoding, written to ./out when asked, shown when it is text, and its size otherwise."""
+def show_body(args, data, headers, request=False, path="", asked=None):
+    """A body: undone of its encoding, written to ./out when asked, shown when it is text, and its size otherwise. One of
+    gRPC shows as its messages, which take the request's content type when the answer names its own only in trailers."""
     if not data:
         return
     headers = {name.lower(): value for name, value in headers.items()}
+    kind = headers.get("content-type") or {name.lower(): value for name, value in (asked or {}).items()}.get("content-type", "")
+    if kind.startswith("application/grpc") and not args.save:
+        print(f"  {'request body' if request else 'body'}, gRPC:")
+        for line in grpc.shown(data, {**headers, "content-type": kind}, path, request, getattr(args, "proto", None), getattr(args, "type", None),
+                               shared.SETTINGS.box, shared.SETTINGS.protoc, args.body):
+            print(plain(line, args.body + 100))
+        return
     data, note = bodies.decoded(data, headers.get("content-encoding", ""))
     side = "request body" if request else "body"
     shown = bodies.text(data, headers.get("content-type", ""), args.body) if args.body else None
@@ -845,6 +856,8 @@ def build(parser):
     sub.add_argument("--save", metavar="NAME", help="write the answer's body to ./out under this name, and the request's as NAME.request")
     sub.add_argument("--body", type=int, default=4000, help="characters of a text body to show, 4000 by default")
     sub.add_argument("--max", type=int, default=300)
+    sub.add_argument("--proto", metavar="FOLDER", help="for gRPC: the program's .proto files, to name the fields of its messages")
+    sub.add_argument("--type", metavar="MESSAGE", help="for gRPC with --proto: the message type, as package.Message, when its service does not say")
     sub = reader("ws", ws, "the messages of each WebSocket, or of one in full, both ways: text, binary, ping, pong and close, "
                            "fragments put together and undone of permessage-deflate")
     sub.add_argument("id", nargs="?", help="a WebSocket as the list names it: its flow, as t12, or for HTTP/2 and HTTP/3 its request, as h41.3")
