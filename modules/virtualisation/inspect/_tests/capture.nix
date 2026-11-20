@@ -115,7 +115,7 @@ import ./fixture.nix { inherit host; } {
         out = recorded("--control", "guest-mark nowhere; echo status=$?")
         assert "this session records nothing" in out and "status=1" in out, out
 
-    with subtest("what a tool adds to a capture is checked: keys are lines of a key log, owners plain fields"):
+    with subtest("what a tool adds to a capture is checked: keys are lines of a key log, owners plain fields, own keys in hex"):
         note = ("python3 -I -B -c 'import json, sys; sys.path.insert(0, \"${nodes.machine.my.virtualisation.inspect.guestLibrary}\"); "
                 "from session import ask, control_socket, Refused\n"
                 "try:\n    print(ask(control_socket(), json.loads(sys.argv[1]))[0])\nexcept Refused as e:\n    print(\"refused:\", e)' ")
@@ -132,14 +132,18 @@ import ./fixture.nix { inherit host; } {
             note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "proto": "tcp"}]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "updated", "lines": [good_update]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "updated", "lines": [good_key]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "own", "entries": [{"flow": "u3", "cipher": "aes-128-cbc", "key": "00112233" * 4,
+                                                                                     "iv": "", "address": "0x1000", "process": "probe[7]"}]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "own", "entries": [{"flow": "u3", "cipher": "rc4", "key": "not hex"}]})),
         ]))
         print(out)
         folder = capture_of(out)
-        assert out.count("refused:") == 6 and out.count("'folder':") == 4, out
+        assert out.count("refused:") == 7 and out.count("'folder':") == 5, out
         assert machine.succeed(f"cat {folder}/updated.log").strip() == good_update
         assert machine.succeed(f"cat {folder}/keys.log").strip() == good_key
         assert '"process": "ok"' in machine.succeed(f"cat {folder}/owners.jsonl")
         assert '"ppid": 7, "process": "child"' in machine.succeed(f"cat {folder}/processes.jsonl")
+        assert '"key": "00112233001122330011223300112233"' in machine.succeed(f"cat {folder}/own.jsonl")
 
     with subtest("a USB device of this machine is passed to the guest for the session and recorded, and only it, though the bus has more"):
         place = machine.succeed("for d in /sys/bus/usb/devices/*; do [ \"$(cat $d/product 2>/dev/null)\" = 'QEMU USB Keyboard' ] && basename $d; done; true").strip()

@@ -183,6 +183,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | `guest-net owners --follow` | Which program each connection belongs to, read from a Windows guest's memory or asked of the agent elsewhere. |
 | `guest-net keys pull PATH` | A key log a program in the guest wrote, as Edge or Chrome do with `SSLKEYLOGFILE` set in a `guest-exec --powershell` script. |
 | `guest-net keys scan` | The TLS and QUIC secrets of any program, found in its memory from outside and kept only when they open the flow's own records. |
+| `guest-net keys own --flow ID --with SCRIPT` | The key of a program's own crypto, found in its memory from outside with a decoder you write for its protocol, which sets the tests and judges what passes them. `--process PID`, `--all` for its pages it cannot write too, `--physical`. |
 | `guest-net keys schannel --seconds N` | The secrets of Windows' own TLS (PowerShell, .NET, the system's services), read from `lsass`. |
 | `guest-usb devices`, `urbs`, `control`, `reports`, `hid`, `changes A B` | The guest's USB devices, their transfers, control requests, report descriptors, and what changed between two marks. |
 
@@ -258,7 +259,13 @@ Deleting that folder removes it.
   Jobs there may end when the session closes.
 - A window that blocks capture, such as protected video, will likely come out black.
   The screen's picture cut to that window's place is the way around it.
-- A program with its own crypto over plain TCP or UDP stays unreadable: `keys scan` opens TLS and QUIC only.
+- A program with crypto of its own, over plain TCP or UDP or inside TLS, is read with a decoder of its protocol, whose key `keys own` finds:
+  1. `guest-net decode ID --save NAME` shows what a decoder gets, and the decompiled code (`ilspycmd`, IDA) or `guest-dbg --log bcrypt` shows the cipher, where a message keeps its IV or nonce, and how a plaintext begins.
+  2. The decoder answers by the `"ask"` in what it reads: `"tests"` gives tests from the first messages, `"judge"` keeps the candidates that open every message, and without one it prints the messages with the `"keys"` it is given. The README of guest-net has the fields and a whole one.
+  3. `guest-net keys own --flow ID --with SCRIPT` while the program runs. A UDP flow often has no program, since its socket is mostly missing from what MemProcFS lists, so give `--process PID`: `guest-exec --powershell 'Get-NetUDPEndpoint -LocalPort PORT'` names it, which the guest sees. `--all` adds the pages it cannot write, for a key built into it.
+  4. `guest-net decode ID --with SCRIPT` then reads the flow, and later flows under the same key.
+  A test that checks little lets windows through by chance, which judging throws away at the cost of time, while an AEAD's tag or several known bytes let nearly none through.
+  A key `keys own` does not find, kept only expanded, made anew for each message, or of a cipher it does not know, is for `guest-dbg` at the function that uses it.
 - `guest-net http` reads HTTP/3 with the traffic secrets alone, while tshark's own reading of it (`packets`, `tshark`, an export in Wireshark) needs the handshake secrets too.
 - A TLS 1.3 connection that updated its keys holds only the newer ones. `keys scan` finds them, also after KeyUpdates sent padded, and guest-net reads the flow from the last update on, not before: `stream --decrypted`, `decode --decrypted`, and `http`, whose requests from there are named k. `--follow` catches the first ones before any update.
   A TLS 1.3 flow still `not found` while its program runs may pad its KeyUpdates to more than 256 bytes: `keys scan --wide --flow ID` tries after each of its last records too.

@@ -7,6 +7,8 @@
  * A candidate is a window of 32 or 48 bytes. Few windows of real memory look random, and the checks are ordered by cost:
  * the look of the bytes, then the key derivation and one block of keystream against what the record has to hold, then
  * the whole record.
+ *
+ * The same windows are tried as keys of a program's own crypto, against tests a decoder of its protocol sets, at the end.
  */
 #include <openssl/evp.h>
 #include <openssl/md5.h>
@@ -1138,4 +1140,388 @@ size_t tlsscan_find(const uint8_t *memory, size_t length, uint64_t base, const u
     free(table);
     free(slot);
     return atomic_load(&found);
+}
+
+/*
+ * Keys of a program's own crypto, which no protocol derives: every window of memory tried as a key against tests that a
+ * decoder of the program's protocol sets, each a piece of a message, the cipher that opens it and what its plaintext holds.
+ */
+enum { OWN_AES_ECB = 1, OWN_AES_CBC, OWN_AES_CTR, OWN_AES_GCM, OWN_CHACHA20, OWN_CHACHA20_POLY1305, OWN_RC4, OWN_3DES_CBC };
+enum { OWN_KEY = 64, OWN_LONGEST = 1 << 16 };
+
+typedef struct {
+    uint32_t cipher;
+    uint32_t keylen;
+    uint32_t beside;  /* 1 when the IV is in memory at the key's first byte plus ivoffset, not in iv */
+    int32_t ivoffset;
+    uint8_t iv[16];   /* CBC and CTR 16 bytes, GCM and ChaCha20-Poly1305 a 12 byte nonce, ChaCha20 the block counter as 4 bytes
+                         little endian then a 12 byte nonce, as OpenSSL takes it, 3DES 8 */
+    const uint8_t *data; /* the ciphertext from its first byte, an AEAD's with its tag after it */
+    const uint8_t *aad;
+    const uint8_t *known; /* bytes the plaintext has at knownat, where mask has bits */
+    const uint8_t *mask;
+    uint32_t length;
+    uint32_t aadlen;
+    uint32_t knownat;
+    uint32_t knownlen;
+    uint32_t printable; /* how many of the first span bytes of plaintext are at least text */
+    uint32_t span;
+    uint32_t padded; /* ECB, CBC and 3DES: data is a whole message, which ends in PKCS#7 padding */
+    uint32_t unused;
+} own_test;
+
+typedef struct {
+    uint32_t test;
+    uint32_t keylen;
+    uint64_t address;
+    uint8_t key[OWN_KEY];
+    uint8_t iv[16];
+} own_hit;
+
+typedef struct {
+    EVP_CIPHER_CTX *ecb[2][3], *gcm[3], *chacha, *chachapoly, *des3;
+    uint8_t ecb_key[2][3][33], gcm_key[3][33], chachapoly_key[33], des3_key[33];
+    uint8_t *plain, *stream;
+} own_crypto;
+
+static size_t own_ivlen(uint32_t cipher) {
+    switch (cipher) {
+    case OWN_AES_CBC:
+    case OWN_AES_CTR:
+    case OWN_CHACHA20:
+        return 16;
+    case OWN_AES_GCM:
+    case OWN_CHACHA20_POLY1305:
+        return 12;
+    case OWN_3DES_CBC:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+static size_t own_block(uint32_t cipher) {
+    return cipher == OWN_AES_ECB || cipher == OWN_AES_CBC ? 16 : cipher == OWN_3DES_CBC ? 8 : 0;
+}
+
+static int own_aead(uint32_t cipher) { return cipher == OWN_AES_GCM || cipher == OWN_CHACHA20_POLY1305; }
+
+static int own_keylen(uint32_t cipher, uint32_t keylen) {
+    switch (cipher) {
+    case OWN_AES_ECB:
+    case OWN_AES_CBC:
+    case OWN_AES_CTR:
+    case OWN_AES_GCM:
+        return keylen == 16 || keylen == 24 || keylen == 32;
+    case OWN_CHACHA20:
+    case OWN_CHACHA20_POLY1305:
+        return keylen == 32;
+    case OWN_RC4:
+        return keylen >= 1 && keylen <= OWN_KEY;
+    case OWN_3DES_CBC:
+        return keylen == 24;
+    default:
+        return 0;
+    }
+}
+
+/* Whether the test is one this can run and that rejects keys: its sizes fit, and it checks something. */
+static int own_valid(const own_test *t) {
+    size_t block = own_block(t->cipher), body = t->length - (own_aead(t->cipher) ? 16 : 0);
+    if (!own_keylen(t->cipher, t->keylen) || !t->data || !t->length || t->length > OWN_LONGEST || (own_aead(t->cipher) && t->length <= 16))
+        return 0;
+    if ((block && t->length % block) || (t->padded && !block) || (t->knownlen && (!t->known || !t->mask)) || (t->aadlen && !t->aad))
+        return 0;
+    if ((size_t)t->knownat + t->knownlen > body || t->span > body || t->printable > t->span || t->aadlen > OWN_LONGEST)
+        return 0;
+    return t->knownlen || t->printable || t->padded || own_aead(t->cipher);
+}
+
+/* A key could be one of a program's own: no 8 byte word in it starts with two zero or two 0xff bytes, as pointers and small
+ * numbers do, and most of its bytes differ. Unlike a TLS secret it may be text, as keys a program was written with are. */
+static int own_plausible(const uint8_t *p, size_t n) {
+    uint64_t seen[4] = {0, 0, 0, 0}, q;
+    size_t distinct = 0;
+    for (size_t i = 0; i + 8 <= n; i += 8) {
+        memcpy(&q, p + i, 8);
+        uint16_t top = (uint16_t)(q >> 48);
+        if (top == 0 || top == 0xffff)
+            return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        uint8_t b = p[i];
+        if (!(seen[b >> 6] >> (b & 63) & 1)) {
+            seen[b >> 6] |= 1ull << (b & 63);
+            distinct++;
+        }
+    }
+    return n < 4 ? distinct == n : distinct * 3 >= n * 2;
+}
+
+static int aes_size(size_t keylen) { return keylen == 16 ? 0 : keylen == 24 ? 1 : 2; }
+
+/* Blocks of AES with the key, each on its own, encrypting or decrypting. */
+static int own_ecb(own_crypto *c, int encrypt, size_t keylen, const uint8_t *key, const uint8_t *in, uint8_t *out, size_t length) {
+    int size = aes_size(keylen), n;
+    const EVP_CIPHER *cipher = size == 0 ? EVP_aes_128_ecb() : size == 1 ? EVP_aes_192_ecb() : EVP_aes_256_ecb();
+    EVP_CIPHER_CTX *x = ready(&c->ecb[encrypt][size], cipher, encrypt);
+    return x && rekey(x, c->ecb_key[encrypt][size], keylen, key, NULL, encrypt) && EVP_CipherUpdate(x, out, &n, in, (int)length) &&
+           n == (int)length;
+}
+
+static int own_des3(own_crypto *c, const uint8_t *key, const uint8_t *in, uint8_t *out, size_t length) {
+    int n;
+    EVP_CIPHER_CTX *x = ready(&c->des3, EVP_des_ede3_ecb(), 0);
+    return x && rekey(x, c->des3_key, 24, key, NULL, 0) && EVP_CipherUpdate(x, out, &n, in, (int)length) && n == (int)length;
+}
+
+/* ChaCha20's keystream from a block counter and nonce given whole, as OpenSSL takes them. */
+static int own_chacha(own_crypto *c, const uint8_t *key, const uint8_t iv[16], uint8_t *out, size_t length) {
+    int n;
+    EVP_CIPHER_CTX *x = ready(&c->chacha, EVP_chacha20(), 1);
+    memset(out, 0, length);
+    return x && EVP_EncryptInit_ex(x, NULL, NULL, key, iv) && EVP_EncryptUpdate(x, out, &n, out, (int)length) && n == (int)length;
+}
+
+/* The first count bytes of the test's plaintext under the key, count a whole number of blocks for a block cipher. */
+static int own_prefix(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv, size_t count, uint8_t *out) {
+    const uint8_t *data = t->data;
+    uint8_t *s = c->stream;
+    size_t blocks = (count + 15) / 16;
+    switch (t->cipher) {
+    case OWN_AES_ECB:
+        return own_ecb(c, 0, t->keylen, key, data, out, count);
+    case OWN_AES_CBC:
+    case OWN_3DES_CBC: {
+        size_t block = own_block(t->cipher);
+        if (!(t->cipher == OWN_3DES_CBC ? own_des3(c, key, data, out, count) : own_ecb(c, 0, t->keylen, key, data, out, count)))
+            return 0;
+        for (size_t i = 0; i < count; i++)
+            out[i] ^= i < block ? iv[i] : data[i - block];
+        return 1;
+    }
+    case OWN_AES_CTR:
+    case OWN_AES_GCM:
+        for (size_t b = 0; b < blocks; b++) {
+            uint8_t *counter = s + 16 * b;
+            if (t->cipher == OWN_AES_CTR) {
+                /* CTR counts up the whole block as one big endian number. */
+                unsigned carry = 0;
+                uint64_t add = b;
+                memcpy(counter, iv, 16);
+                for (int i = 15; i >= 0 && (add || carry); i--) {
+                    unsigned sum = counter[i] + (unsigned)(add & 0xff) + carry;
+                    counter[i] = (uint8_t)sum;
+                    carry = sum >> 8;
+                    add >>= 8;
+                }
+            } else {
+                /* GCM's first block of plaintext is under counter 2 after its 12 byte nonce. */
+                uint32_t n = (uint32_t)(2 + b);
+                memcpy(counter, iv, 12);
+                counter[12] = (uint8_t)(n >> 24), counter[13] = (uint8_t)(n >> 16), counter[14] = (uint8_t)(n >> 8), counter[15] = (uint8_t)n;
+            }
+        }
+        if (!own_ecb(c, 1, t->keylen, key, s, s, 16 * blocks))
+            return 0;
+        break;
+    case OWN_CHACHA20:
+        if (!own_chacha(c, key, iv, s, count))
+            return 0;
+        break;
+    case OWN_CHACHA20_POLY1305: {
+        /* Its plaintext starts at block counter 1, the first block keying Poly1305. */
+        uint8_t whole[16] = {1, 0, 0, 0};
+        memcpy(whole + 4, iv, 12);
+        if (!own_chacha(c, key, whole, s, count))
+            return 0;
+        break;
+    }
+    case OWN_RC4:
+        rc4(key, t->keylen, data, out, count);
+        return 1;
+    default:
+        return 0;
+    }
+    for (size_t i = 0; i < count; i++)
+        out[i] = data[i] ^ s[i];
+    return 1;
+}
+
+/* Whether the message's last block ends in PKCS#7 padding. */
+static int own_padding(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv) {
+    size_t block = own_block(t->cipher), last = t->length - block;
+    uint8_t p[16];
+    if (!(t->cipher == OWN_3DES_CBC ? own_des3(c, key, t->data + last, p, block) : own_ecb(c, 0, t->keylen, key, t->data + last, p, block)))
+        return 0;
+    if (t->cipher != OWN_AES_ECB)
+        for (size_t i = 0; i < block; i++)
+            p[i] ^= last ? t->data[last - block + i] : iv[i];
+    uint8_t n = p[block - 1];
+    if (n == 0 || n > block)
+        return 0;
+    for (size_t i = block - n; i < block; i++)
+        if (p[i] != n)
+            return 0;
+    return 1;
+}
+
+/* The whole AEAD message, its tag checked. */
+static int own_open(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv) {
+    uint8_t tag[16], *have;
+    int n, m, size = aes_size(t->keylen);
+    size_t body = t->length - 16;
+    EVP_CIPHER_CTX *x;
+    if (t->cipher == OWN_AES_GCM) {
+        x = ready(&c->gcm[size], size == 0 ? EVP_aes_128_gcm() : size == 1 ? EVP_aes_192_gcm() : EVP_aes_256_gcm(), 0);
+        have = c->gcm_key[size];
+    } else {
+        x = ready(&c->chachapoly, EVP_chacha20_poly1305(), 0);
+        have = c->chachapoly_key;
+    }
+    memcpy(tag, t->data + body, 16);
+    return x && rekey(x, have, t->keylen, key, iv, 0) && (!t->aadlen || EVP_DecryptUpdate(x, NULL, &n, t->aad, (int)t->aadlen)) &&
+           EVP_DecryptUpdate(x, c->plain, &n, t->data, (int)body) && EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_TAG, 16, tag) &&
+           EVP_DecryptFinal_ex(x, c->plain + n, &m) > 0;
+}
+
+/* The checks of a test, cheapest first: known bytes, text, padding, then an AEAD's tag over the whole message. */
+static int own_try(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv) {
+    size_t count = (size_t)t->knownat + t->knownlen, block = own_block(t->cipher);
+    if (t->printable && t->span > count)
+        count = t->span;
+    if (block)
+        count = (count + block - 1) / block * block;
+    if (count) {
+        if (!own_prefix(c, t, key, iv, count, c->plain))
+            return 0;
+        for (size_t i = 0; i < t->knownlen; i++)
+            if ((c->plain[t->knownat + i] ^ t->known[i]) & t->mask[i])
+                return 0;
+        if (t->printable) {
+            size_t text = 0;
+            for (size_t i = 0; i < t->span; i++) {
+                uint8_t b = c->plain[i];
+                text += (b >= 0x20 && b < 0x7f) || b == '\t' || b == '\n' || b == '\r';
+            }
+            if (text < t->printable)
+                return 0;
+        }
+    }
+    if (t->padded && !own_padding(c, t, key, iv))
+        return 0;
+    return !own_aead(t->cipher) || own_open(c, t, key, iv);
+}
+
+typedef struct {
+    const uint8_t *memory;
+    size_t length, step, from, to;
+    uint64_t base;
+    const own_test *tests;
+    const uint8_t *usable;
+    size_t ntests;
+    own_hit *hits;
+    size_t maxhits;
+    _Atomic size_t *nhits;
+    _Atomic uint64_t *tested;
+} own_job;
+
+static void *own_work(void *argument) {
+    own_job *j = argument;
+    own_crypto *c = calloc(1, sizeof *c);
+    uint64_t tested = 0;
+    size_t round = 0;
+    if (c) {
+        c->plain = malloc(OWN_LONGEST + 64);
+        c->stream = malloc(OWN_LONGEST + 64);
+    }
+    for (size_t at = j->from; c && c->plain && c->stream && at < j->to; at += j->step) {
+        if ((++round & 0x3fff) == 0 && atomic_load(j->nhits) >= j->maxhits)
+            break;
+        /* Whether the window of each length is a plausible key, worked out once for the tests that share it. */
+        int8_t looks[OWN_KEY + 1];
+        memset(looks, -1, sizeof looks);
+        for (size_t i = 0; i < j->ntests; i++) {
+            const own_test *t = &j->tests[i];
+            if (!j->usable[i] || at + t->keylen > j->length)
+                continue;
+            const uint8_t *key = j->memory + at, *iv = t->iv;
+            if (looks[t->keylen] < 0)
+                looks[t->keylen] = (int8_t)own_plausible(key, t->keylen);
+            if (!looks[t->keylen])
+                continue;
+            if (t->beside) {
+                int64_t where = (int64_t)at + t->ivoffset;
+                if (where < 0 || (uint64_t)where + own_ivlen(t->cipher) > j->length)
+                    continue;
+                iv = j->memory + where;
+            }
+            tested++;
+            if (!own_try(c, t, key, iv))
+                continue;
+            size_t slot = atomic_fetch_add(j->nhits, 1);
+            if (slot < j->maxhits) {
+                own_hit *h = &j->hits[slot];
+                memset(h, 0, sizeof *h);
+                h->test = (uint32_t)i;
+                h->keylen = t->keylen;
+                h->address = j->base + at;
+                memcpy(h->key, key, t->keylen);
+                memcpy(h->iv, iv, own_ivlen(t->cipher));
+            }
+        }
+    }
+    atomic_fetch_add(j->tested, tested);
+    if (c) {
+        for (int e = 0; e < 2; e++)
+            for (int s = 0; s < 3; s++)
+                EVP_CIPHER_CTX_free(c->ecb[e][s]);
+        for (int s = 0; s < 3; s++)
+            EVP_CIPHER_CTX_free(c->gcm[s]);
+        EVP_CIPHER_CTX_free(c->chacha);
+        EVP_CIPHER_CTX_free(c->chachapoly);
+        EVP_CIPHER_CTX_free(c->des3);
+        free(c->plain);
+        free(c->stream);
+        free(c);
+    }
+    return NULL;
+}
+
+/*
+ * Tries every window of memory that starts at a multiple of step as the key of each test, with up to threads threads.
+ * A test this cannot run is passed over, valid says which were run. Returns the number of hits, which may exceed maxhits,
+ * when only maxhits were written and the search stopped early. tested receives how many keys were tried.
+ */
+size_t tlsscan_own(const uint8_t *memory, size_t length, uint64_t base, size_t step, unsigned threads, const own_test *tests,
+                   size_t ntests, uint8_t *valid, own_hit *hits, size_t maxhits, uint64_t *tested) {
+    _Atomic size_t nhits = 0;
+    _Atomic uint64_t count = 0;
+    size_t usable = 0;
+    if (step == 0)
+        step = 1;
+    if (threads == 0)
+        threads = 1;
+    if (threads > 64)
+        threads = 64;
+    for (size_t i = 0; i < ntests; i++)
+        usable += valid[i] = (uint8_t)own_valid(&tests[i]);
+    if (usable && length) {
+        pthread_t ids[64];
+        own_job jobs[64];
+        size_t positions = (length - 1) / step + 1, share = (positions + threads - 1) / threads;
+        unsigned started = 0;
+        for (unsigned i = 0; i < threads && i * share < positions; i++) {
+            jobs[i] = (own_job){memory, length, step, i * share * step, (i + 1) * share * step, base, tests, valid, ntests, hits, maxhits, &nhits, &count};
+            if (pthread_create(&ids[started], NULL, own_work, &jobs[i]))
+                own_work(&jobs[i]);
+            else
+                started++;
+        }
+        for (unsigned i = 0; i < started; i++)
+            pthread_join(ids[i], NULL);
+    }
+    if (tested)
+        *tested = atomic_load(&count);
+    return atomic_load(&nhits);
 }

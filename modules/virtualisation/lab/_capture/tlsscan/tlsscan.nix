@@ -1,4 +1,4 @@
-# The C half of guest-net keys scan.
+# The C half of guest-net keys scan and keys own.
 {
   stdenv,
   openssl,

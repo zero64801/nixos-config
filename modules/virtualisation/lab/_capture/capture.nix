@@ -13,10 +13,11 @@
 
 let
   tlsscan = callPackage ./tlsscan/tlsscan.nix { };
-  # Brotli for the bodies most servers send, which Python cannot undo by itself, and ls-qpack for HTTP/3's headers, used
-  # only inside lab-box.
+  # Brotli for the bodies most servers send, which Python cannot undo by itself, ls-qpack for HTTP/3's headers, and
+  # cryptography for decoders of a program's own protocol to open what keys own found the keys of, used only inside lab-box.
   python = python3.withPackages (packages: [
     packages.brotli
+    packages.cryptography
     packages.pylsqpack
   ]);
   tool =

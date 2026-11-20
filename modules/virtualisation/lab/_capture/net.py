@@ -24,6 +24,7 @@ import urllib.parse
 import bodies
 import capture as shared
 import grpc
+import own
 import owners
 import plaintext
 import quiclate
@@ -1085,34 +1086,36 @@ def stream_chunks(capture, flow, keys):
             for when, _, side, stream, offset, data, fin in connection["events"]]
 
 
-def decode(capture, args):
-    """A flow's bytes both ways handed to a decoder of the program's own protocol, run inside lab-box, and what it prints. A
-    QUIC flow decrypted gives its streams' chunks, each with its stream and where in it it goes, since packets carry
-    pieces of several streams, out of order and again."""
-    flow = next((f for f in flows(capture, None, args.keys) if f["id"] == args.id), None)
-    if flow is None:
-        fail(f"there is no flow {args.id}, guest-net flows lists them")
+def decoder_input(capture, flow, args):
+    """What a decoder of the program's own protocol is given of a flow: its chunks both ways, and the keys of the program's
+    own crypto keys own found for it. A QUIC flow decrypted gives its streams' chunks, each with its stream and where in it
+    it goes, since packets carry pieces of several streams, out of order and again."""
+    keys = getattr(args, "keys", None)
     since = capture.moment(args.since) if args.since else None
     until = capture.moment(args.until) if args.until else None
-    streams = stream_chunks(capture, flow, args.keys) if args.decrypted and flow["proto"] == "udp" else None
+    streams = stream_chunks(capture, flow, keys) if args.decrypted and flow["proto"] == "udp" else None
     if streams is not None:
         listed = [c for c in streams if (since is None or c["time"] >= since) and (until is None or c["time"] <= until)]
     else:
-        listed = [{"time": when, "sent": sent, "data": base64.b64encode(data).decode()} for when, sent, data in chunks(capture, flow, args.decrypted, args.keys)
+        listed = [{"time": when, "sent": sent, "data": base64.b64encode(data).decode()} for when, sent, data in chunks(capture, flow, args.decrypted, keys)
                   if (since is None or when >= since) and (until is None or when <= until)]
-    given = {"flow": flow["id"], "proto": flow["proto"], "guest": flow["guest"], "remote": flow["remote"], "names": flow["names"],
-             "decrypted": args.decrypted, "quic": streams is not None, "chunks": listed}
+    return {"flow": flow["id"], "proto": flow["proto"], "guest": flow["guest"], "remote": flow["remote"], "names": flow["names"],
+            "decrypted": args.decrypted, "quic": streams is not None, "chunks": listed, "keys": capture.own_keys(flow["id"])}
+
+
+def decode(capture, args):
+    """A flow's bytes both ways handed to a decoder of the program's own protocol, run inside lab-box, and what it prints."""
+    flow = next((f for f in flows(capture, None, args.keys) if f["id"] == args.id), None)
+    if flow is None:
+        fail(f"there is no flow {args.id}, guest-net flows lists them")
+    given = decoder_input(capture, flow, args)
     if args.save:
         saved(args.save, json.dumps(given).encode())
     if not args.decoder:
         if not args.save:
             fail("decode takes --with SCRIPT, a decoder of the program's protocol, or --save NAME for what one would be given")
         return
-    script = os.path.realpath(args.decoder)
-    if not os.path.isfile(script):
-        fail(f"there is no decoder {args.decoder}")
-    command = [shared.SETTINGS.box, "--ro", script, "--", sys.executable, "-I", "-B", script, *args.arguments]
-    done = subprocess.run(command, input=json.dumps(given).encode(), capture_output=True, check=False)
+    done = shared.run_decoder(args.decoder, given, args.arguments)
     for line in done.stdout.decode("utf-8", "replace").splitlines():
         print(plain(line, 4000))
     if done.returncode != 0:
@@ -1198,15 +1201,23 @@ def keys(capture, args):
         # --process also names where to search a flow whose program is not known.
         scan.run(capture, args, chosen.keep(found, unknown=True) if chosen else found, chosen)
         return
+    if args.action == "own":
+        flow = next((f for f in flows(capture, None) if f["id"] in (args.flow or [])), None)
+        if len(args.flow or []) != 1 or flow is None:
+            fail("own takes one flow, --flow ID, as guest-net flows lists them")
+        own.run(capture, args, decoder_input(capture, flow, args), flow)
+        return
     if args.action == "list":
         found = capture.keylog(None)
-        if not found:
-            print("the capture has no keys")
-            return
         counts = {}
-        with open(found) as f:
+        with open(found or os.devnull) as f:
             for line in f:
                 counts[line.split(" ", 1)[0]] = counts.get(line.split(" ", 1)[0], 0) + 1
+        for line in capture.lines("own.jsonl"):
+            label = f"own {plain(line.get('flow', '?'), 20)} {plain(line.get('cipher', '?'), 40)}"
+            counts[label] = counts.get(label, 0) + 1
+        if not counts:
+            print("the capture has no keys")
         for label, count in sorted(counts.items()):
             print(f"{label} {count}")
         return
@@ -1296,28 +1307,40 @@ def build(parser):
     sub.add_argument("--from", dest="source", choices=["memory", "agent"], help="memory for a Windows guest, agent elsewhere, found out otherwise")
     sub.set_defaults(run=owners.run)
     sub = actions.add_parser("keys", help="TLS secrets for the capture: add a key log, pull one from the guest, read Windows' own from lsass, "
-                                          "find any program's in its memory, or list them",
+                                          "find any program's in its memory, find the keys of a program's own crypto, or list them",
                              description="TLS secrets for the capture, which every reader decrypts with. add takes a key log of this side, pull "
                                          "one a program in the guest wrote, as one with SSLKEYLOGFILE does. schannel follows lsass of a Windows "
                                          "guest from outside, with the CPU's debug registers, and adds the secrets of every handshake of "
                                          "Windows' own TLS as it happens: start it before the connections. lsass stops for a moment at each. "
                                          "scan finds the secrets of the capture's TLS flows in the memory of the programs that made them, "
-                                         "while they run, and adds only those that open the flow's own records.")
+                                         "while they run, and adds only those that open the flow's own records. own finds the key of a "
+                                         "program's own crypto in its memory, for one flow, with a decoder of its protocol: asked with \"ask\": "
+                                         "\"tests\" beside what decode gives it, the decoder answers {\"tests\": [...]}, each a cipher, a piece of "
+                                         "a message and what its plaintext holds, which every window of the program's memory is tried against, "
+                                         "and asked with \"ask\": \"judge\" and the \"candidates\" that passed, it answers {\"accepted\": "
+                                         "[index, ...]}. The keys it accepts go to the capture, and decode hands them to it as \"keys\".")
     common(sub)
     timed(sub)
-    sub.add_argument("action", choices=["add", "pull", "schannel", "scan", "list"])
+    sub.add_argument("action", choices=["add", "pull", "schannel", "scan", "own", "list"])
     sub.add_argument("path", nargs="?", help="the key log, of this side for add and of the guest for pull")
     sub.add_argument("--seconds", type=float, help="for schannel: stop after this long, otherwise on Ctrl-C")
-    sub.add_argument("--flow", action="append", metavar="ID", help="for scan: only this flow, as t12, more than once for several")
+    sub.add_argument("--flow", action="append", metavar="ID", help="for scan: only this flow, as t12, more than once for several, "
+                                                                     "for own: the flow")
     sub.add_argument("--process", action="append", metavar="NAME", help="for scan: only flows of this program, by name or number, and "
-                                                                         "those whose program is not known, which are searched in it")
+                                                                         "those whose program is not known, which are searched in it, "
+                                                                         "for own: the program to search when the flow's is not known")
     scope.arguments(sub, process=False)
-    sub.add_argument("--physical", action="store_true", help="for scan: search the guest's whole RAM around the client randoms, for any guest")
+    sub.add_argument("--physical", action="store_true", help="for scan: search the guest's whole RAM around the client randoms, for any guest, "
+                                                              "for own: all of it")
+    sub.add_argument("--with", dest="decoder", metavar="SCRIPT", help="for own: the decoder of the program's protocol, a Python script, "
+                                                                      "as decode takes")
+    sub.add_argument("--decrypted", action="store_true", help="for own: what went inside TLS, where the program's own crypto is inside it")
+    sub.add_argument("--all", action="store_true", help="for own: also the program's pages it cannot write, where keys built into it are")
     sub.add_argument("--deep", action="store_true", help="for scan with --physical: then all of the RAM, which takes long")
-    sub.add_argument("--step", type=int, help="for scan: try windows that start at multiples of this, by default every one in up to "
+    sub.add_argument("--step", type=int, help="for scan and own: try windows that start at multiples of this, by default every one in up to "
                                                      "32 MiB and every eighth beyond")
     sub.add_argument("--around", type=int, default=65536, help="for scan: bytes searched each side of a client random, 64 KiB by default")
-    sub.add_argument("--max-memory", type=int, default=4096, metavar="MIB", help="for scan: memory read of a process at most, 4096 MiB by default")
+    sub.add_argument("--max-memory", type=int, default=4096, metavar="MIB", help="for scan and own: memory read of a process at most, 4096 MiB by default")
     sub.add_argument("--again", action="store_true", help="for scan: also flows the capture has keys for")
     sub.add_argument("--wide", action="store_true", help="for scan: a TLS 1.3 flow whose first secrets are gone has its newest looked for "
                                                           "after each of its last records, for KeyUpdates padded more than to 256 bytes")
@@ -1333,7 +1356,8 @@ def build(parser):
                              description="Hands one flow's chunks both ways, in order, with their times and whether the guest sent each, to a "
                                          "decoder of the program's own protocol: a Python script run inside lab-box that reads them as one JSON "
                                          "object on its standard input, {flow, proto, guest, remote, names, decrypted, quic, chunks: [{time, sent, "
-                                         "data in base64}]}, and prints what it makes of them. A QUIC flow with --decrypted gives its streams' "
+                                         "data in base64}], keys}, and prints what it makes of them. keys are those of the program's own crypto "
+                                         "that keys own found for the flow, [{cipher, key, iv, address, process}]. A QUIC flow with --decrypted gives its streams' "
                                          "chunks, each with its stream, its offset in it and fin, out of order and again as the packets had them, "
                                          "also from a key update on, where guest-net opened it itself.")
     common(sub)

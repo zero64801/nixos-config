@@ -130,6 +130,8 @@ UPDATED = re.compile(r"(?:CLIENT|SERVER)_TRAFFIC_SECRET_[1-9][0-9]{0,5} [0-9a-fA
 # What a tool may say about a connection or a process, and how long each part may be.
 OWNER_FIELDS, NOTED = ("proto", "local", "remote", "pid", "process", "state", "seen", "source"), 4096
 PROCESS_FIELDS = ("pid", "ppid", "process", "source")
+# A key of a program's own crypto that keys own found, in hex.
+OWN_FIELDS, OWN_KEY = ("flow", "cipher", "key", "iv", "address", "process"), re.compile(r"(?:[0-9a-f]{2}){1,64}")
 
 
 class Capture:
@@ -215,7 +217,8 @@ class Capture:
                     self.describe()
 
     def note(self, request):
-        """What a tool adds to the capture: a mark, the owners of connections, processes or TLS secrets. Its answer, as for any request."""
+        """What a tool adds to the capture: a mark, the owners of connections, processes, TLS secrets or the keys of a program's own crypto.
+        Its answer, as for any request."""
         stamp = time.time_ns()
         if request.get("do") == "mark":
             label = request.get("label")
@@ -243,7 +246,13 @@ class Capture:
             if not isinstance(entries, list) or len(entries) > NOTED or not all(owner(e, PROCESS_FIELDS) for e in entries):
                 return {"error": f"processes are up to {NOTED}, each with {', '.join(PROCESS_FIELDS)} as text or whole numbers"}
             return self.append("processes.jsonl", [json.dumps({"time": stamp, **e}) for e in entries])
-        return {"error": "a note is of keys, updated keys, owners or processes"}
+        if kind == "own":
+            entries = request.get("entries")
+            if (not isinstance(entries, list) or len(entries) > NOTED
+                    or not all(owner(e, OWN_FIELDS) and isinstance(e.get("key"), str) and OWN_KEY.fullmatch(e["key"]) for e in entries)):
+                return {"error": f"own keys are up to {NOTED}, each with {', '.join(OWN_FIELDS)} as text, the key in hex"}
+            return self.append("own.jsonl", [json.dumps({"time": stamp, **e}) for e in entries])
+        return {"error": "a note is of keys, updated keys, owners, processes or own keys"}
 
     def append(self, name, lines):
         with self.lock, open(os.open(os.path.join(self.folder, name), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as f:

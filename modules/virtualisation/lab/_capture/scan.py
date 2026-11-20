@@ -42,6 +42,17 @@ class Hit(ctypes.Structure):
                 ("secret", ctypes.c_uint8 * 48)]
 
 
+class OwnTest(ctypes.Structure):
+    _fields_ = [("cipher", u32), ("keylen", u32), ("beside", u32), ("ivoffset", ctypes.c_int32), ("iv", ctypes.c_uint8 * 16),
+                ("data", ctypes.c_void_p), ("aad", ctypes.c_void_p), ("known", ctypes.c_void_p), ("mask", ctypes.c_void_p),
+                ("length", u32), ("aadlen", u32), ("knownat", u32), ("knownlen", u32), ("printable", u32), ("span", u32),
+                ("padded", u32), ("unused", u32)]
+
+
+class OwnHit(ctypes.Structure):
+    _fields_ = [("test", u32), ("keylen", u32), ("address", u64), ("key", ctypes.c_uint8 * 64), ("iv", ctypes.c_uint8 * 16)]
+
+
 def address(buffer):
     """Where a bytes or bytearray's contents are, or the address itself, for the C side, which only reads them."""
     if isinstance(buffer, int):
@@ -86,6 +97,9 @@ class Scanner:
                                           ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(u32), ctypes.POINTER(u64)]
         lib.tlsscan_quic_next.restype = ctypes.c_int
         lib.tlsscan_quic_next.argtypes = [u32, u32, ctypes.c_char_p, ctypes.c_char_p]
+        lib.tlsscan_own.restype = ctypes.c_size_t
+        lib.tlsscan_own.argtypes = [ctypes.c_void_p, ctypes.c_size_t, u64, ctypes.c_size_t, ctypes.c_uint, ctypes.POINTER(OwnTest), ctypes.c_size_t,
+                                    ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(OwnHit), ctypes.c_size_t, ctypes.POINTER(u64)]
         lib.tlsscan_find.restype = ctypes.c_size_t
         lib.tlsscan_find.argtypes = [ctypes.c_void_p, ctypes.c_size_t, u64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint,
                                      ctypes.POINTER(u64), ctypes.POINTER(u32), ctypes.c_size_t]
@@ -151,6 +165,29 @@ class Scanner:
         out = ctypes.create_string_buffer(48)
         count = self.lib.tlsscan_quic_next(version, suite, secret, out)
         return out.raw[:count]
+
+    def own(self, buffer, length, base, tests, step=8, threads=1, at=0, most=4096):
+        """The windows of length bytes of the buffer from at that pass one of the tests, own.Test as a decoder set them, as
+        (test index, key, IV, address), and how many there were, which may be more than most."""
+        if not tests or length <= 0:
+            return [], 0
+        array, kept = (OwnTest * len(tests))(), []
+        for slot, test in zip(array, tests):
+            slot.cipher, slot.keylen, slot.beside, slot.ivoffset = test.cipher, test.keylen, int(test.beside is not None), test.beside or 0
+            slot.iv[: len(test.iv)] = test.iv
+            for field in ("data", "aad", "known", "mask"):
+                value = getattr(test, field)
+                kept.append(value)
+                setattr(slot, field, address(value) if value else None)
+            slot.length, slot.aadlen, slot.knownat, slot.knownlen = len(test.data), len(test.aad), test.knownat, len(test.known)
+            slot.printable, slot.span, slot.padded = test.printable, test.span, int(test.padded)
+        valid, hits, tested = (ctypes.c_uint8 * len(tests))(), (OwnHit * most)(), u64()
+        count = self.lib.tlsscan_own(address(buffer) + at, length, base, step, threads, array, len(tests), valid, hits, most, ctypes.byref(tested))
+        self.tested += tested.value
+        refused = [i for i, ok in enumerate(valid) if not ok]
+        if refused:
+            raise ValueError(f"tlsscan refused the tests {refused}, which own.py should have")
+        return [(hit.test, bytes(hit.key[: hit.keylen]), bytes(hit.iv[: tests[hit.test].ivlen]), hit.address) for hit in hits[: min(count, most)]], count
 
     def find(self, buffer, length, base, needles, threads=1, at=0):
         """The addresses where one of the 32 byte needles is, as (address, index of the needle)."""
@@ -444,10 +481,10 @@ USER_TOP = 0x0000800000000000
 
 
 class Process:
-    """The present, writable pages of a Windows process, read through MemProcFS."""
+    """The present, writable pages of a Windows process, read through MemProcFS, or with everything its other pages too."""
 
-    def __init__(self, windows, pid):
-        self.windows, self.pid = windows, pid
+    def __init__(self, windows, pid, everything=False):
+        self.windows, self.pid, self.everything = windows, pid, everything
         vmm = windows.vmm
         vmm.VMMDLL_Map_GetPteU.argtypes = [ctypes.c_void_p, u32, ctypes.c_int, ctypes.POINTER(ctypes.POINTER(PteMap))]
         vmm.VMMDLL_MemReadEx.argtypes = [ctypes.c_void_p, u32, u64, ctypes.c_void_p, u32, ctypes.POINTER(u32), u64]
@@ -473,7 +510,7 @@ class Process:
             found = []
             for i in range(header.cMap):
                 entry = entries[i]
-                if entry.fPage & PAGE_WRITABLE and entry.vaBase < USER_TOP:
+                if (self.everything or entry.fPage & PAGE_WRITABLE) and entry.vaBase < USER_TOP:
                     if found and found[-1][0] + found[-1][1] == entry.vaBase:
                         found[-1] = (found[-1][0], found[-1][1] + entry.cPages * PAGE)
                     else:
@@ -561,12 +598,12 @@ class Physical:
         return None
 
 
-# Run by the agent in a guest that is not Windows: each writable mapping of the process, then the entries of its page map,
-# which name the physical page of each virtual one when read as root.
+# Run by the agent in a guest that is not Windows: each mapping of the process with the rights given, then the entries of its
+# page map, which name the physical page of each virtual one when read as root.
 PAGES = r"""
 pid=$1
 echo "name $(cat /proc/$pid/comm)"
-grep -E '^[0-9a-f]+-[0-9a-f]+ rw' /proc/$pid/maps | while read -r range rest; do
+grep -E "^[0-9a-f]+-[0-9a-f]+ $2" /proc/$pid/maps | while read -r range rest; do
   a=${range%-*}; b=${range#*-}
   echo "range $a $b"
   dd if=/proc/$pid/pagemap bs=8 skip=$((0x$a / 4096)) count=$(((0x$b - 0x$a) / 4096)) 2>/dev/null | od -An -v -tx8
@@ -576,17 +613,18 @@ PRESENT, FRAME = 1 << 63, (1 << 55) - 1
 
 
 class Pagemap:
-    """The present, writable pages of a process of a guest that is not Windows, found in its own /proc through the agent,
-    which the guest sees, and read from the RAM in the program's order, so that a secret split across two pages is whole."""
+    """The present, writable pages of a process of a guest that is not Windows, or with everything those it can read, found in
+    its own /proc through the agent, which the guest sees, and read from the RAM in the program's order, so that a secret
+    split across two pages is whole."""
 
-    def __init__(self, ram, pid):
-        self.ram, self.pid, self.name = ram, pid, "?"
+    def __init__(self, ram, pid, everything=False):
+        self.ram, self.pid, self.name, self.everything = ram, pid, "?", everything
 
     def __str__(self):
         return f"{plain(self.name, 80)}[{self.pid}]"
 
     def regions(self, budget):
-        done = subprocess.run(["guest-exec", "--timeout", "120", "--max", "256M", "/bin/sh", "-c", PAGES, "sh", str(self.pid)],
+        done = subprocess.run(["guest-exec", "--timeout", "120", "--max", "256M", "/bin/sh", "-c", PAGES, "sh", str(self.pid), "r" if self.everything else "rw"],
                               capture_output=True, text=True, errors="replace", check=False)
         if done.returncode != 0 or "range " not in done.stdout:
             raise LookupError(f"the agent read no page map of process {self.pid}: {plain(done.stderr.strip()[-300:], 300)}")
@@ -619,6 +657,40 @@ class Pagemap:
 
 def threads():
     return max(1, min(32, len(os.sched_getaffinity(0))))
+
+
+def program_sources(flow, args, everything=False):
+    """Where a flow's program keeps what it keeps: the whole RAM with --physical, else the processes --process names, or the
+    flow's own as owners saw it or the guest's memory shows it now. Empty when that is not known."""
+    if args.physical:
+        return [Physical()]
+    try:
+        memory = owners.Memory()
+    except (LookupError, OSError):
+        memory = None
+    if memory is None:
+        if not os.environ.get("VM_INSPECT_DIR"):
+            shared.fail("this needs an open session")
+        ram = Physical()
+        if args.process:
+            pids = [int(pid) for pid in args.process if pid.isdigit()]
+            if not pids:
+                shared.fail("in a guest that is not Windows --process takes process numbers")
+        else:
+            pid = owner(flow, owners.Agent().sample())
+            pids = [] if pid is None else [pid]
+        return [Pagemap(ram, pid, everything) for pid in pids]
+    if args.process:
+        pids = []
+        for name in args.process:
+            try:
+                pids.append(memory.windows.pid(name))
+            except LookupError as e:
+                print(f"guest-net: {e}", file=sys.stderr)
+    else:
+        pid = owner(flow, memory.sample())
+        pids = [] if pid is None else [pid]
+    return [Process(memory.windows, pid, everything) for pid in pids]
 
 
 def step_for(args, total):

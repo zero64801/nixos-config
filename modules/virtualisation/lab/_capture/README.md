@@ -54,7 +54,7 @@ Nothing is left out while recording, which costs little and keeps the lookups an
 
 ```
 {"flow": "t12", "proto": "tcp", "guest": "10.0.0.5:51000", "remote": "203.0.113.7:4443", "names": ["c2.example"], "decrypted": false,
- "quic": false, "chunks": [{"time": 1795130000.25, "sent": true, "data": "BASE64"}, ...]}
+ "quic": false, "chunks": [{"time": 1795130000.25, "sent": true, "data": "BASE64"}, ...], "keys": []}
 ```
 
 A chunk is what one packet carried, or inside TLS one record, so a message of the protocol may span several and the decoder joins each direction itself.
@@ -72,6 +72,7 @@ for chunk in flow["chunks"]:
 
 It runs with the readers' Python, inside `lab-box`, which sees the script and nothing else of the user's files.
 Written once for a sample, it reads every capture of it.
+`"keys"` are the keys of the program's own crypto that `keys own` found for the flow, each `{"cipher", "key", "iv", "address", "process"}`, in hex, the IV only where it was read beside the key.
 
 ### Which program
 
@@ -97,6 +98,8 @@ Every reader decrypts with the capture's `keys.log` and a key log given with `--
   The offsets inside `lsass`' structures were found on Windows 10, and where a tag is not where it should be the reader says so and writes no key.
 - `keys scan` finds the secrets of any program in its memory, which the guest does not see, so the program talks to the real server with no proxy, no certificate of this side and nothing in its way.
   See below.
+- `keys own --flow ID --with SCRIPT` finds the key of a program's own crypto in its memory, with the decoder of its protocol.
+  See below too.
 
 ### keys scan
 
@@ -140,6 +143,63 @@ It knows QUIC, versions 1 and 2, whose client random and suite it reads from the
 AES-CCM is what small devices and their libraries often choose, 3DES and RC4 what old ones do.
 Windows' own TLS keeps its secrets in `lsass`, which `keys schannel` reads.
 
+### keys own
+
+A program that encrypts its traffic in a way of its own, over plain TCP or UDP or inside TLS, keeps its key in its memory while it uses it.
+No protocol says how to tell that key, so the decoder of the program's protocol says it, in two answers besides what it prints for `decode`.
+
+Asked with `"ask": "tests"` beside what `decode` gives it, the decoder prints one JSON object of tests, each a piece of a message, the cipher that opens it and what its plaintext holds:
+
+```
+{"tests": [{"cipher": "aes-cbc", "iv": "HEX", "data": "HEX", "padded": true, "known": {"at": 0, "bytes": "7b22"}}]}
+```
+
+- `cipher` is one of `aes-ecb`, `aes-cbc`, `aes-ctr`, `aes-gcm`, `chacha20`, `chacha20-poly1305`, `rc4` and `3des-cbc`.
+- `key` is the length of the key in bytes, or a list of them, by default 16, 24 and 32 for AES, and always given for RC4, from 1 to 64.
+- `data` is the ciphertext from its first byte, whole blocks for ECB, CBC and 3DES, and an AEAD's with its tag of 16 bytes after it.
+- `iv` is what the cipher takes besides the key: 16 bytes for CBC, and for CTR its first counter block, a 12 byte nonce for GCM and ChaCha20-Poly1305, 8 bytes for 3DES, and for ChaCha20 16 bytes, the block counter as 4 bytes little endian and then a 12 byte nonce, as OpenSSL takes it.
+  `{"beside": OFFSET}` reads it from memory instead, that many bytes from the key's first byte, for a program that keeps the two together.
+- `aad` is what an AEAD authenticates and does not encrypt.
+- A test checks at least one thing: `known` bytes at an offset of the plaintext, `at`, under a `mask` where some bits are not known, `printable`, how many of its first `span` bytes are text, `padded`, that the data ends in PKCS#7 padding, or an AEAD's tag, which is enough alone.
+
+Every window of the program's memory is tried as the key of each test, in C, in `tlsscan/tlsscan.c`, on every core.
+On 16 cores that is about 100 million keys a second for AES, 256 MiB in all three sizes of key in a second, while RC4 tries each length apart, about 50 s for 28 lengths over 256 MiB.
+Unlike `keys scan` it takes windows that are text, as keys a program was written with often are, and leaves out only those that look like pointers or small numbers or repeat their bytes.
+It searches the flow's program, as `owners` saw it, or the one `--process` names: its writable pages, where keys made as it runs are, and with `--all` the others too, where keys built into it are, at every offset up to 32 MiB and at every eighth beyond, which `--step` changes.
+`--physical` searches the whole RAM instead.
+
+Asked with `"ask": "judge"` and the `"candidates"` that passed, each `{"index", "test", "cipher", "key", "iv", "places", "found", "process"}`, the decoder prints `{"accepted": [index, ...]}` of those that open the flow.
+It can check each against every message, so a test that lets some windows through by chance costs only time.
+The keys it accepts are printed with where they were, and go to the capture's `own.jsonl`, from where `decode` hands them to the decoder.
+A decoder decrypts with `cryptography`, which the readers' Python has.
+One of a program that sends a 16 byte IV and JSON under AES-CBC:
+
+```
+import base64, json, sys
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+given = json.load(sys.stdin)
+sent = [base64.b64decode(c["data"]) for c in given["chunks"] if c["sent"]]
+
+def opened(key, message):
+    try:
+        decrypting = Cipher(algorithms.AES(key), modes.CBC(message[:16])).decryptor()
+        unpadding = padding.PKCS7(128).unpadder()
+        return json.loads(unpadding.update(decrypting.update(message[16:]) + decrypting.finalize()) + unpadding.finalize())
+    except ValueError:
+        return None
+
+if given.get("ask") == "tests":
+    test = {"cipher": "aes-cbc", "iv": sent[0][:16].hex(), "data": sent[0][16:].hex(), "padded": True, "known": {"bytes": b'{"'.hex()}}
+    print(json.dumps({"tests": [test]}))
+elif given.get("ask") == "judge":
+    print(json.dumps({"accepted": [c["index"] for c in given["candidates"] if all(opened(bytes.fromhex(c["key"]), m) is not None for m in sent)]}))
+else:
+    for message in sent:
+        print(next((said for k in given["keys"] if (said := opened(bytes.fromhex(k["key"]), message)) is not None), None))
+```
+
 ## guest-usb
 
 | Command | What it shows |
@@ -178,6 +238,8 @@ What it lists is what to send from Linux for the same effect.
   The same goes for HTTP/2 after TLS key updates.
   A stream begun before the update, as a long download's, is not read by `http`, since HTTP/3 is read from each stream's start, and `decode --decrypted` hands what came of it after the update to a decoder.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.
+- `keys own` finds a key the program keeps as it is, for the ciphers it knows.
+  A key kept only expanded or turned around, one made anew for each message, a cipher it does not know, as Salsa20, Blowfish or one of the program's own, and a counter or nonce the messages do not carry stay for `guest-dbg` to read where the program uses them, as `--log bcrypt` does for CNG.
 - Isochronous transfers, as of sound and cameras, are shown as transfers without their packets taken apart.
 
 ## Tests
@@ -196,6 +258,7 @@ nix build --no-link -L .#tests.lab.h3
 nix build --no-link -L .#tests.lab.websocket
 nix build --no-link -L .#tests.lab.grpc
 nix build --no-link -L .#tests.lab.scan-run
+nix build --no-link -L .#tests.lab.own-keys
 ```
 
 The first records a guest that looks up a name, fetches a page, fetches pages over HTTP/2 with TLS while curl writes its keys, one of them compressed, sends JSON and a form, holds a connection open and sends a request meant to steer a terminal.
@@ -216,4 +279,7 @@ The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a fl
 The first also exports its requests as HAR, and the tenth those of HTTP/3.
 The twelfth decodes gRPC's messages by their wire format and by name with protoc, shows a call of HTTP/3 with a gzipped message and its status, reads gRPC-Web's text and trailers, and takes a hostile guest's lengths, wire types and nesting.
 The thirteenth runs `keys scan` whole on the capture of a QUIC download that lost every fifth of the server's datagrams and then updated its keys, with made up memory in place of the guest's RAM that holds only the secrets after the update, and has it note both, the server's from the numbers the client acknowledged, and guest-net read what was asked after the update with them.
+The fourteenth hides the key of each cipher `keys own` knows in made up memory, with each check a decoder sets, an IV beside its key, a key that is text and one at an odd place, and has the search find each where it was put and not a key one bit off, and has tests that check nothing or do not fit refused.
+It then runs `keys own` whole on the capture of a client that sends under AES-CBC and a server that answers under ChaCha20-Poly1305, with a decoder whose test of AES-CBC is the padding alone, which some 200 windows pass, so that only judging keeps the two keys, and has `decode` hand them to the decoder, which reads every message both ways.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
+`keys own` found the key of AES-256-CBC that a PowerShell program kept in .NET and that of RC4 it wrote out itself, with a key that is text, there too.

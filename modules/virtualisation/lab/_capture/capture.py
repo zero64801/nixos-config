@@ -86,6 +86,15 @@ class Capture:
         except OSError:
             return
 
+    def own_keys(self, flow):
+        """The keys of a program's own crypto that keys own found for a flow, once each, as decode hands them to a decoder."""
+        found = {}
+        for line in self.lines("own.jsonl"):
+            if line.get("flow") == flow:
+                entry = {field: str(line.get(field, "")) for field in ("cipher", "key", "iv", "address", "process")}
+                found.setdefault((entry["cipher"], entry["key"], entry["iv"]), entry)
+        return list(found.values())
+
     def file(self, name):
         path = os.path.join(self.folder, name)
         if not os.path.exists(path):
@@ -276,6 +285,16 @@ def tell(request, needed=True):
         WARNED.add(request.get("kind"))
         print(f"guest-{SETTINGS.tool}: the session keeps no {request.get('kind')} ({plain(error, 200)}), so they are left out", file=sys.stderr)
     return reply
+
+
+def run_decoder(script, given, arguments=()):
+    """Runs a decoder of a program's own protocol, a Python script, inside lab-box with what it is given as JSON on its standard
+    input, and gives back the finished process."""
+    script = os.path.realpath(script)
+    if not os.path.isfile(script):
+        fail(f"there is no decoder {script}")
+    command = [SETTINGS.box, "--ro", script, "--", sys.executable, "-I", "-B", script, *arguments]
+    return subprocess.run(command, input=json.dumps(given).encode(), capture_output=True, check=False)
 
 
 def timed(parser):
