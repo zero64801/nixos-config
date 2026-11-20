@@ -27,6 +27,22 @@ class ModuleMap(ctypes.Structure):
                 ("cbMultiText", ctypes.c_uint32), ("cMap", ctypes.c_uint32)]
 
 
+class PteEntry(ctypes.Structure):
+    _fields_ = [("vaBase", ctypes.c_uint64), ("cPages", ctypes.c_uint64), ("fPage", ctypes.c_uint64), ("fWoW64", ctypes.c_uint32),
+                ("_FutureUse1", ctypes.c_uint32), ("uszText", ctypes.c_char_p), ("_Reserved1", ctypes.c_uint32), ("cSoftware", ctypes.c_uint32)]
+
+
+class PteMap(ctypes.Structure):
+    _fields_ = [("dwVersion", ctypes.c_uint32), ("_Reserved1", ctypes.c_uint32 * 5), ("pbMultiText", ctypes.c_void_p),
+                ("cbMultiText", ctypes.c_uint32), ("cMap", ctypes.c_uint32)]
+
+
+# From vmmdll.h: the page table map's version, the refresh of one process, by its number in the low half, and of the page
+# tables, without which MemProcFS keeps the maps it made first and misses what was mapped since, and reads that go to the
+# memory itself and give zeros for what is not there instead of reading the guest's page file.
+PTE_VERSION, REFRESH_PROCESS, REFRESH_TLB, READ = 2, 0x2002000300000000, 0x2001080000000000, 0x0001 | 0x0002 | 0x0010
+
+
 class Windows:
     def __init__(self, library, device):
         self.vmm = vmm = ctypes.CDLL(library)
@@ -39,6 +55,10 @@ class Windows:
         vmm.VMMDLL_PidGetFromName.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32)]
         vmm.VMMDLL_ProcessGetInformation.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
         vmm.VMMDLL_Map_GetModuleU.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]
+        vmm.VMMDLL_Map_GetPteU.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.POINTER(ctypes.POINTER(PteMap))]
+        vmm.VMMDLL_MemReadEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_uint32,
+                                         ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint64]
+        vmm.VMMDLL_ConfigSet.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64]
         arguments = [b"", b"-device", device.encode(), b"-disable-python"]
         # Symbols come through the lab's gateway, and without it MemProcFS would wait on a network there is none of.
         if not os.environ.get("PDBCRUST_SYMBOL_SOCKET"):
@@ -120,6 +140,31 @@ class Windows:
             self.vmm.VMMDLL_MemFree(pointer)
         self.module_lists[pid] = out
         return out
+
+    def read(self, pid, address, length):
+        """length bytes of a process's memory, with zeros for its pages that are not there."""
+        buffer, done = ctypes.create_string_buffer(length), ctypes.c_uint32()
+        self.vmm.VMMDLL_MemReadEx(self.handle, pid, address, buffer, length, ctypes.byref(done), READ)
+        return buffer.raw if done.value else None
+
+    def ranges(self, pid):
+        """(start, size) of each stretch of a process's memory that its page tables map alike."""
+        pointer = ctypes.POINTER(PteMap)()
+        out = []
+        if self.vmm.VMMDLL_Map_GetPteU(self.handle, pid, 0, ctypes.byref(pointer)):
+            header = pointer.contents
+            if header.dwVersion != PTE_VERSION:
+                raise LookupError(f"the page table map has version {header.dwVersion}, not the one this was written for")
+            entries = ctypes.cast(ctypes.addressof(header) + ctypes.sizeof(PteMap), ctypes.POINTER(PteEntry))
+            out = [(entries[i].vaBase, entries[i].cPages * 4096) for i in range(header.cMap)]
+            self.vmm.VMMDLL_MemFree(pointer)
+        return out
+
+    def refresh(self, pid):
+        """Makes MemProcFS look at a process again, for what it loaded since."""
+        self.vmm.VMMDLL_ConfigSet(self.handle, REFRESH_TLB, 1)
+        self.vmm.VMMDLL_ConfigSet(self.handle, REFRESH_PROCESS | pid, 1)
+        self.module_lists.pop(pid, None)
 
     def module(self, pid, name):
         """(pid that has it, base, size, name) of a module of the process, or of the kernel."""

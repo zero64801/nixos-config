@@ -59,6 +59,7 @@ A tool's own trouble is one line that starts with its name and exit status 1.
 | `guest-ps` | The processes of a Windows guest read from its memory, with a note on any that the guest itself does not list. |
 | `guest-dbg PROCESS --break PLACE` | Stops one process at a place, from outside, so the guest sees no debugger. `--watch` and `--access` stop on a write or any access, `--do` and `--on-return` run gdb commands there. |
 | `guest-dbg PROCESS --log PRESET` | Writes the buffers a process hands to a function, or gets back from it, to `./out/NAME/` with an index, and lets it go on: what it sends and receives, or what it encrypts and decrypts, before and after its own crypto. Presets: `winsock` (`send`, `recv`), `wsasend`, `wsarecv`, `bcrypt` (CNG, which every .NET program on Windows uses, keys included), `sspi` (Windows' TLS), `winhttp`, `openssl=MODULE`. `--log PLACE,BUFFER,LENGTH` for any other function. |
+| `guest-dbg PROCESS --log 'dotnet:TYPE::METHOD,clrstring:arg1,-'` | The same for a method of a .NET program, by its name: guest-dbg waits for the JIT to compile it and stops at its code, as `--break` does too. `clrstring:VALUE` writes a .NET string, `clrbytes:VALUE` a byte array. |
 | `guest-gdb` | gdb on QEMU's debug stub. The whole guest stops while it is attached, so ask the user first. |
 | `radare2`, `gdb` | Static work on dumped files. |
 | `ilspycmd` | Decompiles a .NET assembly pulled or dumped from the guest to C#, inside `lab-box`, which sees the folder it starts in and `./out`: `ilspycmd FILE.dll` for all of it, `-t Namespace.Type` for one type, `-l c` to list classes, `-p -o out/NAME` for a project to read. |
@@ -77,6 +78,15 @@ A program that guards itself against debuggers is worked on from outside:
   A function logged at its return takes one more debug register while it runs, and a second call that comes meanwhile loses its return, which the end says.
   Overlapped `WSARecv` fills its buffer after it returned, so its return has nothing yet.
   `--on-return 'p/x $rax'` shows what a function gave back, and `--do 'set $rax = 0'` changes it.
+- A method of .NET is `dotnet:[ASSEMBLY!]NAMESPACE.TYPE::METHOD[/PARAMETERS]`, a nested type after its outer one and a `+`, as `ilspycmd` names them.
+  ASSEMBLY tells apart two of the same name, and `/2` the overload that takes two parameters.
+  It is found in the assemblies of the process's memory, those loaded from bytes among them, so it can be one a loader decrypted.
+  Its stop comes once the JIT compiles it, which is at its first call, and moves along when the runtime compiles it again as hot.
+  So start guest-dbg before the program calls it: start the program with `guest-exec --job --suspended`, or name a method it has not run yet.
+  A method it compiled before guest-dbg began is not stopped at in .NET Framework, and in .NET only once it is hot.
+  Following the JIT takes two debug registers, so it is one method at a time.
+  Its arguments are those of Windows' x64 convention, an instance method's object being `arg1`, as `dotnet:Lab.Client::Send,clrbytes:arg2,-` or `clrstring:ret@return` for what it returns.
+  .NET Framework's own assemblies are precompiled, which the JIT never sees, so log those through the presets, as `bcrypt`.
 
 ### Screen and input
 

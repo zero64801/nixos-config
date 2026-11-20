@@ -1,6 +1,7 @@
 """guest-dbg --log on made up registers and memory: the presets' buffers in Windows' x64 calling convention, from registers
-and from the stack, at the entry and at the return, Winsock's WSABUF arrays and SSPI's SecBuffers, lengths that are
-error codes, buffers cut at the limit, and the files written for them. Started with the folder of guest-dbg's code."""
+and from the stack, at the entry and at the return, Winsock's WSABUF arrays and SSPI's SecBuffers, .NET's strings and byte
+arrays, lengths that are error codes, buffers cut at the limit, and the files written for them. Started with the folder of
+guest-dbg's code."""
 import json
 import os
 import struct
@@ -50,6 +51,9 @@ memory = Memory({
     0x7000: b"secret",
     # At a function's entry the stack holds the return address, the home space of four arguments, then the fifth and on.
     stack: qwords(0x7FF600001234, 0, 0, 0, 0, 0x2000, 16, 0x2800, 64, 0x2900),
+    # A string of .NET: its type, its length in characters, its UTF-16. A byte array: its type, its length padded to eight, its bytes.
+    0x9000: qwords(0x7FF8EA0A0000) + struct.pack("<I", 6) + "héllo!".encode("utf-16-le"),
+    0x9100: qwords(0x7FF8EA0B0000) + struct.pack("<II", 3, 0) + bytes([1, 2, 3]),
 })
 entry = {"rcx": 0x10, "rdx": 0x1000, "r8": 5, "r9": 0x3800, "rsp": stack, "rax": 0, "rsi": 0x1000, "rdi": 0}
 
@@ -85,7 +89,8 @@ linux = logs.Spec("0xffffffff81234560,rsi,ret@return")
 assert linux.at_return and logs.Reader(memory, entry, dict(entry, rsi=0, rax=4)).buffer(linux, 1 << 20) == (b"hell", ""), \
     "a register at the return is the one the entry had"
 
-for wrong, why in (("ws2_32!send,rdx", "PLACE,BUFFER,LENGTH"), ("ws2_32!send,rdx,-", "know their own length"), ("x,rdx,$(reboot)", "not a value")):
+for wrong, why in (("ws2_32!send,rdx", "PLACE,BUFFER,LENGTH"), ("ws2_32!send,rdx,-", "know their own length"), ("x,rdx,$(reboot)", "not a value"),
+                   ("x,clrstring:$(reboot),-", "not a value")):
     try:
         logs.Spec(wrong)
         raise AssertionError(f"{wrong} was taken")
@@ -98,6 +103,14 @@ for wrong in ("openssl", "nothing,at,all,here"):
     except ValueError:
         pass
 
+managed = dict(entry, rcx=0x9000, rdx=0x9100, r8=0)
+assert logs.Reader(memory, managed, managed).buffer(logs.Spec("dotnet:Lab.Probe::Run,clrstring:arg1,-"), 1 << 20) == ("héllo!".encode(), ""), \
+    "a .NET string comes as UTF-8"
+assert logs.Reader(memory, managed, managed).buffer(logs.Spec("dotnet:Lab.Probe::Run,clrbytes:arg2,-"), 1 << 20) == (bytes([1, 2, 3]), "")
+assert logs.Reader(memory, managed, managed).buffer(logs.Spec("dotnet:Lab.Probe::Run,clrbytes:arg3,-"), 1 << 20) == (b"", "null")
+returned = logs.Spec("dotnet:Lab.Probe::Run,clrstring:ret,-")
+assert returned.at_return and logs.Reader(memory, entry, dict(entry, rax=0x9000)).buffer(returned, 4) == (b"h\xc3\xa9", "cut at 4 bytes"), \
+    "a returned string is taken at the return, and cut by its UTF-16 bytes"
 assert logs.preview(b"GET / HTTP/1.1\r\n") == "GET / HTTP/1.1.." and logs.preview(bytes(range(4))) == "00 01 02 03"
 
 os.chdir(tempfile.mkdtemp())

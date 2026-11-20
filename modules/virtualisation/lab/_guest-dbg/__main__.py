@@ -1,7 +1,8 @@
 """guest-dbg: breakpoints and watchpoints in one process of a guest, set from outside through QEMU's debug stub.
 
 Nothing is attached to a process in the guest and nothing is written into its memory. The CPU's debug registers stop
-the whole guest at an address, and a stop in any other process than the one asked for is let go at once.
+the whole guest at an address, and a stop in any other process than the one asked for is let go at once. A method of
+.NET has its stop set once the JIT has compiled it, as dotnet.py says.
 """
 import argparse
 import collections
@@ -11,6 +12,7 @@ import signal
 import sys
 import time
 
+import dotnet
 import logs
 import mi
 from windows import Windows
@@ -52,7 +54,9 @@ def parse_arguments(words):
     parser = argparse.ArgumentParser(
         prog="guest-dbg", description=__doc__.split("\n\n")[1].replace("\n", " "),
         epilog="A place is 0xADDRESS, MODULE, MODULE!NAME or any of them with +OFFSET. NAME is an export, or a symbol where the module has some, "
-               "and nt names the kernel. A guest has four debug registers, so four places at most, a return taking one. "
+               "and nt names the kernel. dotnet:[ASSEMBLY!]NAMESPACE.TYPE::METHOD[/PARAMETERS] is a method of .NET, which is stopped at "
+               "once the JIT has compiled it, and following the JIT takes two more debug registers. "
+               "A guest has four debug registers, so four places at most, a return taking one. "
                "Every stop halts the whole guest for a moment, and a place that other processes run through often slows the guest down.")
     parser.add_argument("process", help="a process name or number, cr3=ROOT for a page table root, or - for every process")
     parser.add_argument("--break", dest="breaks", action="append", default=[], metavar="PLACE", help="stop when this code runs")
@@ -90,6 +94,13 @@ class Debugger:
 
     def word(self, address):
         return int.from_bytes(self.read(address, 8), "little")
+
+    def peek(self, address, length):
+        """What read() gives, or nothing where the process has no memory."""
+        try:
+            return self.read(address, length)
+        except mi.Failed:
+            return b""
 
     def read(self, address, length):
         out = bytearray()
@@ -130,7 +141,11 @@ def main():
     if args.hits is None:
         args.hits = 0 if specs else 1
     returns = bool(args.on_return) or any(spec.at_return for spec in specs)
-    used = len(args.breaks) + len(args.watch) + len(args.access) + len(specs) + (1 if returns else 0)
+    managed = [("break", spec) for spec in args.breaks if spec.startswith(dotnet.PREFIX)] + \
+        [("log", spec.place) for spec in specs if spec.place.startswith(dotnet.PREFIX)]
+    if len(managed) > 1:
+        fail("one method of .NET at a time, since following the JIT takes two of the four debug registers")
+    used = len(args.breaks) + len(args.watch) + len(args.access) + len(specs) + (1 if returns else 0) + (2 if managed else 0)
     if not used:
         fail("there is nothing to stop at: give --break, --watch, --access or --log")
     if used > 4:
@@ -157,6 +172,8 @@ def main():
             places.append((kind, head, int(size)))
 
     raw = args.process == "-" or args.process.startswith("cr3=")
+    if managed and raw:
+        fail("a method of .NET is one process's, so name the process")
     guest = None
     if not raw or not all(numeric(spec.rsplit("+", 1)[0]) for _, spec, _ in places):
         try:
@@ -177,6 +194,8 @@ def main():
             label = "every process"
         resolved = []
         for kind, spec, size in places:
+            if spec.startswith(dotnet.PREFIX):
+                continue
             address = place(spec, pid, guest)
             if address % size:
                 fail(f"{spec} at {address:#x} is not aligned to its size of {size}, which the debug registers need")
@@ -186,6 +205,19 @@ def main():
     print(f"guest-dbg: {label}", file=sys.stderr)
     for kind, spec, size, address in resolved:
         print(f"guest-dbg: {kind} {spec} at {address:#x}" + (f", {size} bytes" if kind not in ("break", "log") else ""), file=sys.stderr)
+    watch = None
+    if managed:
+        try:
+            watch = dotnet.Watch(None, guest, pid, dotnet.Place(managed[0][1]))
+            bodies = watch.look()
+        except (ValueError, LookupError) as e:
+            fail(str(e))
+        for found in bodies:
+            print(f"guest-dbg: {managed[0][0]} {found.label}, its IL at {found.address:#x}, {len(found.il)} bytes"
+                  + (", precompiled as ReadyToRun, which the JIT compiles again only once it is hot" if found.precompiled else ""), file=sys.stderr)
+        if not bodies:
+            print(f"guest-dbg: no assembly the process has loaded has {managed[0][1][len(dotnet.PREFIX):]} yet, so this waits for one that does",
+                  file=sys.stderr)
 
     def stop_now(*_):
         raise KeyboardInterrupt
@@ -193,6 +225,8 @@ def main():
     signal.signal(signal.SIGTERM, stop_now)
     gdb = mi.Gdb(program)
     debugger = Debugger(gdb, guest, pid, roots)
+    if watch:
+        watch.debugger = debugger
     hits, foreign, pending, ended, missed = 0, 0, None, "timeout", 0
 
     def record(spec, reader, thread, where):
@@ -228,6 +262,11 @@ def main():
         for entry in table["BreakpointTable"]["body"]:
             if entry["type"] not in OURS:
                 fail(f"gdb would make {numbers.get(entry['number'], ('', '?'))[1]} a {entry['type']}, which steps through every instruction of the guest")
+        if watch:
+            try:
+                print(f"guest-dbg: {watch.arm()}", file=sys.stderr)
+            except LookupError as e:
+                fail(str(e))
 
         deadline = time.monotonic() + args.timeout
         debugger.go()
@@ -239,12 +278,26 @@ def main():
             number = stop.get("bkptno") or (stop.get("wpt") or stop.get("hw-awpt") or stop.get("hw-rwpt") or {}).get("number")
             regs = debugger.registers(GENERAL)
             mine = not roots or (regs["cr3"] or 0) & ROOT in roots
-            if not mine or (number not in numbers and (not pending or number != pending[0])):
+            ours = number in numbers or (pending and number == pending[0]) or (watch and watch.owns(number))
+            if not mine or not ours:
                 foreign += 1
                 elsewhere[(regs["cr3"] or 0) & ROOT] += 1
                 if foreign >= args.busy:
                     ended = "busy"
                     break
+                debugger.go()
+                continue
+            if watch and watch.owns(number):
+                codes, said = watch.stop(number, regs)
+                if said:
+                    print(f"guest-dbg: {said}", file=sys.stderr)
+                for code in codes:
+                    # The newest code of a method is the one its callers go to, once the runtime has switched them over.
+                    for old in [n for n, (_, s) in numbers.items() if s == managed[0][1]]:
+                        gdb.run(f"-break-delete {old}")
+                        del numbers[old]
+                    values, _ = gdb.run(f"-break-insert -h *{code:#x}")
+                    numbers[values["bkpt"]["number"]] = managed[0]
                 debugger.go()
                 continue
             if pending and number == pending[0]:

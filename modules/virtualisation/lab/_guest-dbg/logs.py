@@ -6,7 +6,9 @@ after it is received or decrypted. Only the guest's memory is read, nothing in i
 A value is a register (rcx, r8, ...), argN in Windows' x64 calling convention (the first four in rcx, rdx, r8 and r9,
 the rest on the stack at the entry), ret for what the function returned, or a number, with * in front to read memory
 there, :4 or :8 for its size, and @return to take it when the function returns. A buffer can also be wsabuf:BUFFERS:COUNT,
-the WSABUF array of Winsock, or secbuffers:DESCRIPTOR, the data buffers of an SSPI SecBufferDesc.
+the WSABUF array of Winsock, secbuffers:DESCRIPTOR, the data buffers of an SSPI SecBufferDesc, clrstring:VALUE, a string
+of .NET, written as UTF-8, or clrbytes:VALUE, a byte array of .NET. A method of .NET takes its arguments as Windows' x64
+convention has them, an instance method its object as arg1.
 """
 import json
 import os
@@ -28,6 +30,11 @@ PRESETS = {
 }
 VALUE = re.compile(r"(\*)?(r[a-z0-9]+|e[a-z]{2}|arg\d+|ret|0x[0-9a-fA-F]+|\d+)(?::(4|8))?")
 DATA = 1
+# Buffers that say their own length: Winsock's, SSPI's, and .NET's objects.
+SIZED = ("wsabuf:", "secbuffers:", "clrstring:", "clrbytes:")
+# A .NET object on x64 begins with its type's pointer. A string's length in characters follows, then its UTF-16, and an
+# array's length is padded to eight bytes before its elements.
+STRING_LENGTH, STRING_CHARACTERS, ARRAY_LENGTH, ARRAY_ELEMENTS = 8, 12, 8, 16
 
 
 class Spec:
@@ -38,14 +45,17 @@ class Spec:
         if len(parts) != 3:
             raise ValueError(f"{text}: a log is PLACE,BUFFER,LENGTH")
         self.place, self.buffer, self.length = (part.strip() for part in parts)
-        self.at_return = self.buffer.endswith("@return") or self.length.endswith("@return") or "ret" in (self.buffer, self.length.split(":")[0])
+        managed = self.buffer.removesuffix("@return").split(":", 1)[1] if self.buffer.startswith(("clrstring:", "clrbytes:")) else None
+        self.at_return = self.buffer.endswith("@return") or self.length.endswith("@return") or "ret" in (self.buffer, self.length.split(":")[0], managed)
         self.buffer, self.length = self.buffer.removesuffix("@return"), self.length.removesuffix("@return")
         self.label = self.place.split("!")[-1]
         for part in (self.buffer, self.length):
-            if part != "-" and not part.startswith(("wsabuf:", "secbuffers:")) and not VALUE.fullmatch(part):
+            if part != "-" and not part.startswith(SIZED) and not VALUE.fullmatch(part):
                 raise ValueError(f"{text}: {part} is not a value this reads")
-        if self.length == "-" and not self.buffer.startswith(("wsabuf:", "secbuffers:")):
-            raise ValueError(f"{text}: only wsabuf and secbuffers know their own length")
+        if managed is not None and not VALUE.fullmatch(managed):
+            raise ValueError(f"{text}: {managed} is not a value this reads")
+        if self.length == "-" and not self.buffer.startswith(SIZED):
+            raise ValueError(f"{text}: only wsabuf, secbuffers, clrstring and clrbytes know their own length")
 
 
 def expand(words):
@@ -109,6 +119,15 @@ class Reader:
                 entry = self.debugger.read(array + 16 * n, 16)
                 if int.from_bytes(entry[4:8], "little") & 0x0FFFFFFF == DATA:
                     pieces.append((int.from_bytes(entry[8:16], "little"), int.from_bytes(entry[0:4], "little")))
+        elif kind in ("clrstring", "clrbytes"):
+            address = self.value(spec.buffer.split(":", 1)[1])
+            if not address:
+                return b"", "null"
+            if kind == "clrstring":
+                count = int.from_bytes(self.debugger.read(address + STRING_LENGTH, 4), "little")
+                pieces = [(address + STRING_CHARACTERS, 2 * count)]
+            else:
+                pieces = [(address + ARRAY_ELEMENTS, int.from_bytes(self.debugger.read(address + ARRAY_LENGTH, 4), "little"))]
         else:
             pieces = [(self.value(spec.buffer), self.value(spec.length))]
         if spec.length != "-" and kind == "wsabuf":
@@ -127,6 +146,8 @@ class Reader:
                 size, note = max(0, limit - len(data)), f"cut at {limit} bytes"
             if size:
                 data += self.debugger.read(address, size)
+        if kind == "clrstring":
+            return bytes(data[: len(data) & ~1]).decode("utf-16-le", "replace").encode("utf-8"), note
         return bytes(data), note
 
 
