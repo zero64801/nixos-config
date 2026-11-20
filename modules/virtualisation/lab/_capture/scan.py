@@ -496,6 +496,15 @@ def owner(flow, live):
     return entry["pid"] if entry else None
 
 
+def by_program(picked, named):
+    """The flows by the program to search: its own when owners knew it, every one --process named otherwise."""
+    by = {}
+    for s in picked:
+        for pid in [s.flow["pid"]] if s.flow.get("pid") is not None else named:
+            by.setdefault(pid, []).append(s)
+    return by
+
+
 def linux(picked, args):
     """The flows of a guest that is not Windows by the process each belongs to, as the guest's agent names them, each
     process read through its page map."""
@@ -503,8 +512,9 @@ def linux(picked, args):
         shared.fail("this needs an open session")
     ram = Physical()
     if args.process:
-        return [(Pagemap(ram, int(pid)), picked) for pid in args.process if pid.isdigit()] or shared.fail(
-            "in a guest that is not Windows --process takes process numbers")
+        named = [int(pid) for pid in args.process if pid.isdigit()]
+        return [(Pagemap(ram, pid), group) for pid, group in by_program(picked, named).items()] or shared.fail(
+            "in a guest that is not Windows --process takes process numbers for flows whose program is not known")
     live, by = owners.Agent().sample(), {}
     for s in picked:
         by.setdefault(owner(s.flow, live), []).append(s)
@@ -513,10 +523,10 @@ def linux(picked, args):
     return [(Pagemap(ram, pid), group) for pid, group in by.items()]
 
 
-def run(capture, args, flows):
+def run(capture, args, flows, chosen):
     scanner = Scanner(shared.SETTINGS.scan)
     if args.follow:
-        Follower(capture, args, scanner).run()
+        Follower(capture, args, scanner, chosen).run()
         return
     picked = sessions(capture, args, flows)
     for s in [s for s in picked if not scanner.supported(s)]:
@@ -535,8 +545,13 @@ def run(capture, args, flows):
         if memory is None:
             groups = linux(picked, args)
         elif args.process:
-            pids = [memory.windows.pid(name) for name in args.process]
-            groups = [(Process(memory.windows, pid), picked) for pid in pids]
+            named = []
+            for name in args.process:
+                try:
+                    named.append(memory.windows.pid(name))
+                except LookupError as e:
+                    print(f"guest-net: {e}", file=sys.stderr)
+            groups = [(Process(memory.windows, pid), group) for pid, group in by_program(picked, named).items()]
         else:
             live, by = memory.sample(), {}
             for s in picked:
@@ -652,12 +667,16 @@ class Follower:
 
     PATIENCE = 30
 
-    def __init__(self, capture, args, scanner):
-        self.capture, self.args, self.scanner = capture, args, scanner
+    def __init__(self, capture, args, scanner, chosen):
+        self.capture, self.args, self.scanner, self.chosen = capture, args, scanner, chosen
         self.flows, self.pending, self.handled, self.ready, self.later = {}, {}, set(), [], []
         # The process whose connection was seen last, and the flows put to it without a socket of their own.
         self.recent, self.guessed = None, set()
+        # The processes whose parents the capture has been told of, for --children of the readers.
+        self.listed = set()
         self.memory = self.physical = self.pause = None
+        if args.physical and chosen.processes:
+            shared.fail("--process needs each program's own memory, which --physical does not read by program")
         if args.physical:
             self.physical = Physical()
         else:
@@ -736,6 +755,8 @@ class Follower:
         if found and client and (found.version != 0x0304 or (flow.before is not None and client > flow.before)):
             self.handled.add(key)
             flow.trigger = packet.time
+            if not self.chosen.host([found.name] if found.name else [], flow.remote.rsplit(":", 1)[0]):
+                return
             if self.scanner.supported(found):
                 self.ready.append((key, found))
             else:
@@ -763,6 +784,8 @@ class Follower:
         if found and any(side == 0 and kind == tlsrecords.SHORT_PACKET for side, kind, _, _ in found.records):
             self.handled.add(key)
             flow.trigger = packet.time
+            if not self.chosen.host([found.name] if found.name else [], flow.remote.rsplit(":", 1)[0]):
+                return
             if self.scanner.supported(found):
                 self.ready.append((key, found))
             else:
@@ -843,12 +866,29 @@ class Follower:
             windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_PROCESSES, 1)
             live = self.memory.sample()
         entries = {}
+
+        def parent_of(child):
+            try:
+                parent = windows.information(child)[1]
+                return parent, windows.information(parent)[0]
+            except LookupError:
+                return None, ""
+
+        def wanted(pid, name=None):
+            if name is None:
+                try:
+                    name = windows.information(pid)[0]
+                except LookupError:
+                    name = ""
+            return self.chosen.covers(pid, name, parent_of)
+
         for stream, found in batch:
             entry = entries[stream] = socket_of(live, self.flows[stream])
             if entry is None and self.flows[stream].proto == "udp" and self.recent is not None:
                 # A QUIC connection of a browser is its network process's like its others, which its client random proves.
-                self.guessed.add(stream)
-                by.setdefault(self.recent, []).append((stream, found))
+                if wanted(self.recent):
+                    self.guessed.add(stream)
+                    by.setdefault(self.recent, []).append((stream, found))
                 continue
             if entry is None:
                 late = (time.time() - self.flows[stream].trigger) * 1000
@@ -857,13 +897,19 @@ class Follower:
                 print(f"{self.flows[stream]} {plain(found.name or '', 60)}: closed before its program was seen, {late:.0f} ms after its handshake"
                       f"{', its port has ' + '; '.join(near) if near else ''}", file=sys.stderr)
                 continue
-            by.setdefault(entry["pid"], []).append((stream, found))
+            # A program that was not asked for still counts as the last one seen, for the QUIC of a browser.
+            self.recent = entry["pid"]
+            if wanted(entry["pid"], entry["process"]):
+                by.setdefault(entry["pid"], []).append((stream, found))
         if not by:
             return []
         seen = [entries[s] for group in by.values() for s, _ in group if entries[s]]
         if seen:
-            self.recent = seen[-1]["pid"]
             tell({"do": "note", "kind": "owners", "entries": seen})
+        started = [p for p in owners.lineage(windows, list(by)) if (p["pid"], p["ppid"], p["process"]) not in self.listed]
+        if started:
+            tell({"do": "note", "kind": "processes", "entries": started})
+            self.listed |= {(p["pid"], p["ppid"], p["process"]) for p in started}
         windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_TLB, 1)
         groups = []
         for pid, members in by.items():

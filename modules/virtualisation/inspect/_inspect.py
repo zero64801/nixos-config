@@ -125,8 +125,9 @@ def packet(interface, stamp, data, length, flags=None):
 # Lines of a TLS key log, as Wireshark reads them, and nothing else.
 KEYLOG = re.compile(r"(?:CLIENT_RANDOM|RSA|CLIENT_EARLY_TRAFFIC_SECRET|CLIENT_HANDSHAKE_TRAFFIC_SECRET|SERVER_HANDSHAKE_TRAFFIC_SECRET|"
                     r"CLIENT_TRAFFIC_SECRET_0|SERVER_TRAFFIC_SECRET_0|EARLY_EXPORTER_SECRET|EXPORTER_SECRET) [0-9a-fA-F]{16,128} [0-9a-fA-F]{32,256}")
-# What a tool may say about a connection, and how long each part may be.
+# What a tool may say about a connection or a process, and how long each part may be.
 OWNER_FIELDS, NOTED = ("proto", "local", "remote", "pid", "process", "state", "seen", "source"), 4096
+PROCESS_FIELDS = ("pid", "ppid", "process", "source")
 
 
 class Capture:
@@ -135,7 +136,8 @@ class Capture:
     net.pcapng holds a block for each network device and the frames, seen from the guest: outbound is what it sent.
     usb.pcapng holds the records of the USB monitor for the devices the guest has. capture.json says what was recorded
     and how it ended, notes.jsonl holds the moments tools marked, owners.jsonl which program a connection was
-    found to be of, and keys.log the TLS secrets that tools found, for whatever reads the capture to decrypt with.
+    found to be of, processes.jsonl which program started which, and keys.log the TLS secrets that tools found, for
+    whatever reads the capture to decrypt with.
     """
 
     def __init__(self, domain, recorded, limit):
@@ -211,7 +213,7 @@ class Capture:
                     self.describe()
 
     def note(self, request):
-        """What a tool adds to the capture: a mark, the owners of connections or TLS secrets. Its answer, as for any request."""
+        """What a tool adds to the capture: a mark, the owners of connections, processes or TLS secrets. Its answer, as for any request."""
         stamp = time.time_ns()
         if request.get("do") == "mark":
             label = request.get("label")
@@ -229,7 +231,12 @@ class Capture:
             if not isinstance(entries, list) or len(entries) > NOTED or not all(owner(e) for e in entries):
                 return {"error": f"owners are up to {NOTED} connections, each with {', '.join(OWNER_FIELDS)} as text or whole numbers"}
             return self.append("owners.jsonl", [json.dumps({"time": stamp, **e}) for e in entries])
-        return {"error": "a note is of keys or owners"}
+        if kind == "processes":
+            entries = request.get("entries")
+            if not isinstance(entries, list) or len(entries) > NOTED or not all(owner(e, PROCESS_FIELDS) for e in entries):
+                return {"error": f"processes are up to {NOTED}, each with {', '.join(PROCESS_FIELDS)} as text or whole numbers"}
+            return self.append("processes.jsonl", [json.dumps({"time": stamp, **e}) for e in entries])
+        return {"error": "a note is of keys, owners or processes"}
 
     def append(self, name, lines):
         with self.lock, open(os.open(os.path.join(self.folder, name), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as f:
@@ -243,8 +250,8 @@ class Capture:
         self.describe(ended)
 
 
-def owner(entry):
-    return (isinstance(entry, dict) and set(entry) <= set(OWNER_FIELDS)
+def owner(entry, fields=OWNER_FIELDS):
+    return (isinstance(entry, dict) and set(entry) <= set(fields)
             and all((isinstance(v, str) and len(v) <= 256 and not STEERING.search(v)) or (type(v) is int and 0 <= v < 2 ** 32)
                     for v in entry.values()))
 

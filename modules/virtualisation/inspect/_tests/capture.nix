@@ -126,12 +126,16 @@ import ./fixture.nix { inherit host; } {
             note + shlex.quote(json.dumps({"do": "note", "kind": "owners", "entries": [{"proto": "tcp", "pid": 7, "process": "ok"}]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "owners", "entries": [{"process": "\x1b[2Jbad"}]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "owners", "entries": [{"command": "x"}]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "ppid": 7, "process": "child"}]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "ppid": -1, "process": "child"}]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "proto": "tcp"}]})),
         ]))
         print(out)
         folder = capture_of(out)
-        assert out.count("refused:") == 3 and out.count("'folder':") == 2, out
+        assert out.count("refused:") == 5 and out.count("'folder':") == 3, out
         assert machine.succeed(f"cat {folder}/keys.log").strip() == good_key
         assert '"process": "ok"' in machine.succeed(f"cat {folder}/owners.jsonl")
+        assert '"ppid": 7, "process": "child"' in machine.succeed(f"cat {folder}/processes.jsonl")
 
     with subtest("a USB device of this machine is passed to the guest for the session and recorded, and only it, though the bus has more"):
         place = machine.succeed("for d in /sys/bus/usb/devices/*; do [ \"$(cat $d/product 2>/dev/null)\" = 'QEMU USB Keyboard' ] && basename $d; done; true").strip()

@@ -30,11 +30,25 @@ What it says is shown with the characters a terminal acts on taken out.
 
 `--since MARK` and `--until MARK` take a moment that `guest-mark` set, or seconds from the start.
 
+`summary`, `flows`, `dns`, `http`, `tls`, `packets`, `export` and `keys scan` keep to part of the traffic:
+
+- `--process NAME|PID` keeps the flows of a program, by its name with or without `.exe`, or its number, more than once for several.
+  A flow's program is what `owners` saw while the flow lasted, so flows whose program is not known are left out, and the reader says how many.
+- `--children` adds the programs it started, and theirs, from the processes `owners` and `keys scan --follow` recorded of the guest.
+- `--host NAME|ADDRESS|NETWORK` keeps flows to a name or a name under it, by the names a flow went by (the name TLS asked for, the HTTP host, the name looked up for its address), or to an address or a network such as `10.0.0.0/8`.
+- Both together keep what both allow.
+  A flow begun before `--since` still counts.
+- `dns --process` shows the lookups of the names the program's flows went to and of the addresses they reached, since Windows looks names up in its DNS client service for every program.
+- `keys scan --process` keeps flows whose program is not known as well and searches them in the program named, and `--follow` takes only new flows of the programs and hosts asked for, by the name the client asked for and the address.
+
+Nothing is left out while recording, which costs little and keeps the lookups and the programs a sample starts.
+
 ### Which program
 
 In a Windows guest `owners` reads the guest's connections and their processes from its memory, through MemProcFS, which the guest does not see.
 Elsewhere it asks the guest through the agent with `ss`, or `netstat` where there is no `ss`, which the guest does see and which needs `--control`.
 It looks every second with `--follow`, and a connection shorter than that may show no program.
+Each look also keeps which process started which in the capture's `processes.jsonl`, for `--children`.
 
 ### Keys
 
@@ -60,7 +74,7 @@ A program keeps the secrets of a TLS connection in its memory while the connecti
 `keys scan` reads that memory from outside, tries every window that could be a secret against the flow's own encrypted records, and adds to the capture only what opens them, so a key it writes is always the right one.
 The idea is that of X-Ray-TLS (Moriconi et al., 2024) and of DRAKVUF's tlsmon, here on MemProcFS and the session's RAM.
 
-- One look: `keys scan` searches the program of each TLS flow of the capture that has no keys, as `owners` saw it or as the guest's memory shows it now, or the processes `--process` names.
+- One look: `keys scan` searches the program of each TLS flow of the capture that has no keys, as `owners` saw it or as the guest's memory shows it now, and the programs `--process` names for flows whose program is not known.
   It finds the connections that are still open.
   In a guest that is not Windows it reads the program through the guest's own `/proc/PID/pagemap`, by the agent, which needs `--control` and which the guest sees, and puts its pages together from the RAM in the program's order.
 - `keys scan --follow` copies the memory of each new flow's program a few milliseconds after its handshake, and checks the copy as the flow's records come in.

@@ -138,6 +138,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | Tool | Use |
 |---|---|
 | `guest-mark LABEL` | Marks a moment. The readers take `--since LABEL` and `--until LABEL`, or seconds from the start. |
+| `--process NAME`, `--children`, `--host NAME` | Keep a reader (`summary`, `flows`, `dns`, `http`, `tls`, `packets`, `export`, `keys scan`) to one program's traffic, and that of the programs it started, or to a host, its subdomains, an address or a network. |
 | `guest-net summary`, `flows`, `dns` | What the capture holds, every TCP and UDP flow with its ends, names, bytes each way and program, the names looked up. |
 | `guest-net http [ID]` | The requests of HTTP/1 and HTTP/2, their answers and how long each took, or one in full: headers and bodies both ways, undone of gzip, deflate, brotli and zstd, JSON laid out. `--save NAME` writes the bodies to `./out`. |
 | `guest-net tls`, `stream ID` | Each handshake and whether the keys open it, what went each way in one flow (`--decrypted`, `--hex`). |
@@ -154,7 +155,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 - On its own it searches the programs whose connections are open now: through MemProcFS in Windows, through the guest's page map by the agent elsewhere.
 - `--follow --pause` copies each new connection's program a few milliseconds after its handshake, with the guest held still for each copy, about 50 ms for a browser.
   Browsers close most connections and wipe their secrets within a second, so this is the mode for them and for anything short lived.
-- `--physical` searches the whole RAM around each client random, `--deep` all of it, and `--process` names programs to search.
+- `--physical` searches the whole RAM around each client random, `--deep` all of it, and `--process` keeps to a program and searches it for flows whose program is not known.
 - It says why a flow was not found: closed before its program was seen, or no secrets in the copy.
 
 To watch a program from its start, arm before you launch it:
@@ -166,7 +167,8 @@ guest-exec --as-user --job PROGRAM
 guest-mark started
 ```
 
-and read it with `guest-net flows --since start`, `http --since start` and `tls --since start`.
+and read it with `guest-net flows --since start --process PROGRAM --children`, and the same of `http` and `tls`.
+Run `guest-net owners --follow` alongside, so that each flow's program and which program started which are known.
 
 `keys scan --pause`, `keys schannel`, `guest-dbg` and `guest-gdb` all go through the guest's one debug stub, so only one of them can run at a time.
 `--pause` and `keys schannel` stop the guest or `lsass` only for moments, and the agent waits each hold out.

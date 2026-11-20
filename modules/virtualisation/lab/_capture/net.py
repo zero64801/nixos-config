@@ -1,7 +1,8 @@
 """guest-net: what the guest sent and got over its network, read from a session's capture.
 
 A flow is named t then tshark's number for a TCP stream, or u for UDP. A request of HTTP is named h then the number of
-the packet it began in. Everything shown was sent or received by the guest.
+the packet it began in. Everything shown was sent or received by the guest. --process and --host keep the flows of some
+programs or to some hosts, as scope.py chooses them.
 """
 import json
 import os
@@ -15,7 +16,9 @@ import capture as shared
 import owners
 import scan
 import schannel
+import scope
 from capture import KEYLOG, common, fail, finished, first, plain, size, tell, timed
+from scope import Scope
 
 NET = "net.pcapng"
 SENT = "0x00000002"
@@ -62,12 +65,27 @@ def flows(capture, args, keys=None):
     for flow in found.values():
         if not flow["names"] and flow["address"] in names:
             flow["names"].append(names[flow["address"]])
-        flow["owner"] = owners.owner_of(known, flow)
+        best = owners.best(known, flow)
+        flow["owner"] = f"{best.get('process')}[{best.get('pid')}]" if best else ""
+        flow["pid"], flow["process"] = (best.get("pid"), best.get("process")) if best else (None, None)
     return sorted(found.values(), key=lambda flow: flow["began"])
 
 
+def scoped(capture, args, found=None):
+    """The flows --process and --host keep, of the whole capture so that a flow begun before --since counts, and the display
+    filter for their packets, empty when neither was given."""
+    chosen = Scope(capture, args)
+    if not chosen:
+        return found, ""
+    kept = chosen.keep(found if found is not None else flows(capture, None, args.keys))
+    return kept, chosen.display(kept)
+
+
 def show_flows(capture, args):
+    chosen = Scope(capture, args)
     shown = [f for f in flows(capture, args, args.keys) if not args.name or any(args.name in n for n in f["names"])]
+    if chosen:
+        shown = chosen.keep(shown)
     if args.json:
         print(json.dumps(shown, indent=1))
         return
@@ -80,7 +98,8 @@ def show_flows(capture, args):
 
 
 def dns(capture, args):
-    """Every name the guest asked for, with what came back."""
+    """Every name the guest asked for, with what came back. With --process the names its flows went to, which in Windows
+    the DNS client service looks up for every program."""
     fields = ["frame.time_epoch", "dns.id", "dns.flags.response", "dns.qry.name", "dns.qry.type", "dns.flags.rcode", "dns.a", "dns.aaaa", "dns.cname"]
     asked, seen = {}, []
     for packet in capture.ek(NET, fields, joined(args, capture.window(args), "dns")):
@@ -94,6 +113,19 @@ def dns(capture, args):
         else:
             asked[key] = {"time": first(packet, "frame.time_epoch"), "name": key[1], "type": key[2], "answer": "unanswered"}
     lines = sorted(seen + list(asked.values()), key=lambda line: float(line["time"] or 0))
+    chosen = Scope(capture, args)
+    if chosen:
+        kept = chosen.keep(flows(capture, None)) if chosen.processes else None
+        names = {name.lower() for flow in kept or [] for name in flow["names"]}
+        addresses = {flow["address"] for flow in kept or []}
+
+        def wanted(line):
+            answers = line["answer"].split(", ")
+            if kept is not None and line["name"].lower() not in names and not addresses & set(answers):
+                return False
+            return chosen.host([line["name"]], "") or any(chosen.host([], answer) for answer in answers)
+
+        lines = [line for line in lines if wanted(line)]
     if not args.all:
         unique = {}
         for line in lines:
@@ -129,10 +161,11 @@ def frames(packet):
         yield kind, stream, headers, data
 
 
-def exchanges(capture, args, keys=None):
-    """Each request of HTTP/1 and HTTP/2 with its answer, decrypted where the capture has the keys."""
+def exchanges(capture, args, keys=None, only=""):
+    """Each request of HTTP/1 and HTTP/2 with its answer, decrypted where the capture has the keys, of the flows the display
+    filter only keeps."""
     requests, streams = {}, {}
-    for packet in capture.ek(NET, HTTP_FIELDS + FRAME_FIELDS, joined(args, capture.window(args), "http || http2.type == 1"), keys):
+    for packet in capture.ek(NET, HTTP_FIELDS + FRAME_FIELDS, joined(args, capture.window(args), only, "http || http2.type == 1"), keys):
         number, stamp, tcp = first(packet, "frame.number"), first(packet, "frame.time_epoch"), first(packet, "tcp.stream")
         if packet["http.request.method"]:
             uri = first(packet, "http.request.full_uri") or f"http://{first(packet, 'http.host')}{first(packet, 'http.request.uri')}"
@@ -159,9 +192,11 @@ def exchanges(capture, args, keys=None):
 
 
 def http(capture, args):
-    found = exchanges(capture, args, args.keys)
     known = owners.known(capture)
-    flows_by_id = {f["id"]: f for f in flows(capture, args, args.keys)} if known else {}
+    every = flows(capture, None, args.keys) if known or Scope(capture, args) else []
+    _, only = scoped(capture, args, every)
+    found = exchanges(capture, args, args.keys, only)
+    flows_by_id = {f["id"]: f for f in every}
     if args.id:
         detail(capture, args, [r for r in found if r["id"] == args.id])
         return
@@ -171,8 +206,9 @@ def http(capture, args):
         print(f"{request['id']:<10} {capture.relative(request['time']):>9} {request['flow']:<6} {request['method']} {plain(request['url'], 160)} -> "
               f"{plain(request['status'] or 'no answer', 40)}{took} {plain(request['type'], 60)} {request['size'] and size(int(request['size']))}  {plain(owner or '', 60)}")
     if not found:
-        encrypted = sum(1 for f in flows(capture, args) if f["names"] and f["proto"] == "tcp")
-        print("no HTTP in this capture" + (f", {encrypted} flows went to named hosts, see guest-net tls for those that are encrypted" if encrypted else ""))
+        encrypted = sum(1 for f in (scoped(capture, args, flows(capture, args))[0]) if f["names"] and f["proto"] == "tcp")
+        print(f"no HTTP in {'the flows chosen' if only else 'this capture'}"
+              + (f", {encrypted} flows went to named hosts, see guest-net tls for those that are encrypted" if encrypted else ""))
 
 
 def both_ways(capture, request, keys):
@@ -265,7 +301,8 @@ def tls(capture, args):
               "tls.handshake.extensions_alpn_str", "tls.handshake.ja4", "tls.handshake.extensions.supported_version",
               "tls.handshake.ciphersuite", "tls.handshake.version", "x509ce.dNSName"]
     found = {}
-    for packet in capture.ek(NET, fields, joined(args, capture.window(args), "tls.handshake.type == 1 || tls.handshake.type == 2 || tls.handshake.type == 11"), args.keys):
+    _, only = scoped(capture, args)
+    for packet in capture.ek(NET, fields, joined(args, capture.window(args), only, "tls.handshake.type == 1 || tls.handshake.type == 2 || tls.handshake.type == 11"), args.keys):
         tcp = first(packet, "tcp.stream")
         key = f"t{tcp}" if tcp else f"u{first(packet, 'udp.stream')}"
         line = found.setdefault(key, {"time": first(packet, "frame.time_epoch"), "name": "", "alpn": "", "ja4": "", "version": "", "cipher": "", "certificate": ""})
@@ -282,7 +319,7 @@ def tls(capture, args):
             line["certificate"] = ",".join(packet["x509ce.dNSName"][:4])
     opened = set()
     if capture.keylog(args.keys):
-        for packet in capture.ek(NET, ["tcp.stream"], "http || http2", args.keys):
+        for packet in capture.ek(NET, ["tcp.stream"], joined(args, only, "http || http2"), args.keys):
             opened.add(f"t{first(packet, 'tcp.stream')}")
     for key, line in sorted(found.items(), key=lambda item: float(item[1]["time"] or 0))[: args.max]:
         state = "decrypted" if key in opened else ("encrypted" if capture.keylog(args.keys) else "encrypted, the capture has no keys")
@@ -389,7 +426,8 @@ def body(capture, args):
 def packets(capture, args):
     """tshark's line for each packet, as in Wireshark's list, with a display filter."""
     fields = ["frame.number", "frame.time_relative", "frame.packet_flags_direction", "_ws.col.def_src", "_ws.col.def_dst", "_ws.col.protocol", "frame.len", "_ws.col.info"]
-    for shown, packet in enumerate(capture.ek(NET, fields, joined(args, capture.window(args), args.filter or ""), args.keys)):
+    _, only = scoped(capture, args)
+    for shown, packet in enumerate(capture.ek(NET, fields, joined(args, capture.window(args), only, args.filter or ""), args.keys)):
         if shown >= args.max:
             print("... more, --max shows more")
             break
@@ -474,7 +512,8 @@ def export(capture, args):
     target = os.path.join(folder, name)
     if os.path.exists(target):
         fail(f"{target} exists already")
-    display = joined(args, capture.window(args), args.filter or "")
+    _, only = scoped(capture, args)
+    display = joined(args, capture.window(args), only, args.filter or "")
     out = ["--rw", folder]
     command = (["-Y", display] if display else []) + ["-w", target]
     process = capture.tshark(NET, command, args.keys, binds=[out])
@@ -516,6 +555,11 @@ def summary(capture, args):
     print(f"owners   {len(seen)} sightings" if seen else "owners   none, guest-net owners --follow finds the program of each connection")
     if said.get("net"):
         found = flows(capture, args)
+        chosen = Scope(capture, args)
+        if chosen:
+            found = chosen.keep(found)
+            print(f"chosen   {', '.join(sorted(chosen.names | {str(n) for n in chosen.numbers}) + chosen.domains + [str(n) for n in chosen.networks])}"
+                  f"{' and the programs they started' if chosen.children else ''}")
         names = sorted({name for flow in found for name in flow["names"]})
         print(f"flows    {sum(f['proto'] == 'tcp' for f in found)} tcp, {sum(f['proto'] == 'udp' for f in found)} udp")
         print(f"names    {plain(', '.join(names), 2000) or 'none'}")
@@ -527,7 +571,10 @@ def keys(capture, args):
         schannel.run(capture, args)
         return
     if args.action == "scan":
-        scan.run(capture, args, flows(capture, args))
+        chosen = Scope(capture, args)
+        found = flows(capture, args)
+        # --process also names where to search a flow whose program is not known.
+        scan.run(capture, args, chosen.keep(found, unknown=True) if chosen else found, chosen)
         return
     if args.action == "list":
         found = capture.keylog(None)
@@ -569,8 +616,10 @@ def build(parser):
         sub = actions.add_parser(name, help=about, description=about)
         common(sub)
         sub.add_argument("--keys", metavar="FILE", help="a TLS key log of this side, used with the capture's own keys")
+        # The readers of a stretch of time are those of many flows, which --process and --host narrow as well.
         if timed_too:
             timed(sub)
+            scope.arguments(sub)
         sub.set_defaults(run=function)
         return sub
 
@@ -630,7 +679,9 @@ def build(parser):
     sub.add_argument("path", nargs="?", help="the key log, of this side for add and of the guest for pull")
     sub.add_argument("--seconds", type=float, help="for schannel: stop after this long, otherwise on Ctrl-C")
     sub.add_argument("--flow", action="append", metavar="ID", help="for scan: only this flow, as t12, more than once for several")
-    sub.add_argument("--process", action="append", metavar="NAME", help="for scan: search this process, by name or number, for every flow")
+    sub.add_argument("--process", action="append", metavar="NAME", help="for scan: only flows of this program, by name or number, and "
+                                                                         "those whose program is not known, which are searched in it")
+    scope.arguments(sub, process=False)
     sub.add_argument("--physical", action="store_true", help="for scan: search the guest's whole RAM around the client randoms, for any guest")
     sub.add_argument("--deep", action="store_true", help="for scan with --physical: then all of the RAM, which takes long")
     sub.add_argument("--step", type=int, help="for scan: try windows that start at multiples of this, by default every one in up to "

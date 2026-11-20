@@ -57,8 +57,8 @@ class Windows:
             raise LookupError(f"there is no process named {process}")
         return pid.value
 
-    def process(self, pid):
-        """The name and the page table roots of a process, the second of which only some systems have."""
+    def information(self, pid):
+        """The name, the parent's number and the page table roots of a process, the last of which only some systems have two of."""
         size = ctypes.c_size_t(0)
         self.vmm.VMMDLL_ProcessGetInformation(self.handle, pid, None, ctypes.byref(size))
         buffer = ctypes.create_string_buffer(max(size.value, ctypes.sizeof(Information)))
@@ -67,17 +67,36 @@ class Windows:
         if not size.value or not self.vmm.VMMDLL_ProcessGetInformation(self.handle, pid, buffer, ctypes.byref(size)):
             raise LookupError(f"there is no process {pid}")
         name = (info.szNameLong or info.szName).decode("latin1")
-        return name, {root for root in (info.paDTB, info.paDTB_UserOpt) if root}
+        return name, info.dwPPID, {root for root in (info.paDTB, info.paDTB_UserOpt) if root}
 
-    def owners(self):
-        """The process of each page table root."""
+    def process(self, pid):
+        """The name and the page table roots of a process."""
+        name, _, roots = self.information(pid)
+        return name, roots
+
+    def pids(self):
         count = ctypes.c_size_t(0)
         self.vmm.VMMDLL_PidList(self.handle, None, ctypes.byref(count))
         pids = (ctypes.c_uint32 * count.value)()
         if not self.vmm.VMMDLL_PidList(self.handle, pids, ctypes.byref(count)):
-            return {}
+            return []
+        return list(pids[:count.value])
+
+    def processes(self):
+        """(number, parent's number, name) of every process."""
+        out = []
+        for pid in self.pids():
+            try:
+                name, parent, _ = self.information(pid)
+            except LookupError:
+                continue
+            out.append((pid, parent, name))
+        return out
+
+    def owners(self):
+        """The process of each page table root."""
         out = {}
-        for pid in pids[:count.value]:
+        for pid in self.pids():
             try:
                 name, roots = self.process(pid)
             except LookupError:

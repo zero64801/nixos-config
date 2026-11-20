@@ -98,6 +98,14 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == keys; guest-net keys pull /tmp/keys.log && guest-net keys list",
           "echo == tls after; guest-net tls",
           "echo == http after; guest-net http",
+          "echo == by host; guest-net flows --host site.test",
+          "echo == by process; guest-net flows --process nc",
+          "echo == by parent; guest-net flows --process 1 --children",
+          "echo == parent alone; guest-net flows --process 1",
+          "echo == http by host; guest-net http --host tls.test",
+          "echo == dns by host; guest-net dns --host site.test",
+          "echo == packets by process; guest-net packets --process nc --max 100",
+          "echo == summary by process; guest-net summary --process nc",
           "echo == hello; guest-net http $(guest-net http | grep hello.txt | cut -d' ' -f1)",
           "echo == secret; guest-net http --save secret.txt $(guest-net http | grep secret.txt | cut -d' ' -f1)",
           "echo == json; guest-net http $(guest-net http | grep 'GET https://tls.test:8443/data.json' | cut -d' ' -f1)",
@@ -151,6 +159,19 @@ host.needs [ "modules/virtualisation/inspect" ] (
       with subtest("each connection is put to the program that held it, as the guest's own tools named it"):
           assert re.search(r"tcp 10\.9\.9\.50:\d+ -> 10\.9\.9\.1:9000 .*nc\[\d+\]", section["owners"]), section["owners"]
           assert re.search(r"10\.9\.9\.1:9000 .* nc\[\d+\]", section["flows"]), section["flows"]
+
+      with subtest("--host and --process keep the flows of a host or a program, and --children those of the programs it started"):
+          # Every server of this test is at 10.9.9.1, so a flow without a name of its own goes by site.test, the name looked up for it.
+          assert "site.test" in section["by host"] and "tls.test" not in section["by host"] and ":8443" not in section["by host"], section["by host"]
+          assert re.search(r"10\.9\.9\.1:9000 .* nc\[\d+\]", section["by process"]), section["by process"]
+          assert ":8000" not in section["by process"] and ":8443" not in section["by process"], section["by process"]
+          assert re.search(r"10\.9\.9\.1:9000 .* nc\[\d+\]", section["by parent"]), "nc descends from the guest's first process, through the agent and a shell"
+          assert ":9000" not in section["parent alone"] and "whose program is not known are left out" in section["parent alone"], section["parent alone"]
+          assert "GET https://tls.test:8443/secret.txt" in section["http by host"] and "site.test" not in section["http by host"], section["http by host"]
+          assert "site.test -> 10.9.9.1" in section["dns by host"], section["dns by host"]
+          assert ":9000" in section["packets by process"] or "9000" in section["packets by process"], section["packets by process"]
+          assert "8443" not in section["packets by process"] and "8000" not in section["packets by process"], section["packets by process"]
+          assert "chosen   nc" in section["summary by process"] and "flows    1 tcp, 0 udp" in section["summary by process"], section["summary by process"]
 
       with subtest("what the guest sent to steer a terminal is shown without it"):
           assert "\x1b" not in out, "a character a terminal acts on came through"

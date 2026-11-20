@@ -42,6 +42,36 @@ assert [(e["proto"], e["local"], e["remote"], e["state"], e["pid"], e["process"]
 
 assert owners.parse("tcp 1.2.3.4:5 6.7.8.9:10 Established 12 \x1b]0;steer\x07name")[0]["process"] == "?]0;steer?name"
 
+PROCESSES = """
+process 1 (systemd) S 0 1 1 0 -1 4194560
+process 812 (nc) S 790 812 790 0 -1 4194304
+process 813 (a (strange) name) R 812 813 790 0 -1 4194304
+process 4152 708 MsMpEng.exe
+process 7380 1 Microsoft Edge Update.exe
+process 99999999999 1 too large.exe
+tcp        0      0 10.9.9.50:40314         10.9.9.1:8000           ESTABLISHED 813/wget
+"""
+assert [(p["pid"], p["ppid"], p["process"]) for p in owners.parse_processes(PROCESSES)] == [
+    (1, 0, "systemd"), (812, 790, "nc"), (813, 812, "a (strange) name"), (4152, 708, "MsMpEng.exe"), (7380, 1, "Microsoft Edge Update.exe"),
+], owners.parse_processes(PROCESSES)
+assert owners.parse_processes("process 5 (\x1b[2J) S 1 5")[0]["process"] == "?[2J"
+
+
+class Memory:
+    """Processes as MemProcFS gives them: a program, the shell that started it and the service that started the shell."""
+    def __init__(self):
+        self.table = {30: ("curl.exe", 20), 20: ("cmd.exe", 10), 10: ("services.exe", 4)}
+
+    def information(self, pid):
+        if pid not in self.table:
+            raise LookupError(pid)
+        return self.table[pid][0], self.table[pid][1], set()
+
+
+assert [(p["pid"], p["ppid"], p["process"]) for p in owners.lineage(Memory(), [30, 20])] == [
+    (30, 20, "curl.exe"), (20, 10, "cmd.exe"), (10, 4, "services.exe"),
+], "every process up to the first that is gone, each once"
+
 flow = {"proto": "tcp", "guest": "192.168.122.48:58719", "remote": "4.160.58.170:443", "ended": 100.0}
 seen = [
     {"proto": "tcp", "local": "192.168.122.48:58719", "remote": "4.160.58.170:443", "pid": 1, "process": "old", "time": 10 * 10 ** 9},

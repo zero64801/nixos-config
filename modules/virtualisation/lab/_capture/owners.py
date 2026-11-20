@@ -1,7 +1,8 @@
-"""Which program of the guest a connection belongs to, looked for while it lasts and kept in the capture.
+"""Which program of the guest a connection belongs to, looked for while it lasts and kept in the capture, and which
+program started which, for --children.
 
-In a Windows guest the connections and their processes are read from the guest's memory through MemProcFS, which the
-guest does not see. Elsewhere the guest is asked through its agent, with ss or netstat, which it does see.
+In a Windows guest the connections and processes are read from the guest's memory through MemProcFS, which the guest
+does not see. Elsewhere the guest is asked through its agent, with ss or netstat and /proc, which it does see.
 """
 import ctypes
 import importlib.util
@@ -18,6 +19,7 @@ from capture import plain
 # From vmmdll.h of the MemProcFS this lab carries: the connections map, version 3, the refresh of it alone, and those of the
 # cached memory and page tables, which vmmnet.c builds the map from, so that without them a new connection stays unseen.
 NET_VERSION, REFRESH_NET, REFRESH_MEMORY, REFRESH_PAGE_TABLES = 3, 0x2003000300000000, 0x2001100000000000, 0x2001080000000000
+REFRESH_PROCESSES = 0x2001000100000000
 # vmmnet.c names an entry UDP when its pool tag is UdpA and TCP otherwise, and its state by this list.
 UDP_TAG = int.from_bytes(b"UdpA", "big")
 STATES = ["CLOSED", "LISTENING", "SYN_SENT", "SYN_RCVD", "ESTABLISHED", "FIN_WAIT_1", "FIN_WAIT_2", "CLOSE_WAIT", "CLOSING", "LAST_ACK",
@@ -103,6 +105,10 @@ class Memory:
         finally:
             vmm.VMMDLL_MemFree(pointer)
 
+    def processes(self):
+        self.windows.vmm.VMMDLL_ConfigSet(self.windows.handle, REFRESH_PROCESSES, 1)
+        return [{"pid": pid, "ppid": parent, "process": plain(name, 200), "source": "memory"} for pid, parent, name in self.windows.processes() if pid]
+
     def warn(self, message):
         if not self.warned:
             self.warned = True
@@ -112,7 +118,8 @@ class Memory:
 # What ss -tunapH and busybox's netstat -tunap print for a connection.
 SS = re.compile(r"(tcp|udp)\s+(\S+)\s+\d+\s+\d+\s+(\S+)\s+(\S+)\s+users:\(\(\"([^\"]*)\",pid=(\d+)")
 NETSTAT = re.compile(r"(tcp|udp)6?\s+\d+\s+\d+\s+(\S+)\s+(\S+)\s+(?:([A-Z_0-9]+)\s+)?(\d+)/(\S+)")
-LINUX = ["--shell", "ss -tunapH 2>/dev/null || netstat -tunapW 2>/dev/null"]
+LINUX = ["--shell", ("ss -tunapH 2>/dev/null || netstat -tunapW 2>/dev/null; "
+                     "for f in /proc/[0-9]*/stat; do { read -r line < $f; } 2>/dev/null && echo \"process $line\"; done")]
 # Windows' own view, one connection a line as LISTED reads it, since its netstat names no process without elevation.
 WINDOWS = ["--powershell", r"""
 $names = @{}
@@ -121,8 +128,11 @@ function at($address, $port) { if ($address -like '*:*') { "[$address]:$port" } 
 Get-NetTCPConnection | ForEach-Object {
     "tcp $(at $_.LocalAddress $_.LocalPort) $(at $_.RemoteAddress $_.RemotePort) $($_.State) $($_.OwningProcess) $($names[[int]$_.OwningProcess])" }
 Get-NetUDPEndpoint | ForEach-Object { "udp $(at $_.LocalAddress $_.LocalPort) * - $($_.OwningProcess) $($names[[int]$_.OwningProcess])" }
+Get-CimInstance Win32_Process | ForEach-Object { "process $($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }
 """]
 LISTED = re.compile(r"(tcp|udp) (\S+) (\S+) (\S+) (\d+) ?(.*)")
+# A line of /proc/PID/stat, whose name is the text between the first parenthesis and the last, and one of WINDOWS.
+STAT, CIM = re.compile(r"process (\d+) \((.*)\) \S+ (\d+) .*"), re.compile(r"process (\d+) (\d+) ?(.*)")
 
 
 def split(text):
@@ -153,23 +163,58 @@ def parse(text):
     return found
 
 
+def parse_processes(text):
+    """The processes in what LINUX or WINDOWS printed, each with the number of the one that started it."""
+    found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if matched := STAT.fullmatch(line):
+            pid, name, parent = matched.groups()
+        elif matched := CIM.fullmatch(line):
+            pid, parent, name = matched.groups()
+        else:
+            continue
+        if int(pid) < 2 ** 32 and int(parent) < 2 ** 32:
+            found.append({"pid": int(pid), "ppid": int(parent), "process": plain(name, 200), "source": "agent"})
+    return found
+
+
+def lineage(windows, pids):
+    """The processes given and those that started them, up to the first that is gone, which is what --children follows."""
+    out, seen = [], set()
+    for pid in pids:
+        while pid and pid not in seen and len(seen) < 4096:
+            seen.add(pid)
+            try:
+                name, parent, _ = windows.information(pid)
+            except LookupError:
+                break
+            out.append({"pid": pid, "ppid": parent, "process": plain(name, 200), "source": "memory"})
+            pid = parent
+    return out
+
+
 class Agent:
-    """The guest's connections as its own tools tell them, through the agent."""
+    """The guest's connections and processes as its own tools tell them, through the agent."""
 
     def __init__(self):
-        self.command = None
+        self.command, self.listed = None, []
 
     def sample(self):
         for command in [self.command] if self.command else [LINUX, WINDOWS]:
             done = subprocess.run(["guest-exec", "--timeout", "30", *command], capture_output=True, text=True, errors="replace", check=False)
             found = parse(done.stdout)
             if found:
-                self.command = command
+                self.command, self.listed = command, parse_processes(done.stdout)
                 return found
         if self.command:
             return []
         shared.fail(f"the guest's own tools named no connection: {plain(done.stderr.strip() or done.stdout.strip(), 300)}")
         return []
+
+    def processes(self):
+        """Those of the last sample, which asks for both at once."""
+        return self.listed
 
 
 def run(args):
@@ -184,12 +229,16 @@ def run(args):
             print(f"guest-net: the guest's memory cannot be read ({plain(e, 200)}), so its agent is asked instead", file=sys.stderr)
     if reader is None:
         reader = Agent()
-    told = set()
+    told, listed = set(), set()
     try:
         while True:
             fresh = [e for e in reader.sample() if (e["proto"], e["local"], e["remote"], e["pid"]) not in told]
             for at in range(0, len(fresh), 4096):
                 shared.tell({"do": "note", "kind": "owners", "entries": fresh[at: at + 4096]})
+            started = [p for p in reader.processes() if (p["pid"], p["ppid"], p["process"]) not in listed]
+            for at in range(0, len(started), 4096):
+                shared.tell({"do": "note", "kind": "processes", "entries": started[at: at + 4096]})
+            listed |= {(p["pid"], p["ppid"], p["process"]) for p in started}
             for entry in fresh:
                 told.add((entry["proto"], entry["local"], entry["remote"], entry["pid"]))
                 print(f"{entry['proto']} {entry['local']} -> {entry['remote'] or '*'}  {entry['state']}  {entry['process']}[{entry['pid']}]")
@@ -205,14 +254,19 @@ def known(capture):
     return list(capture.lines("owners.jsonl"))
 
 
-def owner_of(found, flow):
-    """The program a flow belongs to, as the last look before it ended saw it."""
-    best = None
+def best(found, flow):
+    """The sighting of the program a flow belongs to, as the last look before it ended saw it, or None."""
+    chosen = None
     for entry in found:
         if entry.get("proto") != flow["proto"] or entry.get("local") != flow["guest"]:
             continue
         if flow["proto"] == "tcp" and entry.get("remote") not in ("", flow["remote"]):
             continue
-        if best is None or (entry.get("time", 0) <= flow["ended"] * 1e9 + 5e9 and entry.get("time", 0) >= best.get("time", 0)):
-            best = entry
-    return f"{best.get('process')}[{best.get('pid')}]" if best else ""
+        if chosen is None or (entry.get("time", 0) <= flow["ended"] * 1e9 + 5e9 and entry.get("time", 0) >= chosen.get("time", 0)):
+            chosen = entry
+    return chosen
+
+
+def owner_of(found, flow):
+    chosen = best(found, flow)
+    return f"{chosen.get('process')}[{chosen.get('pid')}]" if chosen else ""
