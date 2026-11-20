@@ -16,13 +16,21 @@ import capture as shared
 import scan
 from capture import fail, plain, size, tell
 
-CIPHERS = {"aes-ecb": 1, "aes-cbc": 2, "aes-ctr": 3, "aes-gcm": 4, "chacha20": 5, "chacha20-poly1305": 6, "rc4": 7, "3des-cbc": 8}
+CIPHERS = {"aes-ecb": 1, "aes-cbc": 2, "aes-ctr": 3, "aes-gcm": 4, "chacha20": 5, "chacha20-poly1305": 6, "rc4": 7, "3des-cbc": 8, "salsa20": 9,
+           "xsalsa20": 10, "xsalsa20-poly1305": 11, "xchacha20": 12, "xchacha20-poly1305": 13, "tea-ecb": 14, "tea-cbc": 15, "xtea-ecb": 16,
+           "xtea-cbc": 17, "blowfish-ecb": 18, "blowfish-cbc": 19}
 SIZES = {"aes-ecb": (16, 24, 32), "aes-cbc": (16, 24, 32), "aes-ctr": (16, 24, 32), "aes-gcm": (16, 24, 32), "chacha20": (32,),
-         "chacha20-poly1305": (32,), "rc4": tuple(range(1, 65)), "3des-cbc": (24,)}
-IVS = {"aes-ecb": 0, "aes-cbc": 16, "aes-ctr": 16, "aes-gcm": 12, "chacha20": 16, "chacha20-poly1305": 12, "rc4": 0, "3des-cbc": 8}
-BLOCKS = {"aes-ecb": 16, "aes-cbc": 16, "3des-cbc": 8}
-AEAD = ("aes-gcm", "chacha20-poly1305")
-FIELDS = {"cipher", "key", "data", "iv", "aad", "known", "printable", "span", "padded"}
+         "chacha20-poly1305": (32,), "rc4": tuple(range(1, 65)), "3des-cbc": (24,), "salsa20": (16, 32), "xsalsa20": (32,),
+         "xsalsa20-poly1305": (32,), "xchacha20": (32,), "xchacha20-poly1305": (32,), "tea-ecb": (16,), "tea-cbc": (16,), "xtea-ecb": (16,),
+         "xtea-cbc": (16,), "blowfish-ecb": tuple(range(4, 57)), "blowfish-cbc": tuple(range(4, 57))}
+IVS = {"aes-ecb": 0, "aes-cbc": 16, "aes-ctr": 16, "aes-gcm": 12, "chacha20": 16, "chacha20-poly1305": 12, "rc4": 0, "3des-cbc": 8, "salsa20": 16,
+       "xsalsa20": 24, "xsalsa20-poly1305": 24, "xchacha20": 24, "xchacha20-poly1305": 24, "tea-ecb": 0, "tea-cbc": 8, "xtea-ecb": 0, "xtea-cbc": 8,
+       "blowfish-ecb": 0, "blowfish-cbc": 8}
+BLOCKS = {"aes-ecb": 16, "aes-cbc": 16, "3des-cbc": 8, "tea-ecb": 8, "tea-cbc": 8, "xtea-ecb": 8, "xtea-cbc": 8, "blowfish-ecb": 8, "blowfish-cbc": 8}
+AEAD = ("aes-gcm", "chacha20-poly1305", "xsalsa20-poly1305", "xchacha20-poly1305")
+# Ciphers whose keys have so many lengths that the decoder names those to try.
+NAMED = ("rc4", "blowfish-ecb", "blowfish-cbc")
+FIELDS = {"cipher", "key", "data", "iv", "aad", "known", "printable", "span", "padded", "big_endian"}
 # As tlsscan takes them: a test's data at most, and how many tests with their key lengths. The decoder judges at most
 # JUDGED candidates, those found in the most places first, since a key in use is mostly in several.
 LONGEST, MOST_TESTS, JUDGED = 1 << 16, 64, 256
@@ -38,17 +46,20 @@ class Unfit(Exception):
 class Test:
     """One test a decoder set, for keys of one length."""
 
-    def __init__(self, number, name, keylen, data, iv, beside, aad, known, mask, knownat, printable, span, padded):
+    def __init__(self, number, name, keylen, data, iv, beside, aad, known, mask, knownat, printable, span, padded, big_endian):
         self.number, self.name, self.keylen = number, name, keylen
         self.cipher, self.ivlen = CIPHERS[name], IVS[name]
         self.data, self.iv, self.beside, self.aad = data, iv, beside, aad
         self.known, self.mask, self.knownat = known, mask, knownat
-        self.printable, self.span, self.padded = printable, span, padded
+        self.printable, self.span, self.padded, self.big_endian = printable, span, padded, big_endian
 
     @property
     def label(self):
-        """The cipher with the size of its key where it has several, as aes-256-cbc."""
-        return f"aes-{self.keylen * 8}-{self.name[4:]}" if self.name.startswith("aes-") else self.name
+        """The cipher with the size of its key where AES has several, and the order of TEA's words where they are big endian,
+        as aes-256-cbc or xtea-cbc-be."""
+        if self.name.startswith("aes-"):
+            return f"aes-{self.keylen * 8}-{self.name[4:]}"
+        return self.name + ("-be" if self.big_endian else "")
 
 
 def hexed(value, where, field, empty=True):
@@ -78,16 +89,16 @@ def tests_from(answer):
         if name not in CIPHERS:
             raise Unfit(f"{where}: cipher is one of {', '.join(CIPHERS)}")
         allowed = SIZES[name]
-        sizes = spec.get("key", None if name == "rc4" else list(allowed))
+        sizes = spec.get("key", None if name in NAMED else list(allowed))
         sizes = [sizes] if type(sizes) is int else sizes
         if not isinstance(sizes, list) or not sizes or not all(type(s) is int and s in allowed for s in sizes):
-            told = f"{allowed[0]} to {allowed[-1]}" if name == "rc4" else ", ".join(map(str, allowed))
+            told = f"{allowed[0]} to {allowed[-1]}" if name in NAMED else ", ".join(map(str, allowed))
             raise Unfit(f"{where}: key is the length of a {name} key in bytes, or a list of them, of {told}")
         data = hexed(spec.get("data"), where, "data", empty=False)
         aead = name in AEAD
         body = len(data) - (16 if aead else 0)
         if body <= 0:
-            raise Unfit(f"{where}: the data of {name} has its tag of 16 bytes after the rest")
+            raise Unfit(f"{where}: the data of {name} has its tag of 16 bytes and more")
         if name in BLOCKS and len(data) % BLOCKS[name]:
             raise Unfit(f"{where}: the data of {name} is whole blocks of {BLOCKS[name]} bytes")
         iv, beside = b"", None
@@ -102,8 +113,8 @@ def tests_from(answer):
         elif "iv" in spec:
             raise Unfit(f"{where}: {name} takes no iv")
         aad = hexed(spec.get("aad", ""), where, "aad")
-        if aad and not aead:
-            raise Unfit(f"{where}: only {' and '.join(AEAD)} take aad")
+        if aad and (not aead or name == "xsalsa20-poly1305"):
+            raise Unfit(f"{where}: only {', '.join(a for a in AEAD if a != 'xsalsa20-poly1305')} take aad")
         known, mask, knownat = b"", b"", 0
         if "known" in spec:
             given = spec["known"]
@@ -123,9 +134,12 @@ def tests_from(answer):
         padded = spec.get("padded", False)
         if type(padded) is not bool or (padded and name not in BLOCKS):
             raise Unfit(f"{where}: padded is true or false, and only for {', '.join(BLOCKS)}")
+        big_endian = spec.get("big_endian", False)
+        if type(big_endian) is not bool or (big_endian and not name.startswith(("tea-", "xtea-"))):
+            raise Unfit(f"{where}: big_endian is true or false, and only for TEA and XTEA")
         if not (known or printable or padded or aead):
             raise Unfit(f"{where} checks nothing, so every window would pass it: give known, printable or padded, or use an AEAD's tag")
-        out += [Test(number, name, keylen, data, iv, beside, aad, known, mask, knownat, printable, span, padded) for keylen in sizes]
+        out += [Test(number, name, keylen, data, iv, beside, aad, known, mask, knownat, printable, span, padded, big_endian) for keylen in sizes]
     if len(out) > MOST_TESTS:
         raise Unfit(f"the tests come to {len(out)} with their lengths of key, and at most {MOST_TESTS} are tried at once")
     return out

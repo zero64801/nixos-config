@@ -10,6 +10,8 @@
  *
  * The same windows are tried as keys of a program's own crypto, against tests a decoder of its protocol sets, at the end.
  */
+#include <openssl/blowfish.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/md5.h>
 #include <openssl/sha.h>
@@ -1146,17 +1148,23 @@ size_t tlsscan_find(const uint8_t *memory, size_t length, uint64_t base, const u
  * Keys of a program's own crypto, which no protocol derives: every window of memory tried as a key against tests that a
  * decoder of the program's protocol sets, each a piece of a message, the cipher that opens it and what its plaintext holds.
  */
-enum { OWN_AES_ECB = 1, OWN_AES_CBC, OWN_AES_CTR, OWN_AES_GCM, OWN_CHACHA20, OWN_CHACHA20_POLY1305, OWN_RC4, OWN_3DES_CBC };
-enum { OWN_KEY = 64, OWN_LONGEST = 1 << 16 };
+enum {
+    OWN_AES_ECB = 1, OWN_AES_CBC, OWN_AES_CTR, OWN_AES_GCM, OWN_CHACHA20, OWN_CHACHA20_POLY1305, OWN_RC4, OWN_3DES_CBC, OWN_SALSA20,
+    OWN_XSALSA20, OWN_XSALSA20_POLY1305, OWN_XCHACHA20, OWN_XCHACHA20_POLY1305, OWN_TEA_ECB, OWN_TEA_CBC, OWN_XTEA_ECB, OWN_XTEA_CBC,
+    OWN_BF_ECB, OWN_BF_CBC
+};
+enum { OWN_KEY = 64, OWN_IV = 24, OWN_LONGEST = 1 << 16 };
 
 typedef struct {
     uint32_t cipher;
     uint32_t keylen;
     uint32_t beside;  /* 1 when the IV is in memory at the key's first byte plus ivoffset, not in iv */
     int32_t ivoffset;
-    uint8_t iv[16];   /* CBC and CTR 16 bytes, GCM and ChaCha20-Poly1305 a 12 byte nonce, ChaCha20 the block counter as 4 bytes
-                         little endian then a 12 byte nonce, as OpenSSL takes it, 3DES 8 */
-    const uint8_t *data; /* the ciphertext from its first byte, an AEAD's with its tag after it */
+    uint8_t iv[OWN_IV]; /* CBC and CTR 16 bytes, GCM and ChaCha20-Poly1305 a 12 byte nonce, ChaCha20 the block counter as 4 bytes
+                           little endian then a 12 byte nonce, as OpenSSL takes it, Salsa20 an 8 byte nonce then the block counter
+                           as 8 bytes little endian, the X ciphers a 24 byte nonce, 3DES, TEA, XTEA and Blowfish 8 */
+    const uint8_t *data; /* the ciphertext from its first byte, an AEAD's with its tag after it, or before it for XSalsa20-Poly1305
+                            as libsodium's secretbox writes it */
     const uint8_t *aad;
     const uint8_t *known; /* bytes the plaintext has at knownat, where mask has bits */
     const uint8_t *mask;
@@ -1166,8 +1174,9 @@ typedef struct {
     uint32_t knownlen;
     uint32_t printable; /* how many of the first span bytes of plaintext are at least text */
     uint32_t span;
-    uint32_t padded; /* ECB, CBC and 3DES: data is a whole message, which ends in PKCS#7 padding */
-    uint32_t unused;
+    uint32_t padded; /* the block ciphers: data is a whole message, which ends in PKCS#7 padding */
+    uint32_t bigendian; /* TEA and XTEA: the words of the key and the blocks are big endian, not little as x86 code that casts
+                           bytes reads them */
 } own_test;
 
 typedef struct {
@@ -1175,12 +1184,15 @@ typedef struct {
     uint32_t keylen;
     uint64_t address;
     uint8_t key[OWN_KEY];
-    uint8_t iv[16];
+    uint8_t iv[OWN_IV];
 } own_hit;
 
 typedef struct {
     EVP_CIPHER_CTX *ecb[2][3], *gcm[3], *chacha, *chachapoly, *des3;
+    EVP_MAC *poly;
     uint8_t ecb_key[2][3][33], gcm_key[3][33], chachapoly_key[33], des3_key[33];
+    BF_KEY bf;
+    uint8_t bf_key[57]; /* the key bf has, after its length */
     uint8_t *plain, *stream;
 } own_crypto;
 
@@ -1189,11 +1201,20 @@ static size_t own_ivlen(uint32_t cipher) {
     case OWN_AES_CBC:
     case OWN_AES_CTR:
     case OWN_CHACHA20:
+    case OWN_SALSA20:
         return 16;
     case OWN_AES_GCM:
     case OWN_CHACHA20_POLY1305:
         return 12;
+    case OWN_XSALSA20:
+    case OWN_XSALSA20_POLY1305:
+    case OWN_XCHACHA20:
+    case OWN_XCHACHA20_POLY1305:
+        return 24;
     case OWN_3DES_CBC:
+    case OWN_TEA_CBC:
+    case OWN_XTEA_CBC:
+    case OWN_BF_CBC:
         return 8;
     default:
         return 0;
@@ -1201,10 +1222,32 @@ static size_t own_ivlen(uint32_t cipher) {
 }
 
 static size_t own_block(uint32_t cipher) {
-    return cipher == OWN_AES_ECB || cipher == OWN_AES_CBC ? 16 : cipher == OWN_3DES_CBC ? 8 : 0;
+    switch (cipher) {
+    case OWN_AES_ECB:
+    case OWN_AES_CBC:
+        return 16;
+    case OWN_3DES_CBC:
+    case OWN_TEA_ECB:
+    case OWN_TEA_CBC:
+    case OWN_XTEA_ECB:
+    case OWN_XTEA_CBC:
+    case OWN_BF_ECB:
+    case OWN_BF_CBC:
+        return 8;
+    default:
+        return 0;
+    }
 }
 
-static int own_aead(uint32_t cipher) { return cipher == OWN_AES_GCM || cipher == OWN_CHACHA20_POLY1305; }
+static int own_chained(uint32_t cipher) {
+    return cipher == OWN_AES_CBC || cipher == OWN_3DES_CBC || cipher == OWN_TEA_CBC || cipher == OWN_XTEA_CBC || cipher == OWN_BF_CBC;
+}
+
+static int own_tea(uint32_t cipher) { return cipher >= OWN_TEA_ECB && cipher <= OWN_XTEA_CBC; }
+
+static int own_aead(uint32_t cipher) {
+    return cipher == OWN_AES_GCM || cipher == OWN_CHACHA20_POLY1305 || cipher == OWN_XSALSA20_POLY1305 || cipher == OWN_XCHACHA20_POLY1305;
+}
 
 static int own_keylen(uint32_t cipher, uint32_t keylen) {
     switch (cipher) {
@@ -1213,13 +1256,27 @@ static int own_keylen(uint32_t cipher, uint32_t keylen) {
     case OWN_AES_CTR:
     case OWN_AES_GCM:
         return keylen == 16 || keylen == 24 || keylen == 32;
+    case OWN_SALSA20:
+        return keylen == 16 || keylen == 32;
     case OWN_CHACHA20:
     case OWN_CHACHA20_POLY1305:
+    case OWN_XSALSA20:
+    case OWN_XSALSA20_POLY1305:
+    case OWN_XCHACHA20:
+    case OWN_XCHACHA20_POLY1305:
         return keylen == 32;
     case OWN_RC4:
         return keylen >= 1 && keylen <= OWN_KEY;
     case OWN_3DES_CBC:
         return keylen == 24;
+    case OWN_TEA_ECB:
+    case OWN_TEA_CBC:
+    case OWN_XTEA_ECB:
+    case OWN_XTEA_CBC:
+        return keylen == 16;
+    case OWN_BF_ECB:
+    case OWN_BF_CBC:
+        return keylen >= 4 && keylen <= 56;
     default:
         return 0;
     }
@@ -1233,6 +1290,8 @@ static int own_valid(const own_test *t) {
     if ((block && t->length % block) || (t->padded && !block) || (t->knownlen && (!t->known || !t->mask)) || (t->aadlen && !t->aad))
         return 0;
     if ((size_t)t->knownat + t->knownlen > body || t->span > body || t->printable > t->span || t->aadlen > OWN_LONGEST)
+        return 0;
+    if ((t->bigendian && !own_tea(t->cipher)) || (t->aadlen && t->cipher == OWN_XSALSA20_POLY1305))
         return 0;
     return t->knownlen || t->printable || t->padded || own_aead(t->cipher);
 }
@@ -1275,6 +1334,139 @@ static int own_des3(own_crypto *c, const uint8_t *key, const uint8_t *in, uint8_
     return x && rekey(x, c->des3_key, 24, key, NULL, 0) && EVP_CipherUpdate(x, out, &n, in, (int)length) && n == (int)length;
 }
 
+static uint32_t le32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3]; }
+
+static void put32(uint8_t *p, uint32_t v, int big) {
+    for (int i = 0; i < 4; i++)
+        p[big ? 3 - i : i] = (uint8_t)(v >> (8 * i));
+}
+
+/* A block of TEA or XTEA decrypted, with 32 cycles, as their authors gave them. */
+static void tea_block(const own_test *t, const uint8_t *key, const uint8_t *in, uint8_t *out) {
+    int big = (int)t->bigendian;
+    uint32_t k[4], v0 = big ? be32(in) : le32(in), v1 = big ? be32(in + 4) : le32(in + 4), delta = 0x9E3779B9, sum = delta * 32;
+    for (int i = 0; i < 4; i++)
+        k[i] = big ? be32(key + 4 * i) : le32(key + 4 * i);
+    for (int i = 0; i < 32; i++) {
+        if (t->cipher == OWN_TEA_ECB || t->cipher == OWN_TEA_CBC) {
+            v1 -= ((v0 << 4) + k[2]) ^ (v0 + sum) ^ ((v0 >> 5) + k[3]);
+            v0 -= ((v1 << 4) + k[0]) ^ (v1 + sum) ^ ((v1 >> 5) + k[1]);
+            sum -= delta;
+        } else {
+            v1 -= (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + k[(sum >> 11) & 3]);
+            sum -= delta;
+            v0 -= (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + k[sum & 3]);
+        }
+    }
+    put32(out, v0, big);
+    put32(out + 4, v1, big);
+}
+
+/* Blowfish's key schedule costs some hundred of its blocks, so the context keeps the last key it was given. */
+static void own_bf(own_crypto *c, const uint8_t *key, size_t keylen, const uint8_t *in, uint8_t *out, size_t length) {
+    if (c->bf_key[0] != keylen || memcmp(c->bf_key + 1, key, keylen)) {
+        BF_set_key(&c->bf, (int)keylen, key);
+        c->bf_key[0] = (uint8_t)keylen;
+        memcpy(c->bf_key + 1, key, keylen);
+    }
+    for (size_t at = 0; at < length; at += 8)
+        BF_ecb_encrypt(in + at, out + at, &c->bf, BF_DECRYPT);
+}
+
+/* Blocks of a block cipher, each decrypted on its own. */
+static int own_decrypt(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *in, uint8_t *out, size_t length) {
+    switch (t->cipher) {
+    case OWN_AES_ECB:
+    case OWN_AES_CBC:
+        return own_ecb(c, 0, t->keylen, key, in, out, length);
+    case OWN_3DES_CBC:
+        return own_des3(c, key, in, out, length);
+    case OWN_BF_ECB:
+    case OWN_BF_CBC:
+        own_bf(c, key, t->keylen, in, out, length);
+        return 1;
+    default:
+        for (size_t at = 0; at < length; at += 8)
+            tea_block(t, key, in + at, out + at);
+        return 1;
+    }
+}
+
+#define ROTL(v, n) (((v) << (n)) | ((v) >> (32 - (n))))
+
+/* The 20 rounds of Salsa20 on a state, added to it for a block of keystream, or not, as HSalsa20 takes them. */
+static void salsa_rounds(uint32_t x[16], const uint32_t in[16], int add) {
+    memcpy(x, in, 64);
+    for (int i = 0; i < 10; i++) {
+        x[4] ^= ROTL(x[0] + x[12], 7), x[8] ^= ROTL(x[4] + x[0], 9), x[12] ^= ROTL(x[8] + x[4], 13), x[0] ^= ROTL(x[12] + x[8], 18);
+        x[9] ^= ROTL(x[5] + x[1], 7), x[13] ^= ROTL(x[9] + x[5], 9), x[1] ^= ROTL(x[13] + x[9], 13), x[5] ^= ROTL(x[1] + x[13], 18);
+        x[14] ^= ROTL(x[10] + x[6], 7), x[2] ^= ROTL(x[14] + x[10], 9), x[6] ^= ROTL(x[2] + x[14], 13), x[10] ^= ROTL(x[6] + x[2], 18);
+        x[3] ^= ROTL(x[15] + x[11], 7), x[7] ^= ROTL(x[3] + x[15], 9), x[11] ^= ROTL(x[7] + x[3], 13), x[15] ^= ROTL(x[11] + x[7], 18);
+        x[1] ^= ROTL(x[0] + x[3], 7), x[2] ^= ROTL(x[1] + x[0], 9), x[3] ^= ROTL(x[2] + x[1], 13), x[0] ^= ROTL(x[3] + x[2], 18);
+        x[6] ^= ROTL(x[5] + x[4], 7), x[7] ^= ROTL(x[6] + x[5], 9), x[4] ^= ROTL(x[7] + x[6], 13), x[5] ^= ROTL(x[4] + x[7], 18);
+        x[11] ^= ROTL(x[10] + x[9], 7), x[8] ^= ROTL(x[11] + x[10], 9), x[9] ^= ROTL(x[8] + x[11], 13), x[10] ^= ROTL(x[9] + x[8], 18);
+        x[12] ^= ROTL(x[15] + x[14], 7), x[13] ^= ROTL(x[12] + x[15], 9), x[14] ^= ROTL(x[13] + x[12], 13), x[15] ^= ROTL(x[14] + x[13], 18);
+    }
+    if (add)
+        for (int i = 0; i < 16; i++)
+            x[i] += in[i];
+}
+
+/* Salsa20's state: "expand 32-byte k" with a key of 32 bytes, "expand 16-byte k" and the key twice with one of 16, then
+ * the nonce and the block counter, or for HSalsa20 16 bytes of nonce in their place. */
+static void salsa_state(uint32_t s[16], const uint8_t *key, size_t keylen, const uint8_t *nonce, size_t noncelen, uint64_t counter) {
+    const uint8_t *second = keylen == 32 ? key + 16 : key;
+    s[0] = 0x61707865, s[5] = keylen == 32 ? 0x3320646e : 0x3120646e, s[10] = keylen == 32 ? 0x79622d32 : 0x79622d36, s[15] = 0x6b206574;
+    for (int i = 0; i < 4; i++)
+        s[1 + i] = le32(key + 4 * i), s[11 + i] = le32(second + 4 * i);
+    s[6] = le32(nonce), s[7] = le32(nonce + 4);
+    s[8] = noncelen == 16 ? le32(nonce + 8) : (uint32_t)counter;
+    s[9] = noncelen == 16 ? le32(nonce + 12) : (uint32_t)(counter >> 32);
+}
+
+static void salsa_stream(const uint8_t *key, size_t keylen, const uint8_t nonce[8], uint64_t counter, uint8_t *out, size_t length) {
+    uint32_t s[16], x[16];
+    uint8_t block[64];
+    for (size_t at = 0; at < length; at += 64, counter++) {
+        salsa_state(s, key, keylen, nonce, 8, counter);
+        salsa_rounds(x, s, 1);
+        for (int i = 0; i < 16; i++)
+            put32(block + 4 * i, x[i], 0);
+        memcpy(out + at, block, length - at < 64 ? length - at : 64);
+    }
+}
+
+/* XSalsa20's key for the last 8 bytes of its nonce, from the first 16. */
+static void hsalsa(uint8_t out[32], const uint8_t key[32], const uint8_t nonce[16]) {
+    static const int words[8] = {0, 5, 10, 15, 6, 7, 8, 9};
+    uint32_t s[16], x[16];
+    salsa_state(s, key, 32, nonce, 16, 0);
+    salsa_rounds(x, s, 0);
+    for (int i = 0; i < 8; i++)
+        put32(out + 4 * i, x[words[i]], 0);
+}
+
+#define QUARTER(a, b, c, d)                                                                                                            \
+    (x[a] += x[b], x[d] = ROTL(x[d] ^ x[a], 16), x[c] += x[d], x[b] = ROTL(x[b] ^ x[c], 12), x[a] += x[b], x[d] = ROTL(x[d] ^ x[a], 8), \
+     x[c] += x[d], x[b] = ROTL(x[b] ^ x[c], 7))
+
+/* XChaCha20's key for the last 8 bytes of its nonce, from the first 16: ChaCha20's rounds without the state added after. */
+static void hchacha(uint8_t out[32], const uint8_t key[32], const uint8_t nonce[16]) {
+    uint32_t x[16] = {0x61707865, 0x3320646e, 0x79622d32, 0x6b206574};
+    for (int i = 0; i < 8; i++)
+        x[4 + i] = le32(key + 4 * i);
+    for (int i = 0; i < 4; i++)
+        x[12 + i] = le32(nonce + 4 * i);
+    for (int i = 0; i < 10; i++) {
+        QUARTER(0, 4, 8, 12), QUARTER(1, 5, 9, 13), QUARTER(2, 6, 10, 14), QUARTER(3, 7, 11, 15);
+        QUARTER(0, 5, 10, 15), QUARTER(1, 6, 11, 12), QUARTER(2, 7, 8, 13), QUARTER(3, 4, 9, 14);
+    }
+    for (int i = 0; i < 4; i++)
+        put32(out + 4 * i, x[i], 0), put32(out + 16 + 4 * i, x[12 + i], 0);
+}
+
 /* ChaCha20's keystream from a block counter and nonce given whole, as OpenSSL takes them. */
 static int own_chacha(own_crypto *c, const uint8_t *key, const uint8_t iv[16], uint8_t *out, size_t length) {
     int n;
@@ -1283,23 +1475,29 @@ static int own_chacha(own_crypto *c, const uint8_t *key, const uint8_t iv[16], u
     return x && EVP_EncryptInit_ex(x, NULL, NULL, key, iv) && EVP_EncryptUpdate(x, out, &n, out, (int)length) && n == (int)length;
 }
 
+/* The key and the counter and nonce OpenSSL's ChaCha20 takes for libsodium's XChaCha20, whose stream starts at block 0 and
+ * whose AEAD's plaintext at block 1, each after the last 8 bytes of the nonce. */
+static void xchacha(const uint8_t *key, const uint8_t nonce[24], uint32_t counter, uint8_t sub[32], uint8_t whole[16]) {
+    hchacha(sub, key, nonce);
+    memset(whole, 0, 16);
+    whole[0] = (uint8_t)counter;
+    memcpy(whole + 8, nonce + 16, 8);
+}
+
 /* The first count bytes of the test's plaintext under the key, count a whole number of blocks for a block cipher. */
 static int own_prefix(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv, size_t count, uint8_t *out) {
     const uint8_t *data = t->data;
-    uint8_t *s = c->stream;
-    size_t blocks = (count + 15) / 16;
-    switch (t->cipher) {
-    case OWN_AES_ECB:
-        return own_ecb(c, 0, t->keylen, key, data, out, count);
-    case OWN_AES_CBC:
-    case OWN_3DES_CBC: {
-        size_t block = own_block(t->cipher);
-        if (!(t->cipher == OWN_3DES_CBC ? own_des3(c, key, data, out, count) : own_ecb(c, 0, t->keylen, key, data, out, count)))
+    uint8_t *s = c->stream, sub[32], whole[16];
+    size_t block = own_block(t->cipher), blocks = (count + 15) / 16, skip = 0;
+    if (block) {
+        if (!own_decrypt(c, t, key, data, out, count))
             return 0;
-        for (size_t i = 0; i < count; i++)
-            out[i] ^= i < block ? iv[i] : data[i - block];
+        if (own_chained(t->cipher))
+            for (size_t i = 0; i < count; i++)
+                out[i] ^= i < block ? iv[i] : data[i - block];
         return 1;
     }
+    switch (t->cipher) {
     case OWN_AES_CTR:
     case OWN_AES_GCM:
         for (size_t b = 0; b < blocks; b++) {
@@ -1331,12 +1529,31 @@ static int own_prefix(own_crypto *c, const own_test *t, const uint8_t *key, cons
         break;
     case OWN_CHACHA20_POLY1305: {
         /* Its plaintext starts at block counter 1, the first block keying Poly1305. */
-        uint8_t whole[16] = {1, 0, 0, 0};
-        memcpy(whole + 4, iv, 12);
-        if (!own_chacha(c, key, whole, s, count))
+        uint8_t first[16] = {1, 0, 0, 0};
+        memcpy(first + 4, iv, 12);
+        if (!own_chacha(c, key, first, s, count))
             return 0;
         break;
     }
+    case OWN_XCHACHA20:
+    case OWN_XCHACHA20_POLY1305:
+        xchacha(key, iv, t->cipher == OWN_XCHACHA20_POLY1305, sub, whole);
+        if (!own_chacha(c, sub, whole, s, count))
+            return 0;
+        break;
+    case OWN_SALSA20: {
+        uint64_t counter = (uint64_t)le32(iv + 8) | (uint64_t)le32(iv + 12) << 32;
+        salsa_stream(key, t->keylen, iv, counter, s, count);
+        break;
+    }
+    case OWN_XSALSA20:
+    case OWN_XSALSA20_POLY1305:
+        /* secretbox keys Poly1305 with the first 32 bytes of the stream, encrypts with the rest, and writes its tag first. */
+        skip = t->cipher == OWN_XSALSA20_POLY1305 ? 32 : 0;
+        data += skip / 2;
+        hsalsa(sub, key, iv);
+        salsa_stream(sub, 32, iv + 16, 0, s, count + skip);
+        break;
     case OWN_RC4:
         rc4(key, t->keylen, data, out, count);
         return 1;
@@ -1344,7 +1561,7 @@ static int own_prefix(own_crypto *c, const own_test *t, const uint8_t *key, cons
         return 0;
     }
     for (size_t i = 0; i < count; i++)
-        out[i] = data[i] ^ s[i];
+        out[i] = data[i] ^ s[skip + i];
     return 1;
 }
 
@@ -1352,9 +1569,9 @@ static int own_prefix(own_crypto *c, const own_test *t, const uint8_t *key, cons
 static int own_padding(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv) {
     size_t block = own_block(t->cipher), last = t->length - block;
     uint8_t p[16];
-    if (!(t->cipher == OWN_3DES_CBC ? own_des3(c, key, t->data + last, p, block) : own_ecb(c, 0, t->keylen, key, t->data + last, p, block)))
+    if (!own_decrypt(c, t, key, t->data + last, p, block))
         return 0;
-    if (t->cipher != OWN_AES_ECB)
+    if (own_chained(t->cipher))
         for (size_t i = 0; i < block; i++)
             p[i] ^= last ? t->data[last - block + i] : iv[i];
     uint8_t n = p[block - 1];
@@ -1366,12 +1583,32 @@ static int own_padding(own_crypto *c, const own_test *t, const uint8_t *key, con
     return 1;
 }
 
+static int own_poly1305(own_crypto *c, const uint8_t key[32], const uint8_t *data, size_t length, uint8_t tag[16]) {
+    size_t n = 0;
+    if (!c->poly)
+        c->poly = EVP_MAC_fetch(NULL, "POLY1305", NULL);
+    EVP_MAC_CTX *x = c->poly ? EVP_MAC_CTX_new(c->poly) : NULL;
+    int ok = x && EVP_MAC_init(x, key, 32, NULL) && EVP_MAC_update(x, data, length) && EVP_MAC_final(x, tag, &n, 16) && n == 16;
+    EVP_MAC_CTX_free(x);
+    return ok;
+}
+
 /* The whole AEAD message, its tag checked. */
 static int own_open(own_crypto *c, const own_test *t, const uint8_t *key, const uint8_t *iv) {
-    uint8_t tag[16], *have;
+    uint8_t tag[16], sub[32], whole[16], *have;
     int n, m, size = aes_size(t->keylen);
     size_t body = t->length - 16;
     EVP_CIPHER_CTX *x;
+    if (t->cipher == OWN_XSALSA20_POLY1305) {
+        uint8_t mac[32];
+        hsalsa(sub, key, iv);
+        salsa_stream(sub, 32, iv + 16, 0, mac, 32);
+        return own_poly1305(c, mac, t->data + 16, body, tag) && !CRYPTO_memcmp(tag, t->data, 16);
+    }
+    if (t->cipher == OWN_XCHACHA20_POLY1305) {
+        xchacha(key, iv, 0, sub, whole);
+        key = sub, iv = whole + 4;
+    }
     if (t->cipher == OWN_AES_GCM) {
         x = ready(&c->gcm[size], size == 0 ? EVP_aes_128_gcm() : size == 1 ? EVP_aes_192_gcm() : EVP_aes_256_gcm(), 0);
         have = c->gcm_key[size];
@@ -1380,9 +1617,9 @@ static int own_open(own_crypto *c, const own_test *t, const uint8_t *key, const 
         have = c->chachapoly_key;
     }
     memcpy(tag, t->data + body, 16);
-    return x && rekey(x, have, t->keylen, key, iv, 0) && (!t->aadlen || EVP_DecryptUpdate(x, NULL, &n, t->aad, (int)t->aadlen)) &&
-           EVP_DecryptUpdate(x, c->plain, &n, t->data, (int)body) && EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_TAG, 16, tag) &&
-           EVP_DecryptFinal_ex(x, c->plain + n, &m) > 0;
+    return x && rekey(x, have, t->cipher == OWN_AES_GCM ? t->keylen : 32, key, iv, 0) &&
+           (!t->aadlen || EVP_DecryptUpdate(x, NULL, &n, t->aad, (int)t->aadlen)) && EVP_DecryptUpdate(x, c->plain, &n, t->data, (int)body) &&
+           EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_TAG, 16, tag) && EVP_DecryptFinal_ex(x, c->plain + n, &m) > 0;
 }
 
 /* The checks of a test, cheapest first: known bytes, text, padding, then an AEAD's tag over the whole message. */
@@ -1481,6 +1718,7 @@ static void *own_work(void *argument) {
         EVP_CIPHER_CTX_free(c->chacha);
         EVP_CIPHER_CTX_free(c->chachapoly);
         EVP_CIPHER_CTX_free(c->des3);
+        EVP_MAC_free(c->poly);
         free(c->plain);
         free(c->stream);
         free(c);

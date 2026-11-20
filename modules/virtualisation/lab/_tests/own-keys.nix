@@ -7,7 +7,10 @@
 let
   inherit (host) pkgs;
   tlsscan = pkgs.callPackage ../_capture/tlsscan/tlsscan.nix { };
-  python = pkgs.python3.withPackages (packages: [ packages.cryptography ]);
+  python = pkgs.python3.withPackages (packages: [
+    packages.cryptography
+    packages.pynacl
+  ]);
 in
 pkgs.runCommand "guest-net-own-keys" { } ''
   cd "$(mktemp -d)"

@@ -43,14 +43,14 @@ class Hit(ctypes.Structure):
 
 
 class OwnTest(ctypes.Structure):
-    _fields_ = [("cipher", u32), ("keylen", u32), ("beside", u32), ("ivoffset", ctypes.c_int32), ("iv", ctypes.c_uint8 * 16),
+    _fields_ = [("cipher", u32), ("keylen", u32), ("beside", u32), ("ivoffset", ctypes.c_int32), ("iv", ctypes.c_uint8 * 24),
                 ("data", ctypes.c_void_p), ("aad", ctypes.c_void_p), ("known", ctypes.c_void_p), ("mask", ctypes.c_void_p),
                 ("length", u32), ("aadlen", u32), ("knownat", u32), ("knownlen", u32), ("printable", u32), ("span", u32),
-                ("padded", u32), ("unused", u32)]
+                ("padded", u32), ("bigendian", u32)]
 
 
 class OwnHit(ctypes.Structure):
-    _fields_ = [("test", u32), ("keylen", u32), ("address", u64), ("key", ctypes.c_uint8 * 64), ("iv", ctypes.c_uint8 * 16)]
+    _fields_ = [("test", u32), ("keylen", u32), ("address", u64), ("key", ctypes.c_uint8 * 64), ("iv", ctypes.c_uint8 * 24)]
 
 
 def address(buffer):
@@ -180,7 +180,7 @@ class Scanner:
                 kept.append(value)
                 setattr(slot, field, address(value) if value else None)
             slot.length, slot.aadlen, slot.knownat, slot.knownlen = len(test.data), len(test.aad), test.knownat, len(test.known)
-            slot.printable, slot.span, slot.padded = test.printable, test.span, int(test.padded)
+            slot.printable, slot.span, slot.padded, slot.bigendian = test.printable, test.span, int(test.padded), int(test.big_endian)
         valid, hits, tested = (ctypes.c_uint8 * len(tests))(), (OwnHit * most)(), u64()
         count = self.lib.tlsscan_own(address(buffer) + at, length, base, step, threads, array, len(tests), valid, hits, most, ctypes.byref(tested))
         self.tested += tested.value

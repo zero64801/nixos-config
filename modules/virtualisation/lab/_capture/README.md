@@ -154,16 +154,19 @@ Asked with `"ask": "tests"` beside what `decode` gives it, the decoder prints on
 {"tests": [{"cipher": "aes-cbc", "iv": "HEX", "data": "HEX", "padded": true, "known": {"at": 0, "bytes": "7b22"}}]}
 ```
 
-- `cipher` is one of `aes-ecb`, `aes-cbc`, `aes-ctr`, `aes-gcm`, `chacha20`, `chacha20-poly1305`, `rc4` and `3des-cbc`.
-- `key` is the length of the key in bytes, or a list of them, by default 16, 24 and 32 for AES, and always given for RC4, from 1 to 64.
-- `data` is the ciphertext from its first byte, whole blocks for ECB, CBC and 3DES, and an AEAD's with its tag of 16 bytes after it.
-- `iv` is what the cipher takes besides the key: 16 bytes for CBC, and for CTR its first counter block, a 12 byte nonce for GCM and ChaCha20-Poly1305, 8 bytes for 3DES, and for ChaCha20 16 bytes, the block counter as 4 bytes little endian and then a 12 byte nonce, as OpenSSL takes it.
+- `cipher` is one of `aes-ecb`, `aes-cbc`, `aes-ctr`, `aes-gcm`, `chacha20`, `chacha20-poly1305`, `xchacha20`, `xchacha20-poly1305`, `salsa20`, `xsalsa20`, `xsalsa20-poly1305`, `rc4`, `3des-cbc`, `tea-ecb`, `tea-cbc`, `xtea-ecb`, `xtea-cbc`, `blowfish-ecb` and `blowfish-cbc`.
+  The X ciphers and their AEADs are libsodium's, `xsalsa20-poly1305` being its secretbox.
+- `key` is the length of the key in bytes, or a list of them: by default 16, 24 and 32 for AES, 16 and 32 for Salsa20, 32 for the other stream ciphers, 24 for 3DES and 16 for TEA and XTEA, and always given for RC4, from 1 to 64, and Blowfish, from 4 to 56.
+- `data` is the ciphertext from its first byte, whole blocks for ECB, CBC, 3DES, TEA, XTEA and Blowfish, and an AEAD's with its tag of 16 bytes after it, or before it for `xsalsa20-poly1305`, as secretbox writes it.
+- `iv` is what the cipher takes besides the key: 16 bytes for CBC, and for CTR its first counter block, a 12 byte nonce for GCM and ChaCha20-Poly1305, a 24 byte one for the X ciphers, 8 bytes for 3DES, TEA, XTEA and Blowfish in CBC, for ChaCha20 16 bytes, the block counter as 4 bytes little endian and then a 12 byte nonce, as OpenSSL takes it, and for Salsa20 16 bytes, an 8 byte nonce and then the block counter as 8 bytes little endian.
   `{"beside": OFFSET}` reads it from memory instead, that many bytes from the key's first byte, for a program that keeps the two together.
-- `aad` is what an AEAD authenticates and does not encrypt.
+- `aad` is what an AEAD authenticates and does not encrypt, which secretbox has none of.
+- TEA and XTEA take the words of the key and the blocks little endian, as code on x86 that casts bytes to words does, and with `"big_endian": true` as their authors wrote them and most libraries keep them.
 - A test checks at least one thing: `known` bytes at an offset of the plaintext, `at`, under a `mask` where some bits are not known, `printable`, how many of its first `span` bytes are text, `padded`, that the data ends in PKCS#7 padding, or an AEAD's tag, which is enough alone.
 
 Every window of the program's memory is tried as the key of each test, in C, in `tlsscan/tlsscan.c`, on every core.
-On 16 cores that is about 100 million keys a second for AES, 256 MiB in all three sizes of key in a second, while RC4 tries each length apart, about 50 s for 28 lengths over 256 MiB.
+On 16 cores that is about 100 million keys a second for AES, 256 MiB in all three sizes of key in a second, about 130 million for XTEA, 75 million for Salsa20, 25 million for XChaCha20-Poly1305 and 17 million for secretbox with their tags alone.
+RC4 tries each length apart, about 50 s for 28 lengths over 256 MiB, and Blowfish works out its key schedule for each window, under a million a second, about 40 s over 256 MiB for each length.
 Unlike `keys scan` it takes windows that are text, as keys a program was written with often are, and leaves out only those that look like pointers or small numbers or repeat their bytes.
 It searches the flow's program, as `owners` saw it, or the one `--process` names: its writable pages, where keys made as it runs are, and with `--all` the others too, where keys built into it are, at every offset up to 32 MiB and at every eighth beyond, which `--step` changes.
 `--physical` searches the whole RAM instead.
@@ -239,7 +242,8 @@ What it lists is what to send from Linux for the same effect.
   A stream begun before the update, as a long download's, is not read by `http`, since HTTP/3 is read from each stream's start, and `decode --decrypted` hands what came of it after the update to a decoder.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.
 - `keys own` finds a key the program keeps as it is, for the ciphers it knows.
-  A key kept only expanded or turned around, one made anew for each message, a cipher it does not know, as Salsa20, Blowfish or one of the program's own, and a counter or nonce the messages do not carry stay for `guest-dbg` to read where the program uses them, as `--log bcrypt` does for CNG.
+  OpenSSL, Windows' CNG and CryptoAPI, Go and .NET's own Rijndael all keep it so, also once the program wiped its copy, while OpenSSL's AES on a processor without AES-NI that has SSSE3 keeps it changed into a form of its own, which is not looked for.
+  A key made anew for each message, a cipher it does not know, as Camellia, Twofish or one of the program's own, and a counter or nonce the messages do not carry and the decoder cannot work out stay for `guest-dbg` to read where the program uses them, as `--log bcrypt` does for CNG.
 - Isochronous transfers, as of sound and cameras, are shown as transfers without their packets taken apart.
 
 ## Tests
@@ -279,7 +283,8 @@ The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a fl
 The first also exports its requests as HAR, and the tenth those of HTTP/3.
 The twelfth decodes gRPC's messages by their wire format and by name with protoc, shows a call of HTTP/3 with a gzipped message and its status, reads gRPC-Web's text and trailers, and takes a hostile guest's lengths, wire types and nesting.
 The thirteenth runs `keys scan` whole on the capture of a QUIC download that lost every fifth of the server's datagrams and then updated its keys, with made up memory in place of the guest's RAM that holds only the secrets after the update, and has it note both, the server's from the numbers the client acknowledged, and guest-net read what was asked after the update with them.
-The fourteenth hides the key of each cipher `keys own` knows in made up memory, with each check a decoder sets, an IV beside its key, a key that is text and one at an odd place, and has the search find each where it was put and not a key one bit off, and has tests that check nothing or do not fit refused.
+The fourteenth hides the key of each cipher `keys own` knows in made up memory, with each check a decoder sets, an IV beside its key, a key that is text, one at an odd place and XTEA's words big endian, and has the search find each where it was put and not a key one bit off, and has tests that check nothing or do not fit refused.
+Its own Salsa20, XSalsa20, XChaCha20, TEA and XTEA are first checked against libsodium and the vectors of TEA and of LibTomCrypt's XTEA, and Blowfish's ciphertext is made by `cryptography`.
 It then runs `keys own` whole on the capture of a client that sends under AES-CBC and a server that answers under ChaCha20-Poly1305, with a decoder whose test of AES-CBC is the padding alone, which some 200 windows pass, so that only judging keeps the two keys, and has `decode` hand them to the decoder, which reads every message both ways.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
-`keys own` found the key of AES-256-CBC that a PowerShell program kept in .NET and that of RC4 it wrote out itself, with a key that is text, there too.
+`keys own` found the key of AES-256-CBC that a PowerShell program kept in .NET and that of RC4 it wrote out itself, with a key that is text, there too, and those of libsodium's secretbox and XChaCha20-Poly1305 and of pycryptodome's Blowfish in Python programs and of an XTEA written in C#.

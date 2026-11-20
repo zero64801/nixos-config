@@ -1,7 +1,8 @@
 """keys own on made up memory and a made up capture.
 
 libtlsscan has to find the key of each cipher keys own knows among noise, with each check a decoder can set, an IV read
-beside its key, a key that is text and one at an odd place, and has to keep out a key one bit off. own.py has to refuse
+beside its key, a key that is text and one at an odd place, and has to keep out a key one bit off. The ciphers libsodium
+and old programs use are checked against libsodium, cryptography and the known vectors. own.py has to refuse
 tests that check nothing or do not fit. Then keys own as a whole, on a capture of datagrams a client sent under AES-CBC
 and a server answered under ChaCha20-Poly1305, with memory that holds both keys, a copy of one and one a bit off, and a
 decoder whose test for AES-CBC is only the padding, which about one window in 250 passes: judging has to keep only the
@@ -22,11 +23,17 @@ import time
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+from nacl.bindings import crypto_aead_xchacha20poly1305_ietf_encrypt
+from nacl.secret import SecretBox
 
 try:
-    from cryptography.hazmat.decrepit.ciphers.algorithms import ARC4, TripleDES
+    from cryptography.hazmat.decrepit.ciphers.algorithms import (
+        ARC4,
+        Blowfish,
+        TripleDES,
+    )
 except ImportError:
-    ARC4, TripleDES = algorithms.ARC4, algorithms.TripleDES
+    ARC4, Blowfish, TripleDES = algorithms.ARC4, algorithms.Blowfish, algorithms.TripleDES
 
 code, wireshark, library, decoder = sys.argv[1:5]
 sys.path.insert(0, code)
@@ -131,6 +138,168 @@ assert found({"cipher": "aes-cbc", "key": 16, "iv": iv.hex(), "data": data.hex()
     ("aes-128-cbc", key, b"", where)}
 print("an IV beside its key, a key that is text and one at an odd place are found")
 
+# Salsa20, HSalsa20 and HChaCha20 as their papers give them, checked against libsodium below before they stand for it.
+WORD = 0xFFFFFFFF
+
+
+def rotl(v, n):
+    return ((v << n) | (v >> (32 - n))) & WORD
+
+
+def salsa(state, add):
+    x = list(state)
+
+    def quarter(a, b, c, d):
+        x[b] ^= rotl((x[a] + x[d]) & WORD, 7)
+        x[c] ^= rotl((x[b] + x[a]) & WORD, 9)
+        x[d] ^= rotl((x[c] + x[b]) & WORD, 13)
+        x[a] ^= rotl((x[d] + x[c]) & WORD, 18)
+
+    for _ in range(10):
+        for a, b, c, d in ((0, 4, 8, 12), (5, 9, 13, 1), (10, 14, 2, 6), (15, 3, 7, 11), (0, 1, 2, 3), (5, 6, 7, 4), (10, 11, 8, 9), (15, 12, 13, 14)):
+            quarter(a, b, c, d)
+    return [(a + b) & WORD for a, b in zip(x, state)] if add else x
+
+
+def salsa_state(key, middle):
+    words = struct.unpack("<8I", key if len(key) == 32 else key * 2)
+    constants = struct.unpack("<4I", b"expand 32-byte k" if len(key) == 32 else b"expand 16-byte k")
+    return [constants[0], *words[:4], constants[1], *struct.unpack("<4I", middle), constants[2], *words[4:], constants[3]]
+
+
+def salsa_stream(key, nonce, counter, length):
+    out = b""
+    while len(out) < length:
+        out += struct.pack("<16I", *salsa(salsa_state(key, nonce + struct.pack("<Q", counter)), True))
+        counter += 1
+    return out[:length]
+
+
+def hsalsa(key, nonce):
+    x = salsa(salsa_state(key, nonce), False)
+    return struct.pack("<8I", *(x[i] for i in (0, 5, 10, 15, 6, 7, 8, 9)))
+
+
+def hchacha(key, nonce):
+    x = [*struct.unpack("<4I", b"expand 32-byte k"), *struct.unpack("<8I", key), *struct.unpack("<4I", nonce)]
+
+    def quarter(a, b, c, d):
+        x[a] = (x[a] + x[b]) & WORD
+        x[d] = rotl(x[d] ^ x[a], 16)
+        x[c] = (x[c] + x[d]) & WORD
+        x[b] = rotl(x[b] ^ x[c], 12)
+        x[a] = (x[a] + x[b]) & WORD
+        x[d] = rotl(x[d] ^ x[a], 8)
+        x[c] = (x[c] + x[d]) & WORD
+        x[b] = rotl(x[b] ^ x[c], 7)
+
+    for _ in range(10):
+        for a, b, c, d in ((0, 4, 8, 12), (1, 5, 9, 13), (2, 6, 10, 14), (3, 7, 11, 15), (0, 5, 10, 15), (1, 6, 11, 12), (2, 7, 8, 13), (3, 4, 9, 14)):
+            quarter(a, b, c, d)
+    return struct.pack("<8I", *x[:4], *x[12:])
+
+
+def xchacha_stream(key, nonce, counter, length):
+    return encrypted(algorithms.ChaCha20(hchacha(key, nonce[:16]), struct.pack("<II", counter, 0) + nonce[16:]), None, bytes(length))
+
+
+def tea(key, block, big, extended):
+    """A block of TEA or XTEA encrypted, its words in the order given."""
+    order = ">" if big else "<"
+    k, (v0, v1), total, delta = struct.unpack(order + "4I", key), struct.unpack(order + "2I", block), 0, 0x9E3779B9
+    for _ in range(32):
+        if extended:
+            v0 = (v0 + ((((v1 << 4) ^ (v1 >> 5)) + v1) ^ (total + k[total & 3]))) & WORD
+            total = (total + delta) & WORD
+            v1 = (v1 + ((((v0 << 4) ^ (v0 >> 5)) + v0) ^ (total + k[(total >> 11) & 3]))) & WORD
+        else:
+            total = (total + delta) & WORD
+            v0 = (v0 + (((v1 << 4) + k[0]) ^ (v1 + total) ^ ((v1 >> 5) + k[1]))) & WORD
+            v1 = (v1 + (((v0 << 4) + k[2]) ^ (v0 + total) ^ ((v0 >> 5) + k[3]))) & WORD
+    return struct.pack(order + "2I", v0, v1)
+
+
+def tea_cbc(key, iv, data, big, extended):
+    out, chain = b"", iv
+    for at in range(0, len(data), 8):
+        chain = tea(key, bytes(a ^ b for a, b in zip(data[at: at + 8], chain)), big, extended)
+        out += chain
+    return out
+
+
+# The vectors of LibTomCrypt for XTEA, and the one of TEA whose key and block are zeros.
+assert tea(bytes(range(16)), b"ABCDEFGH", True, True).hex() == "497df3d072612cb5"
+assert tea(bytes(16), bytes(8), True, True).hex() == "dee9d4d8f7131ed9"
+assert tea(bytes(16), bytes(8), True, False).hex() == "41ea3a0a94baa940"
+key, nonce, plain = os.urandom(32), os.urandom(24), b"a message in libsodium's secretbox"
+boxed = SecretBox(key).encrypt(plain, nonce).ciphertext
+assert boxed[16:] == bytes(a ^ b for a, b in zip(plain, salsa_stream(hsalsa(key, nonce[:16]), nonce[16:], 0, 32 + len(plain))[32:]))
+sealed = crypto_aead_xchacha20poly1305_ietf_encrypt(plain, b"", nonce, key)
+assert sealed[:-16] == bytes(a ^ b for a, b in zip(plain, xchacha_stream(key, nonce, 1, len(plain))))
+print("the references of Salsa20, XSalsa20, XChaCha20, TEA and XTEA agree with libsodium and the known vectors")
+
+key, iv = os.urandom(32), os.urandom(8) + struct.pack("<Q", 5)
+plain = b"SALSA20! from block counter five"
+data = bytes(a ^ b for a, b in zip(plain, salsa_stream(key, iv[:8], 5, len(plain))))
+where = plant(key)
+assert found({"cipher": "salsa20", "key": 32, "iv": iv.hex(), "data": data.hex(), "known": {"bytes": b"SALSA20!".hex()}}) == {("salsa20", key, b"", where)}
+
+key, iv = os.urandom(16), os.urandom(8) + bytes(8)
+plain = b"Salsa20 under a key of sixteen bytes, as text"
+data = bytes(a ^ b for a, b in zip(plain, salsa_stream(key, iv[:8], 0, len(plain))))
+where = plant(key)
+assert found({"cipher": "salsa20", "iv": iv.hex(), "data": data.hex(), "printable": 32, "span": 32}) == {("salsa20", key, b"", where)}
+
+key, nonce = os.urandom(32), os.urandom(24)
+plain = b"XSALSA20 as a stream of its own"
+data = bytes(a ^ b for a, b in zip(plain, salsa_stream(hsalsa(key, nonce[:16]), nonce[16:], 0, len(plain))))
+where = plant(key)
+assert found({"cipher": "xsalsa20", "iv": nonce.hex(), "data": data.hex(), "known": {"bytes": b"XSALSA20".hex()}}) == {("xsalsa20", key, b"", where)}
+
+key, nonce = os.urandom(32), os.urandom(24)
+data = SecretBox(key).encrypt(os.urandom(40), nonce).ciphertext
+where = plant(key)
+assert found({"cipher": "xsalsa20-poly1305", "iv": nonce.hex(), "data": data.hex()}) == {("xsalsa20-poly1305", key, b"", where)}
+
+key, nonce = os.urandom(32), os.urandom(24)
+plain = b"XCHACHA20 as a stream of its own"
+data = bytes(a ^ b for a, b in zip(plain, xchacha_stream(key, nonce, 0, len(plain))))
+where = plant(key)
+assert found({"cipher": "xchacha20", "iv": nonce.hex(), "data": data.hex(), "known": {"bytes": b"XCHACHA20".hex()}}) == {("xchacha20", key, b"", where)}
+
+key, nonce = os.urandom(32), os.urandom(24)
+data = crypto_aead_xchacha20poly1305_ietf_encrypt(os.urandom(40), b"header", nonce, key)
+where = plant(key)
+assert found({"cipher": "xchacha20-poly1305", "iv": nonce.hex(), "data": data.hex(), "aad": b"header".hex()}) == {("xchacha20-poly1305", key, b"", where)}
+
+key, iv = os.urandom(16), os.urandom(8)
+data = tea_cbc(key, iv, padded(b"TEA-CBC, words as x86 reads them", 64), False, False)
+where = plant(key)
+assert found({"cipher": "tea-cbc", "iv": iv.hex(), "data": data.hex(), "padded": True, "known": {"bytes": b"TEA-CBC".hex()}}) == {("tea-cbc", key, b"", where)}
+
+key = os.urandom(16)
+data = tea(key, b"XTEA BE!", True, True) + tea(key, b"two more", True, True)
+where = plant(key)
+assert found({"cipher": "xtea-ecb", "big_endian": True, "data": data.hex(), "known": {"bytes": b"XTEA BE!".hex()}}) == {("xtea-ecb-be", key, b"", where)}
+
+key, iv = os.urandom(16), os.urandom(8)
+data = tea_cbc(key, iv, padded(b"XTEA-CBC, little endian, and text", 64), False, True)
+where = plant(key)
+assert found({"cipher": "xtea-cbc", "iv": iv.hex(), "data": data.hex(), "padded": True, "printable": 16, "span": 16}) == {("xtea-cbc", key, b"", where)}
+
+key, iv = os.urandom(16), os.urandom(8)
+data = encrypted(Blowfish(key), modes.CBC(iv), padded(b"BLOWFISH in CBC with a key of 16", 64))
+where = plant(key)
+assert found({"cipher": "blowfish-cbc", "key": 16, "iv": iv.hex(), "data": data.hex(), "padded": True, "known": {"bytes": b"BLOWFISH".hex()}}) == {
+    ("blowfish-cbc", key, b"", where)}
+
+key = os.urandom(8)
+data = encrypted(Blowfish(key), modes.ECB(), padded(b"Blowfish ECB, key of 8 bytes only", 64))
+where = plant(key)
+assert found({"cipher": "blowfish-ecb", "key": [7, 8, 9], "data": data.hex(), "known": {"bytes": b"Blowfish".hex()}}) == {("blowfish-ecb", key, b"", where)}
+print("the keys of Salsa20, XSalsa20, XChaCha20, their AEADs, TEA, XTEA and Blowfish are found among noise, XTEA's big endian too")
+
+
 refusals = [
     ({"tests": []}, "with a test in it"),
     ({"tests": [{"cipher": "aes-xts", "data": "00" * 16}]}, "cipher is one of"),
@@ -143,6 +312,9 @@ refusals = [
     ({"tests": [{"cipher": "rc4", "key": 8, "data": "00" * 8, "printable": 4, "run": "x"}]}, "fields a test has not"),
     ({"tests": [{"cipher": "aes-ecb", "data": "zz", "printable": 1}]}, "written in hex"),
     ({"tests": [{"cipher": "aes-ecb", "data": "00" * 16, "printable": 1}] * 30}, "at most 64"),
+    ({"tests": [{"cipher": "aes-ecb", "data": "00" * 16, "printable": 1, "big_endian": True}]}, "only for TEA and XTEA"),
+    ({"tests": [{"cipher": "xsalsa20-poly1305", "iv": "00" * 24, "data": "00" * 32, "aad": "00"}]}, "take aad"),
+    ({"tests": [{"cipher": "blowfish-cbc", "iv": "00" * 8, "data": "00" * 16, "padded": True}]}, "key is the length"),
 ]
 for answer, told in refusals:
     try:

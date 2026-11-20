@@ -183,7 +183,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | `guest-net owners --follow` | Which program each connection belongs to, read from a Windows guest's memory or asked of the agent elsewhere. |
 | `guest-net keys pull PATH` | A key log a program in the guest wrote, as Edge or Chrome do with `SSLKEYLOGFILE` set in a `guest-exec --powershell` script. |
 | `guest-net keys scan` | The TLS and QUIC secrets of any program, found in its memory from outside and kept only when they open the flow's own records. |
-| `guest-net keys own --flow ID --with SCRIPT` | The key of a program's own crypto, found in its memory from outside with a decoder you write for its protocol, which sets the tests and judges what passes them. `--process PID`, `--all` for its pages it cannot write too, `--physical`. |
+| `guest-net keys own --flow ID --with SCRIPT` | The key of a program's own crypto, found in its memory from outside with a decoder you write for its protocol, which sets the tests and judges what passes them: AES in ECB, CBC, CTR and GCM, ChaCha20, Salsa20 and libsodium's X forms of both, with their AEADs, RC4, 3DES, TEA, XTEA and Blowfish. `--process PID`, `--all` for its pages it cannot write too, `--physical`. |
 | `guest-net keys schannel --seconds N` | The secrets of Windows' own TLS (PowerShell, .NET, the system's services), read from `lsass`. |
 | `guest-usb devices`, `urbs`, `control`, `reports`, `hid`, `changes A B` | The guest's USB devices, their transfers, control requests, report descriptors, and what changed between two marks. |
 
@@ -265,7 +265,7 @@ Deleting that folder removes it.
   3. `guest-net keys own --flow ID --with SCRIPT` while the program runs. A UDP flow often has no program, since its socket is mostly missing from what MemProcFS lists, so give `--process PID`: `guest-exec --powershell 'Get-NetUDPEndpoint -LocalPort PORT'` names it, which the guest sees. `--all` adds the pages it cannot write, for a key built into it.
   4. `guest-net decode ID --with SCRIPT` then reads the flow, and later flows under the same key.
   A test that checks little lets windows through by chance, which judging throws away at the cost of time, while an AEAD's tag or several known bytes let nearly none through.
-  A key `keys own` does not find, kept only expanded, made anew for each message, or of a cipher it does not know, is for `guest-dbg` at the function that uses it.
+  A key `keys own` does not find, made anew for each message or of a cipher it does not know, is for `guest-dbg` at the function that uses it.
 - `guest-net http` reads HTTP/3 with the traffic secrets alone, while tshark's own reading of it (`packets`, `tshark`, an export in Wireshark) needs the handshake secrets too.
 - A TLS 1.3 connection that updated its keys holds only the newer ones. `keys scan` finds them, also after KeyUpdates sent padded, and guest-net reads the flow from the last update on, not before: `stream --decrypted`, `decode --decrypted`, and `http`, whose requests from there are named k. `--follow` catches the first ones before any update.
   A TLS 1.3 flow still `not found` while its program runs may pad its KeyUpdates to more than 256 bytes: `keys scan --wide --flow ID` tries after each of its last records too.
