@@ -178,13 +178,15 @@ class Agent:
     def command(self, text):
         """What the agent answers to one command, as text that is not looked into, or None and why there is none. A guest
         held still for a moment, as keys scan --pause holds it, is waited for up to ten seconds, since libvirt refuses
-        every agent command meanwhile."""
+        every agent command meanwhile. A stop of guest-dbg lasts too short a time for the guest's state to still show it
+        once the command failed, so that refusal is waited out as well."""
         until = time.monotonic() + 10
         while True:
             try:
                 return libvirt_qemu.qemuAgentCommand(self.guest, text, 30, 0), None
             except libvirt.libvirtError as e:
-                if time.monotonic() > until or not self.paused():
+                held = self.paused() or e.get_error_code() == libvirt.VIR_ERR_OPERATION_INVALID
+                if time.monotonic() > until or not held:
                     return None, str(e)
                 time.sleep(0.05)
 
