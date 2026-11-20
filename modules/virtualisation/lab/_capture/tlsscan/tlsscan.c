@@ -732,9 +732,10 @@ long tlsscan_quic_initial(const uint8_t *packet, size_t length, size_t at, uint3
     static const uint8_t salt2[20] = {0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
                                       0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9};
     hmac_key k;
-    uint8_t initial[32], secret[32], key[16], iv[12], hp[16], mask[16], header[128], nonce[12];
+    // A client that comes back sends the token the server gave it in its Initial packets, which makes their headers long.
+    uint8_t initial[32], secret[32], key[16], iv[12], hp[16], mask[16], header[2048], nonce[12];
     long result = -1;
-    if ((version != 1 && version != 2) || at > 64 || at + 4 + 16 > length || length > LARGEST || dcidlen > 20)
+    if ((version != 1 && version != 2) || at + 4 > sizeof header || at + 4 + 16 > length || length > LARGEST || dcidlen > 20)
         return -1;
     hmac_setup(&k, H_SHA256, version == 1 ? salt1 : salt2, 20);
     hmac(&k, dcid, dcidlen, NULL, 0, initial);

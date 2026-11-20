@@ -68,7 +68,7 @@ def free_port():
         return s.getsockname()[1]
 
 
-async def talk(suite, version, keys):
+async def talk(suite, version, keys, token=b""):
     server_configuration = QuicConfiguration(alpn_protocols=["test"], is_client=False, cipher_suites=[suite], supported_versions=[version])
     server_configuration.load_cert_chain("cert.pem", "key.pem")
     port = free_port()
@@ -76,7 +76,7 @@ async def talk(suite, version, keys):
                            stream_handler=lambda reader, writer: asyncio.ensure_future(handle(reader, writer)))
     relay = Relay(port)
     client_configuration = QuicConfiguration(alpn_protocols=["test"], is_client=True, verify_mode=ssl.CERT_NONE, cipher_suites=[suite],
-                                             supported_versions=[version], secrets_log_file=keys)
+                                             supported_versions=[version], secrets_log_file=keys, token=token)
     async with connect("127.0.0.1", relay.port, configuration=client_configuration) as client:
         reader, writer = await client.create_stream()
         writer.write(b"a question")
@@ -106,6 +106,15 @@ for suite, version in CASES:
     sessions.append(found)
     logs.append(written)
 print(f"{len(sessions)} QUIC connections of aioquic recorded")
+
+# A client that comes back sends the server's token in its Initial packets, as Edge does, which puts their packet number
+# far past where a header without one ends.
+with open("keys.log", "w") as keys:
+    datagrams = asyncio.run(talk(CipherSuite.AES_128_GCM_SHA256, QuicProtocolVersion.VERSION_1, keys, token=os.urandom(150)))
+with open("keys.log") as f:
+    opened_by = bytes.fromhex(next(line.split()[1] for line in f if line.strip() and not line.startswith("#")))
+assert tlsrecords.quic_hellos(datagrams, scanner.quic_initial) == (opened_by, 0x1301, ""), "the hellos of a client with a token were not read"
+print("the hellos of a client that sends a token are read")
 
 
 async def curl(keys):
@@ -142,6 +151,58 @@ if len(short) == 2:
     identifier = len(next(source for kind, _, _, _, _, source in tlsrecords.quic_packets(answer, None) if kind == "initial"))
     parts = [packet for _, _, _, packet, _, _ in tlsrecords.quic_packets(short[0] + short[1], identifier)]
     assert parts == short, [len(p) for p in parts]
+
+
+
+async def resumed(keys):
+    """Two connections of one client: the first gets a ticket, and the second asks its question as early data with it."""
+    tickets, kept = {}, []
+    configuration = QuicConfiguration(alpn_protocols=["test"], is_client=False)
+    configuration.load_cert_chain("cert.pem", "key.pem")
+    port = free_port()
+    listener = await serve("127.0.0.1", port, configuration=configuration,
+                           stream_handler=lambda reader, writer: asyncio.ensure_future(handle(reader, writer)),
+                           session_ticket_fetcher=lambda label: tickets.pop(label, None),
+                           session_ticket_handler=lambda ticket: tickets.__setitem__(ticket.ticket, ticket))
+    relay = Relay(port)
+    first = QuicConfiguration(alpn_protocols=["test"], is_client=True, verify_mode=ssl.CERT_NONE)
+    async with connect("127.0.0.1", relay.port, configuration=first, session_ticket_handler=kept.append) as client:
+        reader, writer = await client.create_stream()
+        writer.write(b"first")
+        writer.write_eof()
+        await reader.read()
+    await asyncio.sleep(0.2)
+    relay.kept.clear()
+    second = QuicConfiguration(alpn_protocols=["test"], is_client=True, verify_mode=ssl.CERT_NONE, secrets_log_file=keys, session_ticket=kept[-1])
+    async with connect("127.0.0.1", relay.port, configuration=second, wait_connected=False) as client:
+        reader, writer = await client.create_stream()
+        writer.write(b"early question")
+        writer.write_eof()
+        assert await reader.read() == b"answer to early question"
+        await asyncio.sleep(0.2)
+    listener.close()
+    return relay.kept
+
+
+with open("early.log", "w") as keys:
+    datagrams = asyncio.run(resumed(keys))
+with open("early.log") as f:
+    lines = [line.split() for line in f if line.strip() and not line.startswith("#")]
+early = {label: bytes.fromhex(secret) for label, _, secret in lines}
+opened_by = bytes.fromhex(lines[0][1])
+assert "CLIENT_EARLY_TRAFFIC_SECRET" in early, lines
+assert any(side == 0 and kind == "early" for side, datagram in datagrams for kind, *_ in tlsrecords.quic_packets(datagram, None)), \
+    "the client sent no early data, so this tests nothing"
+# Only what the client sent, as when its early data goes out and the server has not answered yet.
+sent = [d for d in datagrams if d[0] == 0]
+assert tlsrecords.quic_client_hello(sent, scanner.quic_initial) == (opened_by, ""), "the client's hello was not read from its own packets"
+found = tlsrecords.quic_session(datagrams, *tlsrecords.quic_hellos(datagrams, scanner.quic_initial))
+assert any(side == 0 and kind == tlsrecords.EARLY_PACKET for side, kind, _, _ in found.records), found.records
+hidden = bytearray(os.urandom(1 << 16))
+hidden[4096: 4096 + 32] = early["CLIENT_EARLY_TRAFFIC_SECRET"]
+hits = scanner.scan(hidden, len(hidden), 0x10000, [found], step=8, threads=1)
+assert [(hit.label, hit.secret, hit.address) for hit in hits] == [("CLIENT_EARLY_TRAFFIC_SECRET", early["CLIENT_EARLY_TRAFFIC_SECRET"], 0x10000 + 4096)], hits
+print("the secret of early data is found and named, the client's hello read before the server answers")
 
 rng = random.Random(11)
 memory = bytearray(os.urandom(1 << 20))

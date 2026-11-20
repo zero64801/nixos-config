@@ -625,11 +625,22 @@ REFRESH_TLB, REFRESH_PROCESSES = 0x2001080000000000, 0x2001000100000000
 
 
 class Pending:
-    """A flow whose memory was copied when its client began to encrypt, kept until its records tell the secrets."""
+    """A flow whose memory was copied when its client began to encrypt, kept until its records tell the secrets. An early
+    one was copied when the client sent early data, for the secret of that alone."""
 
-    def __init__(self, flow, windows, whole, source):
-        self.flow, self.windows, self.whole, self.source = flow, windows, whole, source
+    def __init__(self, flow, windows, whole, source, early=False):
+        self.flow, self.windows, self.whole, self.source, self.early = flow, windows, whole, source, early
         self.since, self.told, self.records, self.searched = time.monotonic(), set(), 0, ""
+
+    def wanted(self, found):
+        return {"CLIENT_EARLY_TRAFFIC_SECRET"} if self.early else WANTED[found.version]
+
+
+class Opening:
+    """What a QUIC connection's first packets tell before the server answers: the client random and the name asked for."""
+
+    def __init__(self, client_random, name):
+        self.client_random, self.name = client_random, name
 
 
 class Flow:
@@ -641,7 +652,7 @@ class Flow:
         self.datagrams, self.hellos, self.first = [], None, None
         # How many records the client had encrypted when the server's first encrypted record came.
         self.before = None
-        self.trigger = time.time()
+        self.trigger, self.early_trigger = time.time(), None
 
     def oriented(self):
         """The datagrams as from the client, 0, or the server, 1: the client is the side whose first datagram is an Initial."""
@@ -672,8 +683,9 @@ class Follower:
         self.flows, self.pending, self.handled, self.ready, self.later = {}, {}, set(), [], []
         # The process whose connection was seen last, and the flows put to it without a socket of their own.
         self.recent, self.guessed = None, set()
-        # The processes whose parents the capture has been told of, for --children of the readers.
-        self.listed = set()
+        # The processes whose parents the capture has been told of, for --children of the readers, and the QUIC connections
+        # whose early data was copied for.
+        self.listed, self.early = set(), set()
         self.memory = self.physical = self.pause = None
         if args.physical and chosen.processes:
             shared.fail("--process needs each program's own memory, which --physical does not read by program")
@@ -687,6 +699,13 @@ class Follower:
         if args.pause:
             self.pause = Pause()
         self.failures = (LookupError, self.pause.mi.Failed) if self.pause else (LookupError,)
+
+    def flow_of(self, stream):
+        """A flow by its key, or by ("early", its key) for the copy taken for its early data."""
+        return self.flows[stream[1]] if stream[0] == "early" else self.flows[stream]
+
+    def trigger_of(self, stream):
+        return self.flow_of(stream).early_trigger if stream[0] == "early" else self.flow_of(stream).trigger
 
     def run(self):
         reader = self.reader = packets.follow(self.capture.file(NET))
@@ -778,6 +797,15 @@ class Follower:
             flow.first = packet.time
         if packet.time - flow.first <= QUIC_OPENING and len(flow.datagrams) < 400:
             flow.datagrams.append((packet.sent, packet.payload))
+        if key not in self.early and packet.sent and any(kind == "early" for kind, *_ in tlsrecords.quic_packets(packet.payload, None)):
+            # Early data goes out with the client's first packets, under a secret its library wipes once the handshake is done,
+            # so its copy is taken now, from the client's hello alone, and checked once the server has answered.
+            hello = tlsrecords.quic_client_hello(flow.oriented(), self.scanner.quic_initial)
+            if hello:
+                self.early.add(key)
+                flow.early_trigger = packet.time
+                if self.chosen.host([hello[1]] if hello[1] else [], flow.remote.rsplit(":", 1)[0]):
+                    self.ready.append((("early", key), Opening(*hello)))
         if key in self.handled:
             return
         found = flow.session(self.scanner.quic_initial)
@@ -821,7 +849,7 @@ class Follower:
 
     def take(self, groups):
         """Copies the memory of each group's program around its flows' client randoms, all of it when it is small enough."""
-        held, waited = time.monotonic(), time.time() - min(self.flows[s].trigger for _, members in groups for s, _ in members)
+        held, waited = time.monotonic(), time.time() - min(self.trigger_of(s) for _, members in groups for s, _ in members)
         try:
             if self.pause:
                 self.pause.hold()
@@ -851,9 +879,9 @@ class Follower:
                   file=sys.stderr)
             for stream, _ in members:
                 if stream in self.guessed and not windows[stream]:
-                    print(f"{self.flows[stream]}: no socket of it was seen, and its client random is not in {source}", file=sys.stderr)
+                    print(f"{self.flow_of(stream)}: no socket of it was seen, and its client random is not in {source}", file=sys.stderr)
                     continue
-                self.pending[stream] = Pending(self.flows[stream], windows[stream], whole, source)
+                self.pending[stream] = Pending(self.flow_of(stream), windows[stream], whole, source, early=stream[0] == "early")
 
     def owners(self, batch):
         """The flows of a batch by the process their connection belongs to, as the guest's memory shows it now, which is
@@ -862,7 +890,7 @@ class Follower:
         live = self.memory.sample()
         # MemProcFS leaves out the connections of a process it does not know yet, as a program just started. Its list of UDP
         # sockets misses many of QUIC's anyway, so only TCP is worth the time this takes.
-        if any(socket_of(live, self.flows[stream]) is None and self.flows[stream].proto == "tcp" for stream, _ in batch):
+        if any(socket_of(live, self.flow_of(stream)) is None and self.flow_of(stream).proto == "tcp" for stream, _ in batch):
             windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_PROCESSES, 1)
             live = self.memory.sample()
         entries = {}
@@ -883,18 +911,18 @@ class Follower:
             return self.chosen.covers(pid, name, parent_of)
 
         for stream, found in batch:
-            entry = entries[stream] = socket_of(live, self.flows[stream])
-            if entry is None and self.flows[stream].proto == "udp" and self.recent is not None:
+            entry = entries[stream] = socket_of(live, self.flow_of(stream))
+            if entry is None and self.flow_of(stream).proto == "udp" and self.recent is not None:
                 # A QUIC connection of a browser is its network process's like its others, which its client random proves.
                 if wanted(self.recent):
                     self.guessed.add(stream)
                     by.setdefault(self.recent, []).append((stream, found))
                 continue
             if entry is None:
-                late = (time.time() - self.flows[stream].trigger) * 1000
-                port = self.flows[stream].guest.rsplit(":", 1)[-1]
+                late = (time.time() - self.trigger_of(stream)) * 1000
+                port = self.flow_of(stream).guest.rsplit(":", 1)[-1]
                 near = [f"{e['proto']} {e['local']} -> {e['remote'] or '*'} {e['process']}[{e['pid']}]" for e in live if e["local"].endswith(f":{port}")]
-                print(f"{self.flows[stream]} {plain(found.name or '', 60)}: closed before its program was seen, {late:.0f} ms after its handshake"
+                print(f"{self.flow_of(stream)} {plain(found.name or '', 60)}: closed before its program was seen, {late:.0f} ms after its handshake"
                       f"{', its port has ' + '; '.join(near) if near else ''}", file=sys.stderr)
                 continue
             # A program that was not asked for still counts as the last one seen, for the QUIC of a browser.
@@ -908,7 +936,7 @@ class Follower:
             tell({"do": "note", "kind": "owners", "entries": seen})
         started = [p for p in owners.lineage(windows, list(by)) if (p["pid"], p["ppid"], p["process"]) not in self.listed]
         if started:
-            tell({"do": "note", "kind": "processes", "entries": started})
+            tell({"do": "note", "kind": "processes", "entries": started}, needed=False)
             self.listed |= {(p["pid"], p["ppid"], p["process"]) for p in started}
         windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_TLB, 1)
         groups = []
@@ -922,8 +950,9 @@ class Follower:
         found = pending.flow.session(self.scanner.quic_initial)
         if not found:
             return False
+        wanted = pending.wanted(found)
         if len(found.records) == pending.records and not final:
-            return WANTED[found.version] <= pending.told
+            return wanted <= pending.told
         pending.records = len(found.records)
         hits = []
         for low, window in pending.windows:
@@ -931,7 +960,7 @@ class Follower:
         labels = pending.told | {hit.label for hit in hits}
         # The whole copy is searched once, when the records the traffic secrets open have come.
         ready = final or found.version != 0x0304 or sum(1 for record in found.records if record[0] == 1) > 1
-        if not WANTED[found.version] <= labels and pending.whole and ready:
+        if not wanted <= labels and pending.whole and ready:
             total = sum(length for _, _, length in pending.whole)
             step = step_for(self.args, total)
             for start, buffer, length in pending.whole:
@@ -940,11 +969,17 @@ class Follower:
         fresh = {hit.label: hit for hit in hits if hit.label not in pending.told}
         if fresh:
             tell({"do": "note", "kind": "keys", "lines": [hit.line for hit in fresh.values()]})
+            # A flow put to a program without a socket of its own is that program's once its memory opened the flow, which
+            # the readers' --process and their owners column learn only from the capture.
+            if stream in self.guessed and isinstance(pending.source, Process):
+                self.guessed.discard(stream)
+                tell({"do": "note", "kind": "owners", "entries": [{"proto": pending.flow.proto, "local": pending.flow.guest, "remote": pending.flow.remote,
+                                                                    "pid": pending.source.pid, "process": plain(pending.source.name, 200), "source": "keys"}]})
             pending.told |= set(fresh)
             print(f"{pending.flow}  {plain(found.name or '-', 60)}  {'QUIC' if found.quic else 'TLS ' + VERSIONS[found.version]}  "
                   f"{', '.join(sorted(fresh))} in {pending.source}")
             sys.stdout.flush()
-        done = WANTED[found.version] <= pending.told
+        done = wanted <= pending.told
         if done:
             del self.pending[stream]
         return done
@@ -961,7 +996,7 @@ class Follower:
                     self.pending.pop(stream, None)
                     continue
                 print(f"{pending.flow} {plain(getattr(found, 'name', '') or '-', 60)}: "
-                      f"{'only ' + ', '.join(sorted(pending.told)) if pending.told else 'its secrets were not in the copy'} "
+                      f"{'only ' + ', '.join(sorted(pending.told)) if pending.told else 'its early data secret was not in the copy' if pending.early else 'its secrets were not in the copy'} "
                       f"({len(pending.windows)} places of its client random{pending.searched}, {counts[0]} records of the client and "
                       f"{counts[1]} of the server{', early data offered' if getattr(found, 'early', False) else ''})", file=sys.stderr)
                 self.pending.pop(stream, None)

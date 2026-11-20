@@ -228,11 +228,14 @@ def listing(args):
                   f"{'  stopped: ' + plain(said['stopped']) if said.get('stopped') else ''}{'' if said.get('ended') else '  still recording'}")
 
 
-def tell(request):
-    """Asks the open session to add something to its capture. Its answer, or why there is none."""
+WARNED = set()
+
+
+def ask(request):
+    """Asks the open session to add something to its capture: its answer, or None and why there is none."""
     folder = os.environ.get("VM_INSPECT_DIR")
     if not folder:
-        fail("this needs an open session, which writes the capture")
+        return None, "this needs an open session, which writes the capture"
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     conn.settimeout(30)
     try:
@@ -245,15 +248,29 @@ def tell(request):
                 break
             reply += more
     except OSError as e:
-        fail(f"the session did not answer: {e}")
+        return None, f"the session did not answer: {e}"
     finally:
         conn.close()
     try:
         reply = json.loads(reply)
     except ValueError:
-        fail("the session gave no answer")
+        return None, "the session gave no answer"
+    if not isinstance(reply, dict):
+        return None, "the session gave no answer"
     if "error" in reply:
-        fail(str(reply["error"]))
+        return None, str(reply["error"])
+    return reply, None
+
+
+def tell(request, needed=True):
+    """Asks the open session to add something to its capture, and its answer. What is not needed only warns, once, when the
+    session refuses it, as one of an older build does a kind of note it does not know."""
+    reply, error = ask(request)
+    if error and needed:
+        fail(error)
+    if error and request.get("kind") not in WARNED:
+        WARNED.add(request.get("kind"))
+        print(f"guest-{SETTINGS.tool}: the session keeps no {request.get('kind')} ({plain(error, 200)}), so they are left out", file=sys.stderr)
     return reply
 
 

@@ -82,6 +82,9 @@ The idea is that of X-Ray-TLS (Moriconi et al., 2024) and of DRAKVUF's tlsmon, h
   `--pause` holds the whole guest still while it copies, which catches nearly every connection, and takes the debug stub, which `keys schannel` and `guest-gdb` then cannot use.
   The agent waits out each hold, so tools that ask the guest work meanwhile, a little later.
   A QUIC connection's socket is often missing from what MemProcFS lists, and such a flow is searched for in the program whose connection was seen last, a browser's network process, and taken only when its client random is there.
+  Its secrets found there prove the program, which is then kept in the capture as the flow's owner, for `--process` and the readers' program column.
+  A browser that comes back to a server sends its first requests as early data, under a secret it wipes once the handshake is done, so a QUIC connection whose client sends early data gets a copy of its own at once, from the client's hello alone, which the early data's packets check once the server has answered.
+  With that secret tshark opens the early data too, and `http` reads the requests in it.
 - `--physical` searches the guest's whole RAM instead of one program's memory, around each client random, without the agent, and is what `--follow` takes in a guest that is not Windows, since the agent cannot answer while the guest is held.
   `--deep` searches all of it, for secrets kept apart from the client random, as OpenSSL's of TLS 1.2 are.
 
@@ -142,7 +145,7 @@ The fourth reads what Windows' and Linux' own tools say of their connections.
 The fifth undoes the encodings of bodies, gzip, deflate, brotli and zstd, alone and chained, stops at a limit for a body made to grow without end, and lays out JSON.
 The sixth runs OpenSSL's client and server in every suite `keys scan` knows, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
 The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
-The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, splits datagrams sent in one batch, and has the search find each secret where it was put.
+The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, also of a client that sends a token in them, splits datagrams sent in one batch, has a client come back with a ticket and send early data, and has the search find each secret where it was put, that of the early data among them.
 The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.

@@ -155,6 +155,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 - On its own it searches the programs whose connections are open now: through MemProcFS in Windows, through the guest's page map by the agent elsewhere.
 - `--follow --pause` copies each new connection's program a few milliseconds after its handshake, with the guest held still for each copy, about 50 ms for a browser.
   Browsers close most connections and wipe their secrets within a second, so this is the mode for them and for anything short lived.
+  It also catches the secret of the early data a browser sends when it comes back to a server over QUIC, which only this mode can.
 - `--physical` searches the whole RAM around each client random, `--deep` all of it, and `--process` keeps to a program and searches it for flows whose program is not known.
 - It says why a flow was not found: closed before its program was seen, or no secrets in the copy.
 

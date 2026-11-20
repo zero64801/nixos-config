@@ -237,7 +237,7 @@ def run(args):
                 shared.tell({"do": "note", "kind": "owners", "entries": fresh[at: at + 4096]})
             started = [p for p in reader.processes() if (p["pid"], p["ppid"], p["process"]) not in listed]
             for at in range(0, len(started), 4096):
-                shared.tell({"do": "note", "kind": "processes", "entries": started[at: at + 4096]})
+                shared.tell({"do": "note", "kind": "processes", "entries": started[at: at + 4096]}, needed=False)
             listed |= {(p["pid"], p["ppid"], p["process"]) for p in started}
             for entry in fresh:
                 told.add((entry["proto"], entry["local"], entry["remote"], entry["pid"]))
@@ -257,8 +257,11 @@ def known(capture):
 def best(found, flow):
     """The sighting of the program a flow belongs to, as the last look before it ended saw it, or None."""
     chosen = None
+    port = flow["guest"].rsplit(":", 1)[-1]
+    # Windows lists a UDP socket by the address it is bound to, which is mostly every address of the guest.
+    locals_ = {flow["guest"]} | ({f"0.0.0.0:{port}", f"[::]:{port}"} if flow["proto"] == "udp" else set())
     for entry in found:
-        if entry.get("proto") != flow["proto"] or entry.get("local") != flow["guest"]:
+        if entry.get("proto") != flow["proto"] or entry.get("local") not in locals_:
             continue
         if flow["proto"] == "tcp" and entry.get("remote") not in ("", flow["remote"]):
             continue

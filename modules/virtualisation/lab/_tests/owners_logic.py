@@ -81,3 +81,52 @@ seen = [
 ]
 assert owners.owner_of(seen, flow) == "new[2]", owners.owner_of(seen, flow)
 print("owners reads Windows and Linux alike")
+
+# A session of an older build refuses notes of processes, which only add to what readers can tell, so following keys or
+# owners has to go on with one warning, while a refused note that is needed still stops.
+import contextlib
+import io
+import json
+import os
+import socket
+import tempfile
+import threading
+
+import capture
+
+capture.SETTINGS = capture.Settings("net", "-", "-", "-", "-", "-", "-")
+folder = tempfile.mkdtemp()
+listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+listener.bind(os.path.join(folder, "control.sock"))
+listener.listen()
+
+
+def session():
+    while True:
+        conn, _ = listener.accept()
+        with conn:
+            request = json.loads(conn.makefile().readline())
+            answer = {"folder": folder} if request.get("kind") == "keys" else {"error": "a note is of keys or owners"}
+            conn.sendall(json.dumps(answer).encode() + b"\n")
+
+
+threading.Thread(target=session, daemon=True).start()
+os.environ["VM_INSPECT_DIR"] = folder
+with contextlib.redirect_stderr(io.StringIO()) as said:
+    for _ in range(3):
+        assert capture.tell({"do": "note", "kind": "processes", "entries": []}, needed=False) is None
+    assert capture.tell({"do": "note", "kind": "keys", "lines": []}) == {"folder": folder}
+assert said.getvalue().count("keeps no processes") == 1, said.getvalue()
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        capture.tell({"do": "note", "kind": "owners", "entries": []})
+    raise AssertionError("a needed note the session refused went by unseen")
+except SystemExit:
+    pass
+print("a session that keeps no processes only warns, once")
+
+udp = {"proto": "udp", "guest": "192.168.122.48:55157", "remote": "172.217.29.49:443", "ended": 100.0}
+assert owners.owner_of([{"proto": "udp", "local": "0.0.0.0:55157", "remote": "", "pid": 7804, "process": "msedge.exe", "time": 90 * 10 ** 9},
+                        {"proto": "udp", "local": "0.0.0.0:55158", "remote": "", "pid": 1, "process": "other", "time": 90 * 10 ** 9}],
+                       udp) == "msedge.exe[7804]", "a UDP socket bound to every address has to be the flow's of its port"
+print("a UDP socket bound to every address is its port's flows' owner")
