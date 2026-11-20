@@ -6,12 +6,14 @@ programs or to some hosts, as scope.py chooses them.
 """
 import base64
 import calendar
+import datetime
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 import bodies
 import capture as shared
@@ -318,21 +320,113 @@ def http(capture, args):
               + (f", {encrypted} flows went to named hosts, see guest-net tls for those that are encrypted" if encrypted else ""))
 
 
-def both_ways(capture, request, keys):
-    """The headers and the body of an HTTP/2 request and of its answer, from the frames of its stream."""
-    sent, got, asked, answer = [], [], b"", b""
-    stream = request["id"].split(".")[1]
-    for packet in capture.ek(NET, ["frame.packet_flags_direction"] + FRAME_FIELDS, f"tcp.stream == {request['flow'][1:]} && http2.streamid == {stream}", keys):
+def h2_streams(capture, keys, display):
+    """The headers and the data of each HTTP/2 stream the display filter keeps, both ways, as {(tcp stream, stream): [the
+    headers the guest sent, those it got, what it sent, what it got]}, in one reading."""
+    found = {}
+    for packet in capture.ek(NET, ["frame.packet_flags_direction", "tcp.stream"] + FRAME_FIELDS, display, keys):
         from_guest = first(packet, "frame.packet_flags_direction") == SENT
         for _, number, headers, data in frames(packet):
-            if number != stream:
-                continue
-            (sent if from_guest else got).extend(headers)
-            if from_guest:
-                asked += data
-            else:
-                answer += data
-    return sent, got, asked, answer
+            parts = found.setdefault((first(packet, "tcp.stream"), number), [[], [], bytearray(), bytearray()])
+            parts[0 if from_guest else 1].extend(headers)
+            if len(parts[2 if from_guest else 3]) + len(data) <= bodies.LIMIT:
+                parts[2 if from_guest else 3] += data
+    return found
+
+
+def both_ways(capture, request, keys):
+    """The headers and the body of an HTTP/2 request and of its answer, from the frames of its stream."""
+    tcp, stream = request["flow"][1:], request["id"].split(".")[1]
+    sent, got, asked, answer = h2_streams(capture, keys, f"tcp.stream == {tcp} && http2.streamid == {stream}").get((tcp, stream), [[], [], b"", b""])
+    return sent, got, bytes(asked), bytes(answer)
+
+
+def http_parts(capture, args, keys, only, found):
+    """The headers and bodies of each request found and of its answer, as {id: (headers sent, body sent, headers got, body
+    got)}, read once for HTTP/1 and once for HTTP/2, while HTTP/3's come with the request."""
+    parts = {}
+    numbers = {r["id"][1:] for r in found if r["version"] == "1"}
+    if numbers:
+        fields = ["frame.number", "http.request_in", "http.request.line", "http.response.line", "http.file_data"]
+        for packet in capture.ek(NET, fields, joined(args, only, "http"), keys):
+            number, asked_in = first(packet, "frame.number"), first(packet, "http.request_in")
+            data = bytes.fromhex("".join(packet["http.file_data"]).replace(":", "")) if packet["http.file_data"] else b""
+            if packet["http.request.line"] and number in numbers:
+                parts.setdefault(f"h{number}", [[], b"", [], b""])[0:2] = [header_lines(packet["http.request.line"]), data]
+            elif packet["http.response.line"] and asked_in in numbers:
+                parts.setdefault(f"h{asked_in}", [[], b"", [], b""])[2:4] = [header_lines(packet["http.response.line"]), data]
+    if any(r["version"] == "2" for r in found):
+        streams = h2_streams(capture, keys, joined(args, only, "http2.type == 0 || http2.type == 1"))
+        for r in found:
+            if r["version"] == "2":
+                sent, got, asked, answer = streams.get((r["flow"][1:], r["id"].split(".")[1]), [[], [], b"", b""])
+                parts[r["id"]] = [sent, bytes(asked), got, bytes(answer)]
+    for r in found:
+        if r["version"] == "3":
+            parts[r["id"]] = [r["sent"], r["asked"], r["got"], r["body"]]
+    return parts
+
+
+def header_lines(lines):
+    """(name, value) of each header line of HTTP/1 as tshark gives them."""
+    found = []
+    for line in lines:
+        name, colon, value = line.rstrip("\r\n").partition(":")
+        if colon:
+            found.append((name.strip(), value.strip()))
+    return found
+
+
+def har(capture, args):
+    """The requests of the flows and time chosen with their answers as a HAR 1.2 file in ./out, for browser developer tools,
+    Fiddler and other readers of HAR. Bodies are undone of their encoding, and those that are not text go as base64."""
+    known = owners.known(capture)
+    every = flows(capture, None, args.keys)
+    _, only = scoped(capture, args, every)
+    found = exchanges(capture, args, args.keys, only)
+    parts = http_parts(capture, args, args.keys, only, found)
+    by_id = {f["id"]: f for f in every}
+
+    def content(data, headers, request):
+        said = {name.lower(): value for name, value in headers}
+        data, note = bodies.decoded(data, said.get("content-encoding", ""))
+        kind = said.get("content-type", "")
+        shown = {"mimeType": kind, "size": len(data)} if not request else {"mimeType": kind}
+        try:
+            shown["text"] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            shown["text"], shown["encoding"] = base64.b64encode(data).decode(), "base64"
+        if note:
+            shown["comment"] = note
+        return shown
+
+    entries = []
+    for request in found:
+        sent, asked, got, answer = parts.get(request["id"], [[], b"", [], b""])
+        flow = by_id.get(request["flow"])
+        status, _, phrase = request["status"].partition(" ")
+        version = {"1": "HTTP/1.1", "2": "h2", "3": "h3"}[request["version"]]
+        query = urllib.parse.parse_qsl(urllib.parse.urlsplit(request["url"]).query, keep_blank_values=True)
+        took = round(request["took"] * 1000, 3) if request["took"] is not None else 0
+        entry = {"startedDateTime": datetime.datetime.fromtimestamp(float(request["time"]), datetime.UTC).isoformat().replace("+00:00", "Z"),
+                 "time": took,
+                 "request": {"method": request["method"], "url": request["url"], "httpVersion": version, "cookies": [],
+                             "headers": [{"name": n, "value": v} for n, v in sent], "queryString": [{"name": n, "value": v} for n, v in query],
+                             "headersSize": -1, "bodySize": len(asked)},
+                 "response": {"status": int(status) if status.isdigit() else 0, "statusText": phrase, "httpVersion": version, "cookies": [],
+                              "headers": [{"name": n, "value": v} for n, v in got], "content": content(answer, got, False), "redirectURL": "",
+                              "headersSize": -1, "bodySize": len(answer)},
+                 "cache": {}, "timings": {"blocked": -1, "dns": -1, "connect": -1, "ssl": -1, "send": 0, "wait": took, "receive": 0},
+                 "connection": request["flow"], "_program": owners.owner_of(known, flow) if flow else ""}
+        if asked:
+            entry["request"]["postData"] = content(asked, sent, True)
+        if flow:
+            entry["serverIPAddress"] = flow["address"]
+        entries.append(entry)
+    log = {"log": {"version": "1.2", "creator": {"name": "guest-net", "version": "1"}, "pages": [], "entries": entries,
+                   "comment": f"what the guest {capture.said.get('domain', '')} sent and got, from {capture.folder}"}}
+    saved(os.path.basename(args.file or f"http-{os.path.basename(capture.folder)}.har"), json.dumps(log, indent=1).encode())
+    print(f"{len(entries)} requests")
 
 
 def detail(capture, args, found):
@@ -721,7 +815,10 @@ def watch(capture, args):
 
 
 def export(capture, args):
-    """A copy of the capture, or of a part of it, into ./out, with the TLS secrets in it when asked for."""
+    """A copy of the capture, or of a part of it, into ./out, with the TLS secrets in it when asked for, or its requests as HAR."""
+    if args.har:
+        har(capture, args)
+        return
     folder = os.path.realpath("out")
     if not os.path.isdir(folder):
         fail("there is no ./out folder to write to")
@@ -926,6 +1023,8 @@ def build(parser):
     sub.add_argument("file", nargs="?", help="the name in ./out")
     sub.add_argument("--filter", help="only packets that match this display filter")
     sub.add_argument("--decrypted", action="store_true")
+    sub.add_argument("--har", action="store_true", help="the requests of HTTP/1, HTTP/2 and HTTP/3 and their answers as a HAR file instead, "
+                                                        "for browser developer tools, Fiddler and other readers of HAR")
     sub = actions.add_parser("tshark", help="run tshark with these options on the capture, in the box", prefix_chars="\0")
     sub.add_argument("arguments", nargs="*")
     sub.set_defaults(run=passthrough, capture=None, keys=None)

@@ -145,6 +145,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | `guest-net ws [ID]` | The messages of each WebSocket both ways, undone of permessage-deflate, `--save NAME` writes them to `./out` as JSON lines. `http` marks the requests that became one. |
 | `guest-net tls`, `stream ID` | Each handshake and whether the keys open it, what went each way in one flow (`--decrypted`, `--hex`). |
 | `guest-net packets FILTER`, `tshark ARGS`, `export` | Wireshark's display filters, any tshark options on the capture, a copy with its keys into `./out`. |
+| `guest-net export --har [FILE]` | The requests and answers of the flows chosen as a HAR file in `./out`, for the user's browser tools or Fiddler. |
 | `guest-net watch` | Names, requests and handshakes as they happen. |
 | `guest-net owners --follow` | Which program each connection belongs to, read from a Windows guest's memory or asked of the agent elsewhere. |
 | `guest-net keys pull PATH` | A key log a program in the guest wrote, as Edge or Chrome do with `SSLKEYLOGFILE` set in a `guest-exec --powershell` script. |

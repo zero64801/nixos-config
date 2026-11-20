@@ -66,6 +66,8 @@ host.needs [ "modules/virtualisation/inspect" ] (
     };
 
     testScript = ''
+      import json
+
       machine.succeed(
           "install -d /srv/site && echo 'hello from the site' > /srv/site/hello.txt",
           "systemd-run --unit=site python3 -m http.server 8000 --bind 10.9.9.1 --directory /srv/site",
@@ -116,6 +118,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == window; guest-net flows --since done",
           "echo == packets; guest-net packets dns --max 4",
           "echo == export; guest-net export --decrypted all.pcapng",
+          "echo == har; guest-net export --har all.har",
           "echo == conversations; guest-net tshark -q -z conv,tcp",
           "echo == captures; guest-net captures",
           "echo == elsewhere; VM_INSPECT_CAPTURE=/elsewhere/driven/$(basename $VM_INSPECT_CAPTURE) guest-net summary",
@@ -147,6 +150,19 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert machine.succeed("cat /tmp/work/out/secret.txt") == "the secret behind TLS"
           exported = machine.succeed("${tshark} -n -r /tmp/work/out/all.pcapng -Y http2.headers.path -T fields -e http2.headers.path")
           assert "/secret.txt" in exported, "the exported capture does not open without the keys beside it"
+
+      with subtest("the requests of HTTP/1 and HTTP/2 go into a HAR file with their headers and bodies, undone of their encoding"):
+          entries = json.loads(machine.succeed("cat /tmp/work/out/all.har"))["log"]["entries"]
+          # The first of each, as a page asked for twice keeps the first in the listing too.
+          by_url = {(entry["request"]["method"], entry["request"]["url"]): entry for entry in reversed(entries)}
+          hello = by_url[("GET", "http://site.test:8000/hello.txt")]
+          assert hello["request"]["httpVersion"] == "HTTP/1.1" and hello["response"]["content"]["text"] == "hello from the site\n", hello
+          secret = by_url[("GET", "https://tls.test:8443/secret.txt")]
+          assert secret["request"]["httpVersion"] == "h2" and secret["response"]["content"]["text"] == "the secret behind TLS", secret
+          posted = by_url[("POST", "https://tls.test:8443/data.json")]
+          assert json.loads(posted["request"]["postData"]["text"]) == {"user": "alice", "pin": 1234}, posted["request"]
+          assert by_url[("GET", "https://tls.test:8443/data.json")]["response"]["content"]["text"].startswith('{"name": "site"'), entries
+          assert by_url[("POST", "http://site.test:8000/form")]["request"]["postData"]["text"] == "name=alice&pin=1234", entries
 
       with subtest("bodies read as meant: undone of their encoding, JSON laid out, and the requests' own with them"):
           assert "content-encoding: gzip" in section["json"] and '\n  "name": "site",' in section["json"], section["json"]

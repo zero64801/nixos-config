@@ -295,3 +295,18 @@ call = decoded([{"flow": "u4", "events": [chunk(1, 0, 0, 0, h3frame(0x01, asked_
 answered_call = call["requests"][0]
 assert answered_call["trailers"] == [["grpc-status", "0"]] and answered_call["request_trailers"] == [], answered_call
 print("an answer's trailers stay with the answer")
+
+# The same calls as a HAR file, as browser developer tools and Fiddler read it.
+os.makedirs("out", exist_ok=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    net.export(recorded, argparse.Namespace(**{**vars(args), "file": "calls.har", "har": True, "filter": None, "decrypted": False}))
+with open("out/calls.har") as f:
+    log = json.load(f)["log"]
+assert log["version"] == "1.2" and len(log["entries"]) == 4, log
+form_entry = log["entries"][3]
+assert form_entry["request"]["method"] == "POST" and form_entry["request"]["httpVersion"] == "h3", form_entry["request"]
+assert form_entry["request"]["postData"]["text"] == "name=alice&pin=1234", form_entry["request"]["postData"]
+assert {"name": "x-asked", "value": "by curl"} in form_entry["request"]["headers"], form_entry["request"]["headers"]
+assert form_entry["response"]["status"] == 200 and json.loads(form_entry["response"]["content"]["text"])["got"] == "name=alice&pin=1234", form_entry["response"]
+assert form_entry["startedDateTime"].endswith("Z") and form_entry["timings"]["wait"] >= 0 and form_entry["connection"].startswith("u"), form_entry
+print("the calls are written as HAR")

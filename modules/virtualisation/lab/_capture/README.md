@@ -28,6 +28,7 @@ What it says is shown with the characters a terminal acts on taken out.
 | `owners [--follow]` | Which program each connection belongs to, kept in the capture for `flows` and `http` |
 | `keys add\|pull\|schannel\|scan\|list` | TLS secrets for the capture |
 | `export [--decrypted]` | The capture, or a part of it, into `./out`, with the secrets inside |
+| `export --har [FILE]` | The requests of HTTP/1, HTTP/2 and HTTP/3 of the flows and time chosen, with their answers, as HAR 1.2 in `./out`: headers, bodies undone of their encoding, base64 for those that are not text, timings, the server's address, the flow and the program, for browser developer tools, Fiddler and other readers of HAR |
 | `tshark ARGS` | Any `tshark` options on the capture, in the box |
 
 `--since MARK` and `--until MARK` take a moment that `guest-mark` set, or seconds from the start.
@@ -151,5 +152,6 @@ The eighth runs aioquic's client and server in every suite and both versions of 
 The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
 The eleventh reads a WebSocket of HTTP/1 through tshark, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is.
+The first also exports its requests as HAR, and the tenth those of HTTP/3.
 The twelfth decodes gRPC's messages by their wire format and by name with protoc, shows a call of HTTP/3 with a gzipped message and its status, reads gRPC-Web's text and trailers, and takes a hostile guest's lengths, wire types and nesting.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
