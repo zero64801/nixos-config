@@ -54,10 +54,12 @@ Nothing is left out while recording, which costs little and keeps the lookups an
 
 ```
 {"flow": "t12", "proto": "tcp", "guest": "10.0.0.5:51000", "remote": "203.0.113.7:4443", "names": ["c2.example"], "decrypted": false,
- "chunks": [{"time": 1795130000.25, "sent": true, "data": "BASE64"}, ...]}
+ "quic": false, "chunks": [{"time": 1795130000.25, "sent": true, "data": "BASE64"}, ...]}
 ```
 
 A chunk is what one packet carried, or inside TLS one record, so a message of the protocol may span several and the decoder joins each direction itself.
+A QUIC flow with `--decrypted` has `"quic": true` and its streams' chunks instead, each also with `"stream"`, its `"offset"` in that stream and `"fin"`, in the order of the packets, so out of order and again where packets were sent again, and the decoder puts each stream together by offset.
+They come from a key update on too, where guest-net opened the flow itself, and then a stream begun before the update starts at an offset past 0.
 A minimal one:
 
 ```
@@ -165,8 +167,10 @@ What it lists is what to send from Linux for the same effect.
 - A KeyUpdate padded to more than 256 bytes earlier than a side's last four records is found only with `keys scan --wide`, which tries after each of a side's last fifteen records and so takes longer.
   One sent padded among a side's first eight records, which the session of the first keys tries, is told apart by the order of the records, except when the client sent early data, and then its newer secret is named as a first one.
   The headers of HTTP/2 that refer to entries HPACK put in its table before the update cannot be read, its bodies and other headers can.
-- After a QUIC key update the headers that refer to entries QPACK put in its table before it show as `?: (set before the update)`, the host name mostly among them, while the method, the path, literal values and the bodies read.
-  A stream begun before the update, as a long download's, stays unread, since HTTP/3 is read from each stream's start.
+- After a QUIC key update the headers that refer to entries QPACK put in its table before it show as `?: (set before the update)`, while the method, the path, literal values and the bodies read.
+  The host name is mostly among them, and a URL then takes the one the TLS hello asked for, with the server's port, marked as such, since a browser may send other hosts its certificate covers over the same connection.
+  The same goes for HTTP/2 after TLS key updates.
+  A stream begun before the update, as a long download's, is not read by `http`, since HTTP/3 is read from each stream's start, and `decode --decrypted` hands what came of it after the update to a decoder.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.
 - Isochronous transfers, as of sound and cameras, are shown as transfers without their packets taken apart.
 
@@ -200,8 +204,8 @@ It then has aioquic's client update its keys twice while some of the server's da
 A long download that loses every fifth of the server's datagrams has its server's secret found only at the numbers the client acknowledged.
 The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found, then has `trace` start a shell that runs curl and show curl's flow under the shell, and holds a connection that updated its keys both ways, whose newest secrets have to be found and the flow read from the update on, listing its request with `http` and showing it in full.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
-The server updates its keys before its first answer, and with only the secrets after the update `http` has to list and show what was asked from then on, and keys scan has to take the flow's last packets from the capture and find those secrets with them.
-The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a flow both ways and pass on its failure, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is, and reads HTTP/2 that guest-net opened itself from the middle of its connection.
+The server updates its keys before its first answer, and with only the secrets after the update `http` has to list and show what was asked from then on, with the host from the TLS hello, and keys scan has to take the flow's last packets from the capture and find those secrets with them, and a decoder has to be handed the flow's stream chunks, with the keys and from the update on.
+The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a flow both ways and pass on its failure, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is, and reads HTTP/2 that guest-net opened itself from the middle of its connection, a host that HPACK's table had taken from the TLS hello.
 The first also exports its requests as HAR, and the tenth those of HTTP/3.
 The twelfth decodes gRPC's messages by their wire format and by name with protoc, shows a call of HTTP/3 with a gzipped message and its status, reads gRPC-Web's text and trailers, and takes a hostile guest's lengths, wire types and nesting.
 The thirteenth runs `keys scan` whole on the capture of a QUIC download that lost every fifth of the server's datagrams and then updated its keys, with made up memory in place of the guest's RAM that holds only the secrets after the update, and has it note both, the server's from the numbers the client acknowledged, and guest-net read what was asked after the update with them.

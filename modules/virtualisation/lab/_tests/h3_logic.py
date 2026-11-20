@@ -369,3 +369,19 @@ memory[9000: 9000 + len(hidden["SERVER_TRAFFIC_SECRET_1"])] = hidden["SERVER_TRA
 hits = scanner.scan(memory, len(memory), 0, latest, step=8)
 assert {(hit.label, hit.secret) for hit in hits} == set(hidden.items()), [(hit.label, hit.address) for hit in hits]
 print("keys scan takes a QUIC flow's last packets from the capture and finds its secrets after the update with them")
+
+# A decoder of the program's own protocol is handed a QUIC flow's streams, each chunk with its stream and its offset, read
+# with the keys and from a key update on alike.
+with open("decoder.py", "w") as f:
+    f.write("import base64, json, sys\n"
+            "given = json.load(sys.stdin)\n"
+            "got = b''.join(base64.b64decode(c['data']) for c in sorted(given['chunks'], key=lambda c: (c['stream'], c['offset'])) if not c['sent'])\n"
+            "print(json.dumps({'quic': given['quic'], 'streams': sorted({c['stream'] for c in given['chunks']}), "
+            "'answers': got.count(b'\"path\": \"/')}))\n")
+for source in (recorded, moved):
+    udp = next(f["id"] for f in net.flows(source, None) if f["proto"] == "udp")
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        net.decode(source, argparse.Namespace(id=udp, decrypted=True, keys=None, since=None, until=None, decoder="decoder.py", arguments=[], save=None))
+    decoded = json.loads(out.getvalue())
+    assert decoded["quic"] and {0, 4, 8, 12} <= set(decoded["streams"]) and decoded["answers"] == 4, decoded
+print("a decoder is handed a QUIC flow's stream chunks, also of what guest-net opened after a key update")

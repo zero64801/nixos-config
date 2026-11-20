@@ -158,7 +158,7 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 | `guest-net summary`, `flows`, `dns` | What the capture holds, every TCP and UDP flow with its ends, names, bytes each way and program, the names looked up. |
 | `guest-net http [ID]` | The requests of HTTP/1, HTTP/2 and HTTP/3, their answers and how long each took, or one in full: headers and bodies both ways, undone of gzip, deflate, brotli and zstd, JSON laid out. `--save NAME` writes the bodies to `./out`. |
 | `guest-net http ID --proto FOLDER` | A call of gRPC message by message, decoded by wire format alone, or by name with the program's .proto files. |
-| `guest-net decode ID --with SCRIPT` | Hands one flow's chunks both ways to a decoder you write for a program's own protocol, run in `lab-box`. `--save NAME` writes its input to `./out` first, `--decrypted` reads inside TLS. The README of guest-net shows the input. |
+| `guest-net decode ID --with SCRIPT` | Hands one flow's chunks both ways to a decoder you write for a program's own protocol, run in `lab-box`. `--save NAME` writes its input to `./out` first, `--decrypted` reads inside TLS, and a QUIC flow decrypted gives its streams' chunks, each with its stream, offset and fin, out of order as the packets had them. The README of guest-net shows the input. |
 | `guest-net ws [ID]` | The messages of each WebSocket both ways, undone of permessage-deflate, `--save NAME` writes them to `./out` as JSON lines. `http` marks the requests that became one. |
 | `guest-net tls`, `stream ID` | Each handshake and whether the keys open it, what went each way in one flow (`--decrypted`, `--hex`). |
 | `guest-net packets FILTER`, `tshark ARGS`, `export` | Wireshark's display filters, any tshark options on the capture, a copy with its keys into `./out`. |
@@ -246,7 +246,7 @@ Deleting that folder removes it.
 - `guest-net http` reads HTTP/3 with the traffic secrets alone, while tshark's own reading of it (`packets`, `tshark`, an export in Wireshark) needs the handshake secrets too.
 - A TLS 1.3 connection that updated its keys holds only the newer ones. `keys scan` finds them, also after KeyUpdates sent padded, and guest-net reads the flow from the last update on, not before: `stream --decrypted`, `decode --decrypted`, and `http`, whose requests from there are named k. `--follow` catches the first ones before any update.
   A TLS 1.3 flow still `not found` while its program runs may pad its KeyUpdates to more than 256 bytes: `keys scan --wide --flow ID` tries after each of its last records too.
-- A QUIC connection after a key update works the same way, though no packet shows the update: `keys scan` tries a flow's last packets once its first secrets are not found, and `http` reads its HTTP/3 from the update on. Headers taken from QPACK's table before the update show as `?`, often the host name, so go by the flow's name in `guest-net flows`.
+- A QUIC connection after a key update works the same way, though no packet shows the update: `keys scan` tries a flow's last packets once its first secrets are not found, and `http` reads its HTTP/3 from the update on. Headers taken from QPACK's table before the update show as `?`, and the host, mostly one of them, is then the TLS hello's, marked so, which a browser that sends other hosts over the same connection makes a guess. A stream begun before the update is not read by `http`, but `decode --decrypted` hands what came of it after the update to your script.
 
 ## Running something that came out of the guest
 

@@ -238,10 +238,10 @@ def quic_streams(capture, keys, only):
         events = [[when, number, 0 if sent == guest_is_client else 1, stream, offset, base64.b64encode(data).decode(), fin]
                   for when, number, sent, stream, offset, data, fin in connection["chunks"]]
         opened[connection["flow"]] = {event[2] for event in events}
-        out.append({"flow": connection["flow"], "events": events})
+        out.append({"flow": connection["flow"], "events": events, "guest_is_client": guest_is_client})
     by_flow = {connection["flow"]: connection for connection in out}
-    for flow, (events, missed, name) in quic_after_updates(capture, keys, only, opened).items():
-        connection = by_flow.get(flow) or {"flow": flow, "events": []}
+    for flow, (events, missed, name, guest_is_client) in quic_after_updates(capture, keys, only, opened).items():
+        connection = by_flow.get(flow) or {"flow": flow, "events": [], "guest_is_client": guest_is_client}
         if flow not in by_flow:
             out.append(connection)
         connection["events"] = sorted(connection["events"] + [[when, number, side, stream, offset, base64.b64encode(data).decode(), fin]
@@ -255,7 +255,8 @@ def quic_streams(capture, keys, only):
 def quic_after_updates(capture, keys, only, opened):
     """The stream data of the QUIC flows keys scan found secrets of after their key updates, of the sides tshark opened
     nothing of, which guest-net opens itself, as {flow: ([(time, frame number, side, stream, offset, data, fin)], how many
-    packets did not open, the name its hello asked for)}. opened says which sides tshark opened of each flow."""
+    packets did not open, the name its hello asked for, whether the guest is the client)}. opened says which sides tshark
+    opened of each flow."""
     later = scan.updated(capture)
     if not later:
         return {}
@@ -271,7 +272,7 @@ def quic_after_updates(capture, keys, only, opened):
             continue
         datagrams = [(0 if from_guest == hello["guest_is_client"] else 1, data, when, number) for from_guest, data, when, number in taken.get(stream, [])]
         out[f"u{stream}"] = (*quiclate.read(scanner, hello["suite"], secrets, datagrams, 0 if hello["guest_is_client"] else 1),
-                             authority(hello.get("name", ""), hello.get("port", "")))
+                             authority(hello.get("name", ""), hello.get("port", "")), hello["guest_is_client"])
     return out
 
 
@@ -1073,17 +1074,34 @@ def after_updates(capture, flow):
     return out
 
 
+def stream_chunks(capture, flow, keys):
+    """What went inside a QUIC flow, decrypted by the keys or by guest-net after key updates, as one chunk of a stream each:
+    {time, sent, stream, offset, fin, data in base64}, in the order of the packets. None for a flow that is no QUIC the keys
+    open."""
+    connection = next((c for c in quic_streams(capture, keys, f"udp.stream == {flow['id'][1:]}") if c["flow"] == flow["id"] and c["events"]), None)
+    if connection is None:
+        return None
+    return [{"time": when, "sent": (side == 0) == connection["guest_is_client"], "stream": stream, "offset": offset, "fin": fin, "data": data}
+            for when, _, side, stream, offset, data, fin in connection["events"]]
+
+
 def decode(capture, args):
-    """A flow's bytes both ways handed to a decoder of the program's own protocol, run inside lab-box, and what it prints."""
+    """A flow's bytes both ways handed to a decoder of the program's own protocol, run inside lab-box, and what it prints. A
+    QUIC flow decrypted gives its streams' chunks, each with its stream and where in it it goes, since packets carry
+    pieces of several streams, out of order and again."""
     flow = next((f for f in flows(capture, None, args.keys) if f["id"] == args.id), None)
     if flow is None:
         fail(f"there is no flow {args.id}, guest-net flows lists them")
     since = capture.moment(args.since) if args.since else None
     until = capture.moment(args.until) if args.until else None
-    taken = [(when, sent, data) for when, sent, data in chunks(capture, flow, args.decrypted, args.keys)
-             if (since is None or when >= since) and (until is None or when <= until)]
+    streams = stream_chunks(capture, flow, args.keys) if args.decrypted and flow["proto"] == "udp" else None
+    if streams is not None:
+        listed = [c for c in streams if (since is None or c["time"] >= since) and (until is None or c["time"] <= until)]
+    else:
+        listed = [{"time": when, "sent": sent, "data": base64.b64encode(data).decode()} for when, sent, data in chunks(capture, flow, args.decrypted, args.keys)
+                  if (since is None or when >= since) and (until is None or when <= until)]
     given = {"flow": flow["id"], "proto": flow["proto"], "guest": flow["guest"], "remote": flow["remote"], "names": flow["names"],
-             "decrypted": args.decrypted, "chunks": [{"time": when, "sent": sent, "data": base64.b64encode(data).decode()} for when, sent, data in taken]}
+             "decrypted": args.decrypted, "quic": streams is not None, "chunks": listed}
     if args.save:
         saved(args.save, json.dumps(given).encode())
     if not args.decoder:
@@ -1314,8 +1332,10 @@ def build(parser):
     sub = actions.add_parser("decode", help="hand a flow's bytes both ways to a decoder of the program's own protocol, run in the box",
                              description="Hands one flow's chunks both ways, in order, with their times and whether the guest sent each, to a "
                                          "decoder of the program's own protocol: a Python script run inside lab-box that reads them as one JSON "
-                                         "object on its standard input, {flow, proto, guest, remote, names, decrypted, chunks: [{time, sent, data "
-                                         "in base64}]}, and prints what it makes of them.")
+                                         "object on its standard input, {flow, proto, guest, remote, names, decrypted, quic, chunks: [{time, sent, "
+                                         "data in base64}]}, and prints what it makes of them. A QUIC flow with --decrypted gives its streams' "
+                                         "chunks, each with its stream, its offset in it and fin, out of order and again as the packets had them, "
+                                         "also from a key update on, where guest-net opened it itself.")
     common(sub)
     timed(sub)
     sub.add_argument("--keys", metavar="FILE", help="a TLS key log of this side, used with the capture's own keys")
