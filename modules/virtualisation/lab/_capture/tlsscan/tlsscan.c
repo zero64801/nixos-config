@@ -275,6 +275,8 @@ static void key_block(int hash, const uint8_t master[48], const uint8_t *seed, s
 typedef struct {
     EVP_CIPHER_CTX *ecb[2][2]; /* [encrypt][256 bit key] */
     EVP_CIPHER_CTX *gcm[2], *cbc[2], *ccm[2], *chacha, *chachapoly, *des3ecb, *des3cbc;
+    /* The key each of these contexts has, and after it a byte that says whether it has one. */
+    uint8_t ecb_key[2][2][33], gcm_key[2][33], chachapoly_key[33];
     uint8_t plain[LARGEST + 64];
 } crypto;
 
@@ -333,12 +335,26 @@ static void rc4(const uint8_t *key, size_t keylen, const uint8_t *in, uint8_t *o
 
 static size_t tag_size(int mode) { return mode == CCM8 ? 8 : 16; }
 
+/* Gives a context its key and IV, the key only when it has another: OpenSSL expands an AES key, and for GCM its hash key,
+ * each time it is given one, which costs more than the block or the short packet it is for, while a candidate tries one
+ * key on many. */
+static int rekey(EVP_CIPHER_CTX *x, uint8_t have[33], size_t keylen, const uint8_t *key, const uint8_t *iv, int encrypt) {
+    if (have[32] && !memcmp(have, key, keylen))
+        return !iv || EVP_CipherInit_ex(x, NULL, NULL, NULL, iv, encrypt);
+    have[32] = 0;
+    if (!EVP_CipherInit_ex(x, NULL, NULL, key, iv, encrypt))
+        return 0;
+    memcpy(have, key, keylen);
+    have[32] = 1;
+    return 1;
+}
+
 /* One AES block with the key, encrypting or decrypting. Re-keying a prepared context avoids OpenSSL fetching the
  * cipher again for each candidate. */
 static int aes_block(crypto *c, int encrypt, size_t keylen, const uint8_t *key, const uint8_t in[16], uint8_t out[16]) {
     int big = keylen == 32, n;
     EVP_CIPHER_CTX *x = ready(&c->ecb[encrypt][big], big ? EVP_aes_256_ecb() : EVP_aes_128_ecb(), encrypt);
-    return x && EVP_CipherInit_ex(x, NULL, NULL, key, NULL, encrypt) && EVP_CipherUpdate(x, out, &n, in, 16) && n == 16;
+    return x && rekey(x, c->ecb_key[encrypt][big], keylen, key, NULL, encrypt) && EVP_CipherUpdate(x, out, &n, in, 16) && n == 16;
 }
 
 /* The ChaCha20 keystream block that covers this offset of the AEAD's plaintext, which starts at block counter 1. */
@@ -374,7 +390,7 @@ static int ccm_block(crypto *c, size_t keylen, const uint8_t *key, const uint8_t
 /* The whole AEAD record, tag included. The plaintext is left in c->plain. */
 static int aead_open(crypto *c, int mode, size_t keylen, const uint8_t *key, const uint8_t nonce[12], const uint8_t *aad,
                      size_t aadlen, const uint8_t *body, size_t length) {
-    uint8_t tag[16];
+    uint8_t tag[16], *have;
     int n, m;
     EVP_CIPHER_CTX *x;
     size_t taglen = tag_size(mode);
@@ -388,12 +404,15 @@ static int aead_open(crypto *c, int mode, size_t keylen, const uint8_t *key, con
                EVP_DecryptInit_ex(x, NULL, NULL, key, nonce) && EVP_DecryptUpdate(x, NULL, &n, NULL, (int)(length - taglen)) &&
                EVP_DecryptUpdate(x, NULL, &n, aad, (int)aadlen) && EVP_DecryptUpdate(x, c->plain, &n, body, (int)(length - taglen)) > 0;
     }
-    if (mode == GCM)
+    if (mode == GCM) {
         x = ready(&c->gcm[keylen == 32], keylen == 32 ? EVP_aes_256_gcm() : EVP_aes_128_gcm(), 0);
-    else
+        have = c->gcm_key[keylen == 32];
+    } else {
         x = ready(&c->chachapoly, EVP_chacha20_poly1305(), 0);
+        have = c->chachapoly_key;
+    }
     memcpy(tag, body + length - 16, 16);
-    return x && EVP_DecryptInit_ex(x, NULL, NULL, key, nonce) && EVP_DecryptUpdate(x, NULL, &n, aad, (int)aadlen) &&
+    return x && rekey(x, have, keylen, key, nonce, 0) && EVP_DecryptUpdate(x, NULL, &n, aad, (int)aadlen) &&
            EVP_DecryptUpdate(x, c->plain, &n, body, (int)(length - 16)) &&
            EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_TAG, 16, tag) && EVP_DecryptFinal_ex(x, c->plain + n, &m) > 0;
 }
