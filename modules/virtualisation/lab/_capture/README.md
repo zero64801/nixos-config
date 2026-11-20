@@ -182,6 +182,10 @@ nix build --no-link -L .#tests.lab.tlsscan
 nix build --no-link -L .#tests.lab.tlsscan-libraries
 nix build --no-link -L .#tests.lab.tlsscan-quic
 nix build --no-link -L .#tests.lab.keys-scan
+nix build --no-link -L .#tests.lab.h3
+nix build --no-link -L .#tests.lab.websocket
+nix build --no-link -L .#tests.lab.grpc
+nix build --no-link -L .#tests.lab.scan-run
 ```
 
 The first records a guest that looks up a name, fetches a page, fetches pages over HTTP/2 with TLS while curl writes its keys, one of them compressed, sends JSON and a form, holds a connection open and sends a request meant to steer a terminal.
@@ -200,4 +204,5 @@ The server updates its keys before its first answer, and with only the secrets a
 The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a flow both ways and pass on its failure, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is, and reads HTTP/2 that guest-net opened itself from the middle of its connection.
 The first also exports its requests as HAR, and the tenth those of HTTP/3.
 The twelfth decodes gRPC's messages by their wire format and by name with protoc, shows a call of HTTP/3 with a gzipped message and its status, reads gRPC-Web's text and trailers, and takes a hostile guest's lengths, wire types and nesting.
+The thirteenth runs `keys scan` whole on the capture of a QUIC download that lost every fifth of the server's datagrams and then updated its keys, with made up memory in place of the guest's RAM that holds only the secrets after the update, and has it note both, the server's from the numbers the client acknowledged, and guest-net read what was asked after the update with them.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.
