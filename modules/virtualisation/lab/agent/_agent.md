@@ -60,6 +60,7 @@ A tool's own trouble is one line that starts with its name and exit status 1.
 | `guest-dbg PROCESS --break PLACE` | Stops one process at a place, from outside, so the guest sees no debugger. `--watch` and `--access` stop on a write or any access, `--do` and `--on-return` run gdb commands there. |
 | `guest-gdb` | gdb on QEMU's debug stub. The whole guest stops while it is attached, so ask the user first. |
 | `radare2`, `gdb` | Static work on dumped files. |
+| `ilspycmd` | Decompiles a .NET assembly pulled or dumped from the guest to C#, inside `lab-box`, which sees the folder it starts in and `./out`: `ilspycmd FILE.dll` for all of it, `-t Namespace.Type` for one type, `-l c` to list classes, `-p -o out/NAME` for a project to read. |
 
 Windows debug symbols arrive by themselves, through a gateway outside the lab that fetches nothing else.
 

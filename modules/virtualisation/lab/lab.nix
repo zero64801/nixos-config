@@ -130,6 +130,14 @@ let
       ${pkgs.bubblewrap}/bin/bwrap "''${args[@]}" $net -- "$@"
   '';
 
+  # ILSpy's decompiler for .NET assemblies dumped from a guest, always inside lab-box: the folder it starts in read only, ./out
+  # writable, nothing else of the user's.
+  ilspy = pkgs.writeShellScriptBin "ilspycmd" ''
+    out=()
+    [ -d out ] && out=(--rw "$PWD/out")
+    exec ${labBox}/bin/lab-box --ro "$PWD" "''${out[@]}" --chdir "$PWD" -- ${pkgs.ilspycmd}/bin/ilspycmd "$@"
+  '';
+
   tools = pkgs.buildEnv {
     name = "vm-lab-tools";
     paths = [
@@ -146,6 +154,7 @@ let
         inherit (inspect) memprocfs;
       })
       labBox
+      ilspy
       inspect.guestTools
     ]
     ++ map (tool: tool.package) (lib.attrValues cfg.tools);

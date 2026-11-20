@@ -121,6 +121,13 @@ host.boot {
         out = machine.fail(alice("vm-lab guest lab-box --share-loopback -- true 2>&1"))
         assert "this lab has no sandbox" in out, out
 
+    with subtest("ilspycmd decompiles a .NET assembly inside lab-box, which sees the folder it starts in and nothing else of the user's"):
+        machine.succeed(alice("mkdir -p dumps/out && cp $(find ${pkgs.ilspycmd}/lib -name ICSharpCode.Decompiler.dll | head -n 1) dumps/"))
+        out = machine.succeed(alice("vm-lab guest sh -c \"cd dumps && ilspycmd -t ICSharpCode.Decompiler.DecompilerException ICSharpCode.Decompiler.dll\""))
+        assert "class DecompilerException" in out, out
+        out = machine.fail(alice("vm-lab guest sh -c \"cd dumps && ilspycmd /home/alice/note\" 2>&1"))
+        assert "note" in out and "kept" not in out, out
+
     with subtest("a mode another module added starts what it names, and gets its folder"):
         out = machine.succeed(alice("vm-lab --note guest one two"))
         assert "note for guest: one two" in out, out
