@@ -2,7 +2,9 @@
 every suite the scanner knows, and the secrets of its own key log are hidden in made up memory among noise. The scanner
 has to find each of them where it was put, label it as OpenSSL did, and find nothing else.
 
-usage: tlsscan_logic.py CAPTURE_CODE LIBTLSSCAN OPENSSL"""
+GnuTLS's client and server do the same for RC4 and 3DES, which OpenSSL no longer has.
+
+usage: tlsscan_logic.py CAPTURE_CODE LIBTLSSCAN OPENSSL GNUTLS_FOLDER"""
 import os
 import random
 import socket
@@ -15,7 +17,7 @@ sys.path.insert(0, sys.argv[1])
 import scan
 import tlsrecords
 
-library, openssl = sys.argv[2], sys.argv[3]
+library, openssl, gnutls = sys.argv[2], sys.argv[3], sys.argv[4]
 scanner = scan.Scanner(library)
 threads = max(1, min(8, len(os.sched_getaffinity(0))))
 
@@ -26,10 +28,11 @@ def free_port():
         return s.getsockname()[1]
 
 
-def server(*options):
+def server(*options, command=None):
     port = free_port()
-    process = subprocess.Popen([openssl, "s_server", "-accept", f"127.0.0.1:{port}", "-cert", "cert.pem", "-key", "key.pem", "-www",
-                                "-cipher", "ALL:@SECLEVEL=0", *options], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    command = command(port) if command else [openssl, "s_server", "-accept", f"127.0.0.1:{port}", "-cert", "cert.pem", "-key", "key.pem", "-www",
+                                             "-cipher", "ALL:@SECLEVEL=0", *options]
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", port)) == 0:
@@ -73,12 +76,18 @@ class Relay:
 
 
 def talk(relay, *options):
-    """One connection of s_client through the relay: the session the relay saw and the key log s_client wrote."""
+    """One connection of s_client through the relay, or of gnutls-cli with a priority string, the session the relay saw and
+    the key log the client wrote."""
     if os.path.exists("keys.log"):
         os.unlink("keys.log")
     before = len(relay.kept)
-    subprocess.run([openssl, "s_client", "-connect", f"127.0.0.1:{relay.port}", "-keylogfile", "keys.log", "-quiet", *options],
-                   input=b"GET / HTTP/1.0\r\n\r\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True)
+    if options[0].startswith("NORMAL"):
+        subprocess.run([f"{gnutls}/gnutls-cli", "--insecure", "-p", str(relay.port), "127.0.0.1", "--priority", options[0]],
+                       input=b"hello\n", env=dict(os.environ, SSLKEYLOGFILE="keys.log"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=30, check=True)
+    else:
+        subprocess.run([openssl, "s_client", "-connect", f"127.0.0.1:{relay.port}", "-keylogfile", "keys.log", "-quiet", *options],
+                       input=b"GET / HTTP/1.0\r\n\r\n", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True)
     assert relay.done[before].wait(10), options
     client, server = relay.kept[before]
     found = tlsrecords.session(bytes(client), bytes(server))
@@ -92,15 +101,27 @@ def talk(relay, *options):
 
 subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "key.pem", "-out", "cert.pem", "-days", "1",
                 "-subj", "/CN=tls.test"], check=True, capture_output=True)
-plain_server, plain_port = server("-ciphersuites", "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256")
+plain_server, plain_port = server("-ciphersuites", "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+                                                   "TLS_AES_128_CCM_SHA256:TLS_AES_128_CCM_8_SHA256")
 retry_server, retry_port = server("-groups", "P-256")
-relay, retry_relay = Relay(plain_port), Relay(retry_port)
+old_server, old_port = server(command=lambda port: [f"{gnutls}/gnutls-serv", "-p", str(port), "--echo", "--x509certfile", "cert.pem",
+                                                    "--x509keyfile", "key.pem", "--priority",
+                                                    "NORMAL:+ARCFOUR-128:+3DES-CBC:+VERS-TLS1.0:+VERS-TLS1.1:+RSA"])
+relay, retry_relay, old_relay = Relay(plain_port), Relay(retry_port), Relay(old_port)
 
 CASES = [
     (relay, 0x0304, 0x1301, ["-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256"]),
     (relay, 0x0304, 0x1302, ["-tls1_3", "-ciphersuites", "TLS_AES_256_GCM_SHA384"]),
     (relay, 0x0304, 0x1303, ["-tls1_3", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"]),
     (retry_relay, 0x0304, 0x1302, ["-tls1_3", "-ciphersuites", "TLS_AES_256_GCM_SHA384"]),
+    (relay, 0x0304, 0x1304, ["-tls1_3", "-ciphersuites", "TLS_AES_128_CCM_SHA256"]),
+    (relay, 0x0304, 0x1305, ["-tls1_3", "-ciphersuites", "TLS_AES_128_CCM_8_SHA256", "-cipher", "DEFAULT:@SECLEVEL=0"]),
+    (relay, 0x0303, 0xC09C, ["-tls1_2", "-cipher", "AES128-CCM:@SECLEVEL=0"]),
+    (relay, 0x0303, 0xC0A1, ["-tls1_2", "-cipher", "AES256-CCM8:@SECLEVEL=0"]),
+    (old_relay, 0x0303, 0xC011, ["NORMAL:-CIPHER-ALL:+ARCFOUR-128:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+ECDHE-RSA"]),
+    (old_relay, 0x0301, 0x0005, ["NORMAL:-CIPHER-ALL:+ARCFOUR-128:-VERS-ALL:+VERS-TLS1.0:-KX-ALL:+RSA"]),
+    (old_relay, 0x0303, 0xC012, ["NORMAL:-CIPHER-ALL:+3DES-CBC:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+ECDHE-RSA"]),
+    (old_relay, 0x0301, 0x000A, ["NORMAL:-CIPHER-ALL:+3DES-CBC:-VERS-ALL:+VERS-TLS1.0:-KX-ALL:+RSA:%NO_ETM"]),
     (relay, 0x0303, 0xC02F, ["-tls1_2", "-cipher", "ECDHE-RSA-AES128-GCM-SHA256"]),
     (relay, 0x0303, 0xC030, ["-tls1_2", "-cipher", "ECDHE-RSA-AES256-GCM-SHA384"]),
     (relay, 0x0303, 0xCCA8, ["-tls1_2", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305"]),
@@ -119,12 +140,16 @@ for via, version, suite, options in CASES:
     found, log = talk(via, *options)
     assert (found.version, found.suite) == (version, suite), (options, found)
     assert scanner.supported(found), options
-    assert found.etm == ("-no_etm" not in options and version != 0x0304 and suite in (0xC013, 0xC014, 0x0035, 0x002F)), (options, found.etm)
+    if via is not old_relay:
+        assert found.etm == ("-no_etm" not in options and version != 0x0304 and suite in (0xC013, 0xC014, 0x0035, 0x002F)), (options, found.etm)
+    elif suite in (0xC012, 0x000A):
+        assert found.etm == ("%NO_ETM" not in options[0]), (options, found.etm)
     sessions.append(found)
     logs.append(log)
 plain_server.kill()
 retry_server.kill()
-print(f"{len(sessions)} sessions of OpenSSL recorded")
+old_server.kill()
+print(f"{len(sessions)} sessions of OpenSSL and GnuTLS recorded")
 
 # Memory as a process has it: pointers, small numbers, text, zeros and stretches of random bytes, which are what makes a
 # search slow, with the secrets in made up structures among them.

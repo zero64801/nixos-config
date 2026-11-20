@@ -19,7 +19,7 @@
 
 /* H_LEGACY is the PRF of TLS 1.0 and 1.1, MD5 and SHA1 together. */
 enum { H_SHA1 = 1, H_SHA256 = 2, H_SHA384 = 3, H_MD5 = 4, H_LEGACY = 5 };
-enum { GCM = 1, CHACHA = 2, CBC = 3 };
+enum { GCM = 1, CHACHA = 2, CBC = 3, CCM = 4, CCM8 = 5, CBC3 = 6, RC4 = 7 };
 enum { MAXRECORDS = 32, LARGEST = (1 << 14) + 2048 };
 
 /* A record of TLS, or for QUIC a whole protected packet: then type is 2 for a Handshake packet and 3 for one with a
@@ -63,6 +63,30 @@ static const suite_info SUITES[] = {
     {0x1301, 13, GCM, 16, 12, 0, H_SHA256},
     {0x1302, 13, GCM, 32, 12, 0, H_SHA384},
     {0x1303, 13, CHACHA, 32, 12, 0, H_SHA256},
+    {0x1304, 13, CCM, 16, 12, 0, H_SHA256},
+    {0x1305, 13, CCM8, 16, 12, 0, H_SHA256},
+    /* AES-CCM of TLS 1.2 (RFC 6655, 7251), whose PRF is SHA-256 throughout. */
+    {0xc09c, 12, CCM, 16, 4, 0, H_SHA256},
+    {0xc09d, 12, CCM, 32, 4, 0, H_SHA256},
+    {0xc09e, 12, CCM, 16, 4, 0, H_SHA256},
+    {0xc09f, 12, CCM, 32, 4, 0, H_SHA256},
+    {0xc0a0, 12, CCM8, 16, 4, 0, H_SHA256},
+    {0xc0a1, 12, CCM8, 32, 4, 0, H_SHA256},
+    {0xc0a2, 12, CCM8, 16, 4, 0, H_SHA256},
+    {0xc0a3, 12, CCM8, 32, 4, 0, H_SHA256},
+    {0xc0ac, 12, CCM, 16, 4, 0, H_SHA256},
+    {0xc0ad, 12, CCM, 32, 4, 0, H_SHA256},
+    {0xc0ae, 12, CCM8, 16, 4, 0, H_SHA256},
+    {0xc0af, 12, CCM8, 32, 4, 0, H_SHA256},
+    /* 3DES and RC4, which old programs and devices still speak. */
+    {0x000a, 12, CBC3, 24, 0, H_SHA1, H_SHA256},
+    {0x0016, 12, CBC3, 24, 0, H_SHA1, H_SHA256},
+    {0xc008, 12, CBC3, 24, 0, H_SHA1, H_SHA256},
+    {0xc012, 12, CBC3, 24, 0, H_SHA1, H_SHA256},
+    {0x0004, 12, RC4, 16, 0, H_MD5, H_SHA256},
+    {0x0005, 12, RC4, 16, 0, H_SHA1, H_SHA256},
+    {0xc007, 12, RC4, 16, 0, H_SHA1, H_SHA256},
+    {0xc011, 12, RC4, 16, 0, H_SHA1, H_SHA256},
     {0x009c, 12, GCM, 16, 4, 0, H_SHA256},
     {0x009d, 12, GCM, 32, 4, 0, H_SHA384},
     {0x009e, 12, GCM, 16, 4, 0, H_SHA256},
@@ -99,6 +123,14 @@ static const suite_info SUITES[] = {
     {0xc00a, 10, CBC, 32, 16, H_SHA1, H_LEGACY},
     {0xc013, 10, CBC, 16, 16, H_SHA1, H_LEGACY},
     {0xc014, 10, CBC, 32, 16, H_SHA1, H_LEGACY},
+    {0x000a, 10, CBC3, 24, 8, H_SHA1, H_LEGACY},
+    {0x0016, 10, CBC3, 24, 8, H_SHA1, H_LEGACY},
+    {0xc008, 10, CBC3, 24, 8, H_SHA1, H_LEGACY},
+    {0xc012, 10, CBC3, 24, 8, H_SHA1, H_LEGACY},
+    {0x0004, 10, RC4, 16, 0, H_MD5, H_LEGACY},
+    {0x0005, 10, RC4, 16, 0, H_SHA1, H_LEGACY},
+    {0xc007, 10, RC4, 16, 0, H_SHA1, H_LEGACY},
+    {0xc011, 10, RC4, 16, 0, H_SHA1, H_LEGACY},
 };
 
 static const suite_info *suite_of(uint32_t version, uint32_t suite) {
@@ -242,7 +274,7 @@ static void key_block(int hash, const uint8_t master[48], const uint8_t *seed, s
 
 typedef struct {
     EVP_CIPHER_CTX *ecb[2][2]; /* [encrypt][256 bit key] */
-    EVP_CIPHER_CTX *gcm[2], *cbc[2], *chacha, *chachapoly;
+    EVP_CIPHER_CTX *gcm[2], *cbc[2], *ccm[2], *chacha, *chachapoly, *des3ecb, *des3cbc;
     uint8_t plain[LARGEST + 64];
 } crypto;
 
@@ -265,10 +297,41 @@ static void crypto_free(crypto *c) {
         EVP_CIPHER_CTX_free(c->ecb[i][1]);
         EVP_CIPHER_CTX_free(c->gcm[i]);
         EVP_CIPHER_CTX_free(c->cbc[i]);
+        EVP_CIPHER_CTX_free(c->ccm[i]);
     }
     EVP_CIPHER_CTX_free(c->chacha);
     EVP_CIPHER_CTX_free(c->chachapoly);
+    EVP_CIPHER_CTX_free(c->des3ecb);
+    EVP_CIPHER_CTX_free(c->des3cbc);
 }
+
+/* One 3DES block, decrypted. */
+static int des3_block(crypto *c, const uint8_t key[24], const uint8_t in[8], uint8_t out[8]) {
+    int n;
+    EVP_CIPHER_CTX *x = ready(&c->des3ecb, EVP_des_ede3_ecb(), 0);
+    return x && EVP_CipherInit_ex(x, NULL, NULL, key, NULL, 0) && EVP_CipherUpdate(x, out, &n, in, 8) && n == 8;
+}
+
+/* RC4 from the start of its keystream, written out since OpenSSL 3 keeps it only in its legacy provider. */
+static void rc4(const uint8_t *key, size_t keylen, const uint8_t *in, uint8_t *out, size_t length) {
+    uint8_t s[256], t;
+    size_t i, j = 0;
+    for (i = 0; i < 256; i++)
+        s[i] = (uint8_t)i;
+    for (i = 0; i < 256; i++) {
+        j = (j + s[i] + key[i % keylen]) & 0xff;
+        t = s[i], s[i] = s[j], s[j] = t;
+    }
+    i = j = 0;
+    for (size_t n = 0; n < length; n++) {
+        i = (i + 1) & 0xff;
+        j = (j + s[i]) & 0xff;
+        t = s[i], s[i] = s[j], s[j] = t;
+        out[n] = in[n] ^ s[(s[i] + s[j]) & 0xff];
+    }
+}
+
+static size_t tag_size(int mode) { return mode == CCM8 ? 8 : 16; }
 
 /* One AES block with the key, encrypting or decrypting. Re-keying a prepared context avoids OpenSSL fetching the
  * cipher again for each candidate. */
@@ -298,14 +361,33 @@ static int chacha_raw(crypto *c, const uint8_t key[32], const uint8_t sample[16]
     return x && EVP_EncryptInit_ex(x, NULL, NULL, key, sample) && EVP_EncryptUpdate(x, out, &n, zero, 64) && n == 64;
 }
 
+/* The keystream block of AES-CCM at this counter, with a 12 byte nonce: a flags byte that says the counter has three bytes,
+ * the nonce, and the counter, whose first block of plaintext is 1. */
+static int ccm_block(crypto *c, size_t keylen, const uint8_t *key, const uint8_t nonce[12], uint32_t counter, uint8_t out[16]) {
+    uint8_t block[16];
+    block[0] = 2;
+    memcpy(block + 1, nonce, 12);
+    block[13] = (uint8_t)(counter >> 16), block[14] = (uint8_t)(counter >> 8), block[15] = (uint8_t)counter;
+    return aes_block(c, 1, keylen, key, block, out);
+}
+
 /* The whole AEAD record, tag included. The plaintext is left in c->plain. */
 static int aead_open(crypto *c, int mode, size_t keylen, const uint8_t *key, const uint8_t nonce[12], const uint8_t *aad,
                      size_t aadlen, const uint8_t *body, size_t length) {
     uint8_t tag[16];
     int n, m;
     EVP_CIPHER_CTX *x;
-    if (length < 16 || length - 16 > sizeof c->plain - 32)
+    size_t taglen = tag_size(mode);
+    if (length < taglen || length - taglen > sizeof c->plain - 32)
         return 0;
+    if (mode == CCM || mode == CCM8) {
+        /* CCM takes the tag and the length before the key, and checks the tag as it decrypts. */
+        x = ready(&c->ccm[keylen == 32], keylen == 32 ? EVP_aes_256_ccm() : EVP_aes_128_ccm(), 0);
+        memcpy(tag, body + length - taglen, taglen);
+        return x && EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_IVLEN, 12, NULL) && EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_TAG, (int)taglen, tag) &&
+               EVP_DecryptInit_ex(x, NULL, NULL, key, nonce) && EVP_DecryptUpdate(x, NULL, &n, NULL, (int)(length - taglen)) &&
+               EVP_DecryptUpdate(x, NULL, &n, aad, (int)aadlen) && EVP_DecryptUpdate(x, c->plain, &n, body, (int)(length - taglen)) > 0;
+    }
     if (mode == GCM)
         x = ready(&c->gcm[keylen == 32], keylen == 32 ? EVP_aes_256_gcm() : EVP_aes_128_gcm(), 0);
     else
@@ -399,11 +481,16 @@ static void try13(job *j, crypto *c, prepared *t, const uint8_t *key, const uint
     for (uint32_t r = 0; r < t->nrecords; r++) {
         uint32_t solved = atomic_load(&t->solved);
         const tls_record *x = &t->target->records[r];
-        if (solved >> r & 1 || x->length < 17 || x->length > LARGEST)
+        if (solved >> r & 1 || x->length < tag_size(s->mode) + 1 || x->length > LARGEST)
             continue;
-        size_t clen = x->length - 16, last = clen - 1;
+        size_t clen = x->length - tag_size(s->mode), last = clen - 1;
         uint8_t byte;
-        if (s->mode == GCM) {
+        if (s->mode == CCM || s->mode == CCM8) {
+            uint8_t stream[16];
+            if (!ccm_block(c, s->keylen, key, iv, (uint32_t)(1 + last / 16), stream))
+                continue;
+            byte = x->body[last] ^ stream[last % 16];
+        } else if (s->mode == GCM) {
             uint8_t counter[16], stream[16];
             uint32_t block = (uint32_t)(2 + last / 16);
             memcpy(counter, iv, 12);
@@ -452,7 +539,7 @@ static void tryquic(job *j, crypto *c, prepared *t, const uint8_t *key, const ui
         if (atomic_load(&t->solved) >> r & 1 || at > 64 || at + 4 + 16 > x->length || x->length > LARGEST)
             continue;
         uint8_t mask[64];
-        if (s->mode == GCM ? !aes_block(c, 1, s->keylen, hp, x->body + at + 4, mask) : !chacha_raw(c, hp, x->body + at + 4, mask))
+        if (s->mode != CHACHA ? !aes_block(c, 1, s->keylen, hp, x->body + at + 4, mask) : !chacha_raw(c, hp, x->body + at + 4, mask))
             continue;
         int long_header = x->body[0] & 0x80;
         uint8_t first = x->body[0] ^ (mask[0] & (long_header ? 0x0f : 0x1f));
@@ -485,7 +572,8 @@ static void tryquic(job *j, crypto *c, prepared *t, const uint8_t *key, const ui
 static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t offset) {
     static const uint8_t header[4] = {20, 0, 0, 12};
     const suite_info *s = t->suite;
-    size_t maclen = s->mode == CBC ? hash_size(s->mac) : 0, need = 2 * maclen + 2 * s->keylen + 2 * s->ivlen;
+    size_t maclen = s->mode == CBC || s->mode == CBC3 || s->mode == RC4 ? hash_size(s->mac) : 0,
+           need = 2 * maclen + 2 * s->keylen + 2 * s->ivlen;
     uint8_t block[2 * 48 + 2 * 32 + 2 * 12];
     int derived = 0;
     for (uint32_t r = 0; r < t->nrecords; r++) {
@@ -518,6 +606,36 @@ static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t 
             aad[11] = (uint8_t)(clen >> 8), aad[12] = (uint8_t)clen;
             if (!aead_open(c, GCM, s->keylen, key, nonce, aad, 13, x->body + 8, x->length - 8))
                 continue;
+        } else if (s->mode == CCM || s->mode == CCM8) {
+            size_t taglen = tag_size(s->mode);
+            if (x->length < 8 + taglen + 4)
+                continue;
+            size_t clen = x->length - 8 - taglen;
+            memcpy(nonce, fixed, 4);
+            memcpy(nonce + 4, x->body, 8);
+            if (!ccm_block(c, s->keylen, key, nonce, 1, stream))
+                continue;
+            for (int i = 0; i < 4; i++)
+                first[i] = x->body[8 + i] ^ stream[i];
+            if (memcmp(first, header, 4))
+                continue;
+            aad[11] = (uint8_t)(clen >> 8), aad[12] = (uint8_t)clen;
+            if (!aead_open(c, s->mode, s->keylen, key, nonce, aad, 13, x->body + 8, x->length - 8))
+                continue;
+        } else if (s->mode == RC4) {
+            /* A stream cipher's first record of a direction is its Finished from the start of the keystream, then its MAC. */
+            if (x->length != 16 + maclen)
+                continue;
+            rc4(key, s->keylen, x->body, c->plain, x->length);
+            if (memcmp(c->plain, header, 4))
+                continue;
+            hmac_key mk;
+            uint8_t mac[48];
+            hmac_setup(&mk, s->mac, mackey, maclen);
+            aad[11] = 0, aad[12] = 16;
+            hmac(&mk, aad, 13, c->plain, 16, mac);
+            if (memcmp(mac, c->plain + 16, maclen))
+                continue;
         } else if (s->mode == CHACHA) {
             if (x->length < 16 + 4)
                 continue;
@@ -534,15 +652,16 @@ static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t 
             if (!aead_open(c, CHACHA, s->keylen, key, nonce, aad, 13, x->body, x->length))
                 continue;
         } else {
-            /* TLS 1.0 has no IV in its records, and its first record's IV is the key block's. */
-            size_t tail = t->target->etm ? maclen : 0, explicit = t->target->version >= 0x0302 ? 16 : 0;
-            if (x->length < explicit + 16 + tail || (x->length - explicit - tail) % 16)
+            /* TLS 1.0 has no IV in its records, and its first record's IV is the key block's. 3DES has blocks of 8 bytes. */
+            size_t bs = s->mode == CBC3 ? 8 : 16;
+            size_t tail = t->target->etm ? maclen : 0, explicit = t->target->version >= 0x0302 ? bs : 0;
+            if (x->length < explicit + 16 + tail || (x->length - explicit - tail) % bs)
                 continue;
             const uint8_t *iv = explicit ? x->body : fixed, *enc = x->body + explicit;
             size_t enclen = x->length - explicit - tail;
-            if (!aes_block(c, 0, s->keylen, key, enc, first))
+            if (s->mode == CBC3 ? !des3_block(c, key, enc, first) : !aes_block(c, 0, s->keylen, key, enc, first))
                 continue;
-            for (int i = 0; i < 16; i++)
+            for (size_t i = 0; i < bs; i++)
                 first[i] ^= iv[i];
             if (memcmp(first, header, 4) || enclen > sizeof c->plain - 32)
                 continue;
@@ -556,7 +675,8 @@ static void try12(job *j, crypto *c, prepared *t, const uint8_t *master, size_t 
                     continue;
             }
             int big = s->keylen == 32, n;
-            EVP_CIPHER_CTX *d = ready(&c->cbc[big], big ? EVP_aes_256_cbc() : EVP_aes_128_cbc(), 0);
+            EVP_CIPHER_CTX *d = s->mode == CBC3 ? ready(&c->des3cbc, EVP_des_ede3_cbc(), 0)
+                                                : ready(&c->cbc[big], big ? EVP_aes_256_cbc() : EVP_aes_128_cbc(), 0);
             if (!d || !EVP_DecryptInit_ex(d, NULL, NULL, key, iv) || !EVP_DecryptUpdate(d, c->plain, &n, enc, (int)enclen) ||
                 (size_t)n != enclen)
                 continue;

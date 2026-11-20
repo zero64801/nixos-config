@@ -96,7 +96,8 @@ The libraries most programs use keep the client random beside the secrets, OpenS
 The rest is searched at every offset where it is up to 32 MiB and at every eighth beyond, which `--step` changes.
 The search itself is in C, `tlsscan/tlsscan.c`, and tries some millions of windows a second.
 
-It knows QUIC, versions 1 and 2, whose client random and suite it reads from the Initial packets by itself, TLS 1.3 with AES-GCM and ChaCha20-Poly1305, TLS 1.2 with AES-GCM, ChaCha20-Poly1305 and AES-CBC, and TLS 1.0 and 1.1 with AES-CBC, older programs and samples still using them, with or without encrypt-then-MAC.
+It knows QUIC, versions 1 and 2, whose client random and suite it reads from the Initial packets by itself, TLS 1.3 with AES-GCM, ChaCha20-Poly1305 and AES-CCM, TLS 1.2 with AES-GCM, ChaCha20-Poly1305, AES-CCM, AES-CBC, 3DES and RC4, and TLS 1.0 and 1.1 with AES-CBC, 3DES and RC4, older programs, devices and samples still using them, with or without encrypt-then-MAC.
+AES-CCM is what small devices and their libraries often choose, 3DES and RC4 what old ones do.
 Windows' own TLS keeps its secrets in `lsass`, which `keys schannel` reads.
 
 ## guest-usb
@@ -146,7 +147,7 @@ The second passes a USB keyboard of the test machine to the guest and lights its
 The third runs the reading of SChannel's keys on a made up stretch of `lsass`' memory, since there is no Windows here.
 The fourth reads what Windows' and Linux' own tools say of their connections.
 The fifth undoes the encodings of bodies, gzip, deflate, brotli and zstd, alone and chained, stops at a limit for a body made to grow without end, and lays out JSON.
-The sixth runs OpenSSL's client and server in every suite `keys scan` knows, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
+The sixth runs OpenSSL's client and server in every suite `keys scan` knows, and GnuTLS's in RC4 and 3DES, which OpenSSL no longer has, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
 The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
 The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, also of a client that sends a token in them, splits datagrams sent in one batch, has a client come back with a ticket and send early data, and has the search find each secret where it was put, that of the early data among them.
 The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found.
