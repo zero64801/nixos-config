@@ -922,13 +922,10 @@ def after_updates(capture, flow):
         if not epochs:
             continue
         kept, _ = tlsrecords.updates(side, found.suite)
-        seen, start = 0, None
-        for index, (_, record) in enumerate(kept):
-            seen += len(record) - 5 == tlsrecords.update_size(found.suite)
-            if seen == epochs[-1]:
-                start = index + 1
-                break
         secret, seq = known[f"{role}_TRAFFIC_SECRET_{epochs[-1]}"], 0
+        # The newest secret begins at the one record it opens at sequence number 0, found by trying, since a KeyUpdate sent
+        # padded shows by no size, and the newest one is mostly near the end.
+        start = next((index for index in range(len(kept) - 1, 0, -1) if scanner.open13(found.suite, secret, 0, kept[index][1]) is not None), None)
         for at, record in kept[start:] if start is not None else []:
             plain = scanner.open13(found.suite, secret, seq, record)
             if plain is None:

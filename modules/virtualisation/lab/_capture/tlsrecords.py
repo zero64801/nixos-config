@@ -22,7 +22,7 @@ class Session:
         self.etm = self.early = False
         self.name, self.quic = "", 0
         self.records = []
-        # For a session of the newest keys after key updates: how many updates each direction made.
+        # For a session of the newest keys after key updates: for each direction, how many updates came before each record.
         self.epochs = None
 
     def __repr__(self):
@@ -151,29 +151,53 @@ def updates(data, suite):
     return found, count
 
 
-def newest(found, data):
-    """The record of one direction of TLS 1.3 that follows its last KeyUpdate, the first under its newest secret, with the
-    number of updates before it, or None when it made none or nothing followed."""
-    kept, count = updates(data, found.suite)
-    last = max((n for n, (_, record) in enumerate(kept) if len(record) - 5 == update_size(found.suite)), default=None)
-    if last is None or last + 1 >= len(kept):
-        return None
-    return kept[last + 1][1], count
+# A record this short may be a KeyUpdate padded to a small block, and the last records of a direction may follow one padded more.
+SMALL, TAIL, LATE = 256, 4, 15
 
 
-def late(found, client, server):
+def starts(found, data, normal, broad=False):
+    """Where the newest secret of one direction of TLS 1.3 may begin, as (record, how many updates came before it), newest
+    first and LATE at most, past the first normal records, which the session of the first keys has. The record after one
+    the size of a KeyUpdate is surely such a start, with the count exact. With broad also the record after each short
+    one and the last records, for KeyUpdates sent padded, with the count a least."""
+    kept, _ = updates(data, found.suite)
+    size = update_size(found.suite)
+    before, count = [], 0
+    for _, record in kept:
+        before.append(count)
+        count += len(record) - 5 == size
+    chosen, out = set(), []
+
+    def take(index, updates_before):
+        if normal <= index < len(kept) and index not in chosen and len(out) < LATE:
+            chosen.add(index)
+            out.append((kept[index][1], updates_before))
+
+    for index in range(len(kept) - 1, 0, -1):
+        if len(kept[index - 1][1]) - 5 == size:
+            take(index, before[index])
+    if broad:
+        for index in range(len(kept) - 1, 0, -1):
+            if len(kept[index - 1][1]) - 5 <= SMALL:
+                take(index, before[index] + 1)
+        for index in range(len(kept) - 1, max(len(kept) - 1 - TAIL, 0), -1):
+            take(index, before[index] + 1)
+    return out
+
+
+def late(found, client, server, broad=False):
     """A session of the newest keys of a TLS 1.3 connection that updated its keys, whose secrets are the only ones its
-    program still holds: per direction, the first record under the newest secret, at sequence number 0. None when neither
-    side updated."""
+    program still holds: per direction, the records its newest secret may begin at, each at sequence number 0. None when
+    there is no such record."""
     if found.version != 0x0304 or found.quic:
         return None
     newer = Session()
-    newer.client_random, newer.version, newer.suite, newer.name, newer.epochs = found.client_random, 0x0304, found.suite, found.name, {0: 0, 1: 0}
+    newer.client_random, newer.version, newer.suite, newer.name, newer.epochs = found.client_random, 0x0304, found.suite, found.name, {0: [], 1: []}
     for direction, data in ((0, client), (1, server)):
-        first = newest(found, data)
-        if first:
-            record, newer.epochs[direction] = first
+        normal = sum(1 for side, *_ in found.records if side == direction)
+        for record, updates_before in starts(found, data, normal, broad):
             newer.records.append((direction, APPLICATION_DATA, struct.unpack_from(">H", record, 1)[0], record[5:]))
+            newer.epochs[direction].append(updates_before)
     return newer if newer.records else None
 
 
@@ -192,7 +216,7 @@ def label(found, direction, index, inner, first):
     """The key log label of a secret that opened the record at this index of this direction at sequence number 0, or for
     QUIC the packet of this kind. A session of the newest keys names them by how many updates came before."""
     if found.epochs:
-        return f"{'SERVER' if direction == 1 else 'CLIENT'}_TRAFFIC_SECRET_{found.epochs[direction]}"
+        return f"{'SERVER' if direction == 1 else 'CLIENT'}_TRAFFIC_SECRET_{found.epochs[direction][index]}"
     if found.quic:
         side = "SERVER" if direction == 1 else "CLIENT"
         if inner == EARLY_PACKET:

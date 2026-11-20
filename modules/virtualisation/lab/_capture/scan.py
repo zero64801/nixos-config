@@ -150,11 +150,16 @@ VERSIONS = {0x0301: "1.0", 0x0302: "1.1", 0x0303: "1.2", 0x0304: "1.3"}
 WHOLE = 64 << 20
 
 
-def needed(session):
-    """The labels that finish a session: those of its version, or for one of the newest keys after updates one a direction."""
+def roles(labels):
+    return {label.split("_", 1)[0] for label in labels}
+
+
+def finished(session):
+    """Whether a session has what it is searched for: the labels of its version, or for one of the newest keys a secret for
+    each direction it has records of, whichever of them it opened."""
     if session.epochs:
-        return {tlsrecords.label(session, direction, 0, 23, 0) for direction, *_ in session.records}
-    return WANTED[session.version]
+        return {("CLIENT", "SERVER")[direction] for direction, *_ in session.records} <= roles(session.found)
+    return WANTED[session.version] <= set(session.found)
 
 
 def contiguous(parts):
@@ -214,20 +219,25 @@ def updated(capture):
     return found
 
 
-def newer_sessions(capture, args, picked):
+def newer_sessions(capture, args, picked, broad=False):
     """For the TLS 1.3 flows that updated their keys, a session of their newest keys each, which is all a program holds once
-    it updated them: the first record under the newest secret of each direction that updated."""
+    it updated them: the records the newest secret of each direction may begin at. Without broad only flows with a record
+    the size of a KeyUpdate, with broad every one given, for KeyUpdates sent padded."""
     latest = {s.flow["id"][1:]: s for s in picked if s.version == 0x0304 and not s.quic}
     if not latest:
         return []
     sizes = sorted({tlsrecords.update_size(s.suite) for s in latest.values()})
-    display = f"tls.record.length in {{{', '.join(map(str, sizes))}}} && tcp.stream in {{{', '.join(sorted(latest, key=int))}}}"
-    streams = {first(p, "tcp.stream") for p in capture.ek(NET, ["tcp.stream"], display)}
+    if broad:
+        streams = set(latest)
+    else:
+        display = f"tls.record.length in {{{', '.join(map(str, sizes))}}} && tcp.stream in {{{', '.join(sorted(latest, key=int))}}}"
+        streams = {first(p, "tcp.stream") for p in capture.ek(NET, ["tcp.stream"], display)}
     have, out = updated(capture), []
     for stream, ((guest, _), (other, _)) in whole(capture, streams).items():
         s = latest[stream]
-        newer = tlsrecords.late(s, *((guest, other) if s.guest_is_client else (other, guest)))
-        if newer is None or (not args.again and needed(newer) <= set(have.get(newer.client_random.hex(), {}))):
+        newer = tlsrecords.late(s, *((guest, other) if s.guest_is_client else (other, guest)), broad=broad)
+        sides = {("CLIENT", "SERVER")[direction] for direction, *_ in newer.records} if newer else set()
+        if newer is None or (not args.again and sides <= roles(have.get(newer.client_random.hex(), {}))):
             continue
         newer.flow, newer.found, newer.guest_is_client = s.flow, {}, s.guest_is_client
         out.append(newer)
@@ -544,7 +554,7 @@ def search(scanner, source, picked, args):
             low, high = max(start, spot - args.around), min(start + length, spot + 32 + args.around)
             found += scanner.scan(buffer, high - low, low, [picked[which]], step=1, threads=threads(), at=low - start)
     took(found, picked)
-    left = [s for s in picked if not needed(s) <= set(s.found)]
+    left = [s for s in picked if not finished(s)]
     print(f"guest-net: {places} places of the client randoms, {sum(1 for s in picked if s not in left)} flows found around them "
           f"in {time.monotonic() - started:.1f} s", file=sys.stderr)
     if left and (args.deep or not isinstance(source, Physical)):
@@ -552,7 +562,7 @@ def search(scanner, source, picked, args):
         for start, buffer, length in regions:
             found += scanner.scan(buffer, length, start, left, step=step, threads=threads())
             took(found, left)
-            left = [s for s in left if not needed(s) <= set(s.found)]
+            left = [s for s in left if not finished(s)]
             if not left:
                 break
         print(f"guest-net: the rest at step {step}: {scanner.tested} candidates in {time.monotonic() - started:.1f} s", file=sys.stderr)
@@ -651,7 +661,25 @@ def run(capture, args, flows, chosen):
             for s in by.pop(None, []):
                 print(f"{s.flow['id']}: its program is not known, owners --follow while it runs finds it, or --process names it", file=sys.stderr)
             groups = [(Process(memory.windows, pid), group) for pid, group in by.items()]
+    searched = {}
     for source, group in groups:
+        for s in group:
+            searched.setdefault(id(s), []).append(source)
+        try:
+            search(scanner, source, group, args)
+        except LookupError as e:
+            print(f"guest-net: {source}: {e}", file=sys.stderr)
+    # A TLS 1.3 flow whose first secrets are gone may have updated its keys with KeyUpdates sent padded, which no record's size
+    # tells, so its newest secret is looked for at more records, in what was searched for it before.
+    covered = {s.flow["id"] for s in picked if s.epochs}
+    retry = {s.flow["id"]: s for s in picked if not s.epochs and not s.quic and s.version == 0x0304 and not finished(s)
+             and id(s) in searched and s.flow["id"] not in covered}
+    again = {}
+    for newer in newer_sessions(capture, args, list(retry.values()), broad=True):
+        for source in searched[id(retry[newer.flow["id"]])]:
+            again.setdefault(source, []).append(newer)
+        picked.append(newer)
+    for source, group in again.items():
         try:
             search(scanner, source, group, args)
         except LookupError as e:

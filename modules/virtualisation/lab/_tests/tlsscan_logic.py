@@ -149,26 +149,29 @@ for via, version, suite, options in CASES:
     logs.append(log)
 
 
-def updated(*commands):
-    """One connection of s_client that updates its keys with the commands given before it asks for a page, which it takes
-    only without -quiet, and keeps its input open until the answer has come."""
+def updated(*commands, via=None, options=(), lines=(), last=b"GET / HTTP/1.0\r\n\r\n"):
+    """One connection of s_client that sends the lines, updates its keys with the commands given, which it takes only
+    without -quiet, and sends the last line, keeping its input open until the answer has come."""
+    via = via or relay
     if os.path.exists("keys.log"):
         os.unlink("keys.log")
-    before = len(relay.kept)
-    client = subprocess.Popen([openssl, "s_client", "-connect", f"127.0.0.1:{relay.port}", "-keylogfile", "keys.log", "-tls1_3",
-                               "-ciphersuites", "TLS_AES_128_GCM_SHA256"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    before = len(via.kept)
+    client = subprocess.Popen([openssl, "s_client", "-connect", f"127.0.0.1:{via.port}", "-keylogfile", "keys.log", "-tls1_3",
+                               "-ciphersuites", "TLS_AES_128_GCM_SHA256", *options], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
     time.sleep(0.5)
-    for command in commands:
-        client.stdin.write(command + b"\n")
+    for line in [*lines, *commands]:
+        client.stdin.write(line + b"\n")
         client.stdin.flush()
         time.sleep(0.3)
-    client.stdin.write(b"GET / HTTP/1.0\r\n\r\n")
+    client.stdin.write(last)
     client.stdin.flush()
     time.sleep(1)
     client.stdin.close()
     client.wait(10)
-    assert relay.done[before].wait(10), commands
-    client_bytes, server_bytes = (bytes(side) for side in relay.kept[before])
+    # s_server -rev keeps its side open after the client left, and what both sent is in by then.
+    assert via.done[before].wait(10) or via is not relay, commands
+    client_bytes, server_bytes = (bytes(side) for side in via.kept[before])
     with open("keys.log") as f:
         logged = {line.split()[0]: bytes.fromhex(line.split()[2]) for line in f if line.strip() and not line.startswith("#")}
     return client_bytes, server_bytes, logged
@@ -176,6 +179,12 @@ def updated(*commands):
 
 both = updated(b"K")
 twice = updated(b"k", b"k")
+# Padded records hide a KeyUpdate's size, and ten lines first put the updates past the records the first keys' session has.
+echo_server, echo_port = server("-rev")
+echo_relay = Relay(echo_port)
+padded = updated(b"k", b"k", via=echo_relay, options=["-record_padding", "64"], lines=[b"line %d" % n for n in range(10)],
+                 last=b"after the updates\n")
+echo_server.kill()
 plain_server.kill()
 retry_server.kill()
 old_server.kill()
@@ -248,10 +257,11 @@ assert scanner.scan(memory, len(memory), base, [broken], step=8, threads=threads
 print("tlsscan finds OpenSSL's secrets and nothing else")
 
 # After key updates a program holds only its newest secrets, which open the records after the last update, at sequence 0.
-for (client_bytes, server_bytes, logged), wanted in ((both, {0: 1, 1: 1}), (twice, {0: 2, 1: 0})):
+# Two updates in a row make two starts, the second KeyUpdate being the first record under the secret of the first update.
+for (client_bytes, server_bytes, logged), wanted, starts in ((both, {0: 1, 1: 1}, {0: [1], 1: [1]}), (twice, {0: 2, 1: 0}, {0: [2, 1], 1: []})):
     first = tlsrecords.session(client_bytes, server_bytes)
     newer = tlsrecords.late(first, client_bytes, server_bytes)
-    assert newer and newer.epochs == wanted, (wanted, newer and newer.epochs)
+    assert newer and newer.epochs == starts, (starts, newer and newer.epochs)
     secrets = {}
     for role, direction in (("CLIENT", 0), ("SERVER", 1)):
         secret = logged[f"{role}_TRAFFIC_SECRET_0"]
@@ -266,9 +276,28 @@ for (client_bytes, server_bytes, logged), wanted in ((both, {0: 1, 1: 1}), (twic
     assert {hit.label: hit.secret for hit in hits} == secrets, ({hit.label for hit in hits}, set(secrets))
     # The record after an update is at sequence number 0 too, and a session of the first keys must not take the newer secret for its own.
     assert scanner.scan(hidden, len(hidden), 0, [first], step=8, threads=threads) == [], "a newer secret was named as a first one"
-    for direction, kind, version, body in newer.records:
+    for n, (direction, kind, version, body) in enumerate(newer.records):
+        index = sum(1 for record in newer.records[:n] if record[0] == direction)
+        if newer.epochs[direction][index] != wanted[direction]:
+            continue
         role = "CLIENT" if direction == 0 else "SERVER"
         plain = scanner.open13(first.suite, secrets[f"{role}_TRAFFIC_SECRET_{wanted[direction]}"], 0, struct.pack(">BHH", kind, version, len(body)) + body)
         assert plain and plain.rstrip(b"\x00").endswith(b"\x17"), (role, plain)
         assert (b"GET / HTTP/1.0" if direction == 0 else b"HTTP/1.0 200 ok") in plain, (role, plain[:60])
 print("after key updates the newest secrets are found and named, and open the records after the last update")
+
+client_bytes, server_bytes, logged = padded
+first = tlsrecords.session(client_bytes, server_bytes)
+assert tlsrecords.late(first, client_bytes, server_bytes) is None, "a padded KeyUpdate was taken by its size"
+newer = tlsrecords.late(first, client_bytes, server_bytes, broad=True)
+assert newer and any(direction == 0 for direction, *_ in newer.records), "no record of the client was put up as a start"
+secret = scanner.next13(first.suite, scanner.next13(first.suite, logged["CLIENT_TRAFFIC_SECRET_0"]))
+hidden = bytearray(os.urandom(1 << 16))
+hidden[8192: 8192 + 32] = secret
+hits = scanner.scan(hidden, len(hidden), 0, [newer], step=8, threads=threads)
+assert len(hits) == 1 and hits[0].secret == secret and hits[0].label.startswith("CLIENT_TRAFFIC_SECRET_"), [(h.label, h.secret == secret) for h in hits]
+whole_records = [struct.pack(">BHH", kind, version, len(body)) + body for direction, kind, version, body in newer.records if direction == 0]
+opened = [scanner.open13(first.suite, secret, 0, record) for record in whole_records]
+assert sum(plain is not None for plain in opened) == 1, "the newest secret has to open one start, and only one, at sequence number 0"
+assert any(plain and b"after the updates" in plain for plain in opened), "the padded start did not open"
+print("after KeyUpdates sent padded the newest secret is found among more records, and opens the first record after them")

@@ -25,7 +25,11 @@ let
     done
     (sleep 1; printf 'K\n'; sleep 1; printf 'GET /updated HTTP/1.1\r\nHost: tls.test\r\n\r\n'; sleep 120) |
       openssl s_client -connect 10.9.9.1:8443 -servername tls.test -tls1_3 -keylogfile /tmp/heldupd.log > /dev/null 2>&1 &
-    sleep 4
+    # One that pads its records, so that its KeyUpdates show by no size, and updates after more records than the first keys' session has.
+    (sleep 1; for i in 1 2 3 4 5 6 7 8 9 10; do printf 'line %s\n' $i; sleep 0.3; done
+     printf 'k\n'; sleep 0.3; printf 'k\n'; sleep 0.3; printf 'after the updates\n'; sleep 120) |
+      openssl s_client -connect 10.9.9.1:8446 -tls1_3 -record_padding 64 -keylogfile /tmp/heldpad.log > /dev/null 2>&1 &
+    sleep 7
   '';
 
   # A server of HTTP/3 that answers every request with a page of its own, after a second, so that the client lives long enough
@@ -111,6 +115,8 @@ host.needs [ "modules/virtualisation/inspect" ] (
 
     testScript = ''
       machine.succeed(
+          "systemd-run --unit=echo ${pkgs.openssl.bin}/bin/openssl s_server -accept 10.9.9.1:8446 -cert ${certificate}/cert.pem"
+          " -key ${certificate}/key.pem -rev -tls1_3",
           "systemd-run --unit=slow python3 ${slow}",
           "systemd-run --unit=quic python3 ${quicServer}",
           "install -d -o alice /tmp/work/out",
@@ -137,6 +143,8 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == http3; guest-net http --host tls.test && guest-net http $(guest-net http | grep 'GET https://tls.test:8444/over' | cut -d' ' -f1)",
           "echo == keys; cat $VM_INSPECT_CAPTURE/keys.log",
           "echo == updated; cat $VM_INSPECT_CAPTURE/updated.log; echo == upd; guest-exec --shell 'cat /tmp/heldupd.log'",
+          "echo == pad; guest-exec --shell 'cat /tmp/heldpad.log'",
+          "echo == padlate; guest-net stream $(guest-net flows | grep ':8446 ' | head -n 1 | cut -d' ' -f1) --decrypted",
           "echo == late; for f in $(guest-net flows | grep ':8443 ' | cut -d' ' -f1); do"
           " guest-net stream $f --decrypted 2>&1 | grep -q 'GET /updated' && guest-net stream $f --decrypted; done; true",
       ])
@@ -152,7 +160,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           return {line for line in lines if only is None or line.split()[0] in only}
 
       traffic = ("CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0", "CLIENT_RANDOM")
-      everything = secrets(section["held"] + section["short"] + section["quic"] + section["traced"])
+      everything = secrets(section["held"] + section["short"] + section["quic"] + section["traced"] + section["pad"])
       found = secrets(section["keys"])
       held, short = secrets(section["held"], traffic), secrets(section["short"], traffic)
 
@@ -194,6 +202,11 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert f"CLIENT_TRAFFIC_SECRET_1 {random} " in section["updated"] and f"SERVER_TRAFFIC_SECRET_1 {random} " in section["updated"], section["updated"]
           assert re.search(r"TLS 1\.3 after key updates  CLIENT_TRAFFIC_SECRET_1 at 0x[0-9a-f]+, SERVER_TRAFFIC_SECRET_1 at", section["around"]), section["around"]
           assert "GET /updated HTTP/1.1" in section["late"] and "404 Not Found" in section["late"], section["late"]
+
+      with subtest("after KeyUpdates sent padded the newest secret is found at more records, and the flow is read from it on"):
+          random = next(line.split()[1] for line in section["pad"].splitlines() if line.startswith("CLIENT_TRAFFIC_SECRET_0"))
+          assert re.search(rf"CLIENT_TRAFFIC_SECRET_\d+ {random} ", section["updated"]), section["updated"]
+          assert "after the updates" in section["padlate"] and "-> the guest sent" in section["padlate"], section["padlate"]
 
       with subtest("the flows read as decrypted"):
           assert section["tls"].count("decrypted") >= 3, section["tls"]
