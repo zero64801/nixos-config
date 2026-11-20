@@ -214,8 +214,11 @@ def encrypted(stream, version):
 
 def label(found, direction, index, inner, first):
     """The key log label of a secret that opened the record at this index of this direction at sequence number 0, or for
-    QUIC the packet of this kind. A session of the newest keys names them by how many updates came before."""
+    QUIC the packet of this kind. A session of the newest keys names them by how many updates came before. A QUIC packet
+    tells only whether that many was odd or even, by its key phase, which comes as first, so it names the least."""
     if found.epochs:
+        if found.quic:
+            return f"{'SERVER' if direction == 1 else 'CLIENT'}_TRAFFIC_SECRET_{1 if first else 2}"
         return f"{'SERVER' if direction == 1 else 'CLIENT'}_TRAFFIC_SECRET_{found.epochs[direction][index]}"
     if found.quic:
         side = "SERVER" if direction == 1 else "CLIENT"
@@ -234,7 +237,7 @@ def label(found, direction, index, inner, first):
 # QUIC's versions 1 (RFC 9000) and 2 (RFC 9369), and what the two type bits of a long header mean in each.
 QUIC_VERSIONS = {0x00000001: 1, 0x6B3343CF: 2}
 LONG_TYPES = {1: {0: "initial", 1: "early", 2: "handshake", 3: "retry"}, 2: {1: "initial", 2: "early", 3: "handshake", 0: "retry"}}
-EARLY_PACKET, HANDSHAKE_PACKET, SHORT_PACKET = 1, 2, 3
+EARLY_PACKET, HANDSHAKE_PACKET, SHORT_PACKET, LATE_PACKET = 1, 2, 3, 4
 
 
 def varint(data, at):
@@ -326,6 +329,42 @@ def quic_session(datagrams, client_random, suite, name=""):
         return None
     found.quic = version
     return found
+
+
+def quic_short_packets(datagrams):
+    """The short packets of a QUIC connection's datagrams in order, each as (0 from the client or 1 from the server, the least
+    packet number it can have, where its number starts, the packet, what else came with its datagram). The least number
+    is its place among the packets its side sent in the application's numbers, which early data begins (RFC 9000 12.3).
+    Numbers a sender skipped and packets lost before the guest put the real one higher."""
+    ids, counts = [None, None], [0, 0]
+    for side, datagram, *extra in datagrams:
+        for kind, version, at, packet, _, source in quic_packets(datagram, None if ids[1 - side] is None else len(ids[1 - side])):
+            if version and ids[side] is None and kind in ("initial", "handshake"):
+                ids[side] = source
+            if kind == "short":
+                yield side, counts[side], at, packet, extra
+            if kind in ("short", "early"):
+                counts[side] += 1
+
+
+# A session of QUIC's newest keys has a few of the last short packets of each direction, the smallest, which open fastest.
+LATE_LAST, LATE_PICKED = 12, 2
+
+
+def quic_late(datagrams, found, sides=(0, 1)):
+    """A session of the newest keys of a QUIC connection, whose secrets after key updates are the only ones its program still
+    holds: for each direction of sides, a few of its last short packets, each with the least packet number it can have.
+    No packet shows where the keys were updated, since the key phase bit is under the header's protection, whose key
+    only the first secret gives. None when there is no such packet."""
+    newer, shorts = Session(), ([], [])
+    newer.client_random, newer.version, newer.suite, newer.name, newer.quic = found.client_random, 0x0304, found.suite, found.name, found.quic
+    newer.epochs = {0: [], 1: []}
+    for side, lowest, at, packet, _ in quic_short_packets(datagrams):
+        shorts[side].append((lowest, at, packet))
+    for side in sides:
+        for lowest, at, packet in sorted(shorts[side][-LATE_LAST:], key=lambda short: len(short[2]))[:LATE_PICKED]:
+            newer.records.append((side, LATE_PACKET, at, packet, lowest))
+    return newer if newer.records else None
 
 
 def crypto_frames(plain):

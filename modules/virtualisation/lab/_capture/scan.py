@@ -20,6 +20,7 @@ import time
 import capture as shared
 import owners
 import packets
+import quiclate
 import tlsrecords
 from capture import first, plain, size, tell
 
@@ -27,7 +28,7 @@ u32, u64 = ctypes.c_uint32, ctypes.c_uint64
 
 
 class Record(ctypes.Structure):
-    _fields_ = [("direction", u32), ("type", u32), ("version", u32), ("length", u32), ("body", ctypes.c_void_p)]
+    _fields_ = [("direction", u32), ("type", u32), ("version", u32), ("length", u32), ("body", ctypes.c_void_p), ("number", u64)]
 
 
 class Target(ctypes.Structure):
@@ -53,7 +54,7 @@ class Found:
     """A secret that opened a record of a session: its key log line and where it was."""
 
     def __init__(self, session, hit):
-        direction, _, _, _ = session.records[hit.record]
+        direction = session.records[hit.record][0]
         index = sum(1 for r in session.records[: hit.record] if r[0] == direction)
         self.session, self.address = session, hit.address
         self.label = tlsrecords.label(session, direction, index, hit.inner, hit.first)
@@ -79,6 +80,11 @@ class Scanner:
         lib.tlsscan_open13.argtypes = [u32, ctypes.c_char_p, u64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
         lib.tlsscan_next13.restype = ctypes.c_int
         lib.tlsscan_next13.argtypes = [u32, ctypes.c_char_p, ctypes.c_char_p]
+        lib.tlsscan_quic_late.restype = ctypes.c_long
+        lib.tlsscan_quic_late.argtypes = [u32, u32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_size_t, u64, u64, ctypes.c_int,
+                                          ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(u32), ctypes.POINTER(u64)]
+        lib.tlsscan_quic_next.restype = ctypes.c_int
+        lib.tlsscan_quic_next.argtypes = [u32, u32, ctypes.c_char_p, ctypes.c_char_p]
         lib.tlsscan_find.restype = ctypes.c_size_t
         lib.tlsscan_find.argtypes = [ctypes.c_void_p, ctypes.c_size_t, u64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint,
                                      ctypes.POINTER(u64), ctypes.POINTER(u32), ctypes.c_size_t]
@@ -95,8 +101,10 @@ class Scanner:
         kept = []
         for target, session in zip(targets, sessions):
             records = (Record * max(1, len(session.records)))()
-            for record, (direction, kind, version, body) in zip(records, session.records):
+            # A packet after QUIC's key updates has a fifth, the least packet number it can have.
+            for record, (direction, kind, version, body, *number) in zip(records, session.records):
                 record.direction, record.type, record.version, record.length, record.body = direction, kind, version, len(body), address(body)
+                record.number = number[0] if number else 0
                 kept.append(body)
             kept.append(records)
             target.version, target.suite, target.etm, target.nrecords = session.version, session.suite, int(session.etm), len(session.records)
@@ -126,6 +134,21 @@ class Scanner:
         """The secret a key update turns this one into."""
         out = ctypes.create_string_buffer(48)
         count = self.lib.tlsscan_next13(suite, secret, out)
+        return out.raw[:count]
+
+    def quic_late(self, version, suite, secret, packet, at, low, count, any_frame=False):
+        """A short QUIC packet opened with a traffic secret after key updates, its packet number tried from low on for count
+        numbers, as (plaintext, key phase, packet number), or None. any_frame tries every way to open it, also those whose
+        plaintext begins with no frame keys scan looks for."""
+        out, phase, number = ctypes.create_string_buffer(len(packet)), u32(), u64()
+        length = self.lib.tlsscan_quic_late(version, suite, secret, packet, len(packet), at, low, count, int(any_frame), out, len(packet),
+                                            ctypes.byref(phase), ctypes.byref(number))
+        return (out.raw[:length], phase.value, number.value) if length >= 0 else None
+
+    def quic_next(self, version, suite, secret):
+        """The secret a QUIC key update turns this one into."""
+        out = ctypes.create_string_buffer(48)
+        count = self.lib.tlsscan_quic_next(version, suite, secret, out)
         return out.raw[:count]
 
     def find(self, buffer, length, base, needles, threads=1, at=0):
@@ -302,13 +325,13 @@ def sessions(capture, args, flows):
 QUIC_OPENING = 10
 
 
-def quic_sessions(capture, args, flows, have):
-    """The QUIC flows to look for, with the client random and the suite tshark read from the Initial packets, which it opens
-    by itself, and the flow's first datagrams, whose other packets the secrets have to open."""
+def quic_hellos(capture, display="", keys=None):
+    """What tshark reads of the hellos in QUIC's Initial packets, which it opens by itself, by UDP stream: {stream: {"time",
+    "random", "guest_is_client", "suite"}}, of the flows the display filter keeps."""
     hellos = {}
-    display = " && ".join(f"({part})" for part in (capture.window(args), "quic && (tls.handshake.type == 1 || tls.handshake.type == 2)") if part)
+    display = " && ".join(f"({part})" for part in (display, "quic && (tls.handshake.type == 1 || tls.handshake.type == 2)") if part)
     for packet in capture.ek(NET, ["udp.stream", "frame.time_epoch", "frame.packet_flags_direction", "tls.handshake.type",
-                                   "tls.handshake.random", "tls.handshake.ciphersuite"], display):
+                                   "tls.handshake.random", "tls.handshake.ciphersuite"], display, keys):
         hello = hellos.setdefault(first(packet, "udp.stream"), {"time": float(first(packet, "frame.time_epoch", "0"))})
         kinds = packet["tls.handshake.type"]
         if "1" in kinds and packet["tls.handshake.random"] and "random" not in hello:
@@ -316,28 +339,87 @@ def quic_sessions(capture, args, flows, have):
             hello["guest_is_client"] = first(packet, "frame.packet_flags_direction") == SENT
         elif "2" in kinds and packet["tls.handshake.ciphersuite"]:
             hello["suite"] = int(first(packet, "tls.handshake.ciphersuite"), 0)
+    return hellos
+
+
+def quic_sessions(capture, args, flows, have):
+    """The QUIC flows to look for, with the client random and the suite tshark read from the Initial packets, which it opens
+    by itself, and the flow's first datagrams, whose other packets the secrets have to open."""
+    hellos = quic_hellos(capture, capture.window(args))
     by_id = {flow["id"]: flow for flow in flows}
     chosen = {stream: hello for stream, hello in hellos.items() if "random" in hello and "suite" in hello and f"u{stream}" in by_id
               and (not args.flow or f"u{stream}" in args.flow)
               and (args.again or not WANTED[0x0304] <= have.get(hello["random"].hex(), set()))}
-    datagrams, streams = {}, sorted(chosen, key=int)
+    taken, picked = datagrams_of(capture, {stream: hello["time"] + QUIC_OPENING for stream, hello in chosen.items()}), []
+    for stream in sorted(chosen, key=int):
+        sides = [(0 if from_guest == chosen[stream]["guest_is_client"] else 1, data) for from_guest, data in taken.get(stream, [])]
+        found = tlsrecords.quic_session(sides, chosen[stream]["random"], chosen[stream]["suite"])
+        if found:
+            found.flow, found.found, found.guest_is_client = by_id[f"u{stream}"], {}, chosen[stream]["guest_is_client"]
+            picked.append(found)
+    return picked
+
+
+def datagrams_of(capture, until, fields=(), limit=WHOLE):
+    """The datagrams of UDP streams in order, as {stream: [(whether the guest sent it, its payload, *the fields)]}: of each
+    stream of until those up to its time, or all when that is None, and no more than the limit of bytes."""
+    found, sizes, streams = {}, {}, sorted(until, key=int)
     for at in range(0, len(streams), 50):
-        display = " || ".join(f"(udp.stream == {s} && frame.time_epoch <= {chosen[s]['time'] + QUIC_OPENING:.6f})" for s in streams[at: at + 50])
-        for packet in capture.ek(NET, ["udp.stream", "frame.packet_flags_direction", "udp.payload"], display):
+        display = " || ".join(f"(udp.stream == {s}" + (f" && frame.time_epoch <= {until[s]:.6f})" if until[s] is not None else ")")
+                              for s in streams[at: at + 50])
+        for packet in capture.ek(NET, ["udp.stream", "frame.packet_flags_direction", "udp.payload", *fields], display):
             try:
                 data = bytes.fromhex(first(packet, "udp.payload").replace(":", ""))
             except ValueError:
                 continue
             stream = first(packet, "udp.stream")
-            from_guest = first(packet, "frame.packet_flags_direction") == SENT
-            datagrams.setdefault(stream, []).append((0 if from_guest == chosen[stream]["guest_is_client"] else 1, data))
-    picked = []
-    for stream in streams:
-        found = tlsrecords.quic_session(datagrams.get(stream, []), chosen[stream]["random"], chosen[stream]["suite"])
-        if found:
-            found.flow, found.found, found.guest_is_client = by_id[f"u{stream}"], {}, chosen[stream]["guest_is_client"]
-            picked.append(found)
-    return picked
+            sizes[stream] = sizes.get(stream, 0) + len(data)
+            if sizes[stream] <= limit:
+                found.setdefault(stream, []).append((first(packet, "frame.packet_flags_direction") == SENT, data, *(first(packet, f) for f in fields)))
+    return found
+
+
+def late_quic_sessions(capture, args, picked):
+    """For the QUIC flows whose first traffic secrets are not found, a session of their newest keys each, for the directions
+    still without them: a few of their last short packets, which a secret after key updates opens. No packet shows an
+    update, since the key phase bit is under the header's protection, so this is tried only once the first secrets are not
+    there."""
+    chosen = {s.flow["id"][1:]: s for s in picked}
+    taken, have, out = datagrams_of(capture, dict.fromkeys(chosen)), updated(capture), []
+    for stream, s in chosen.items():
+        sides = [(0 if from_guest == s.guest_is_client else 1, data) for from_guest, data in taken.get(stream, [])]
+        missing = [direction for direction, role in enumerate(("CLIENT", "SERVER")) if f"{role}_TRAFFIC_SECRET_0" not in s.found]
+        newer = tlsrecords.quic_late(sides, s, missing)
+        wanted = {("CLIENT", "SERVER")[direction] for direction, *_ in newer.records} if newer else set()
+        if newer is None or (not args.again and wanted <= roles(have.get(newer.client_random.hex(), {}))):
+            continue
+        newer.flow, newer.found, newer.guest_is_client, newer.datagrams = s.flow, {}, s.guest_is_client, sides
+        out.append(newer)
+    return out
+
+
+def acknowledged_sessions(scanner, picked):
+    """For the sessions of QUIC's newest keys that found the secret of one side only, (the session, one of the other side's
+    last packets at the numbers the side found acknowledged): packets lost on the way put the real numbers past where
+    their place in the capture says, as far as a long connection lost."""
+    out = []
+    for s in picked:
+        known = [direction for direction, role in enumerate(("CLIENT", "SERVER")) if role in roles(s.found)]
+        if len(known) != 1:
+            continue
+        known, other = known[0], 1 - known[0]
+        parts = quiclate.split(s.datagrams)
+        side = quiclate.Side(scanner, s.quic, s.suite, parts[known])
+        side.read([hit.secret for label, hit in s.found.items() if label.startswith(("CLIENT_", "SERVER_")[known])])
+        newer = tlsrecords.Session()
+        newer.__dict__.update(s.__dict__, found={}, records=[])
+        # The packet before an acknowledgement may still have been on its way to the program, so its number is that one or more.
+        for index, number in quiclate.hints(side, parts[other])[: tlsrecords.LATE_PICKED]:
+            _, lowest, at, packet, _ = parts[other][index]
+            newer.records.append((other, tlsrecords.LATE_PACKET, at, packet, max(lowest, number - 2)))
+        if newer.records:
+            out.append((s, newer))
+    return out
 
 
 class PteEntry(ctypes.Structure):
@@ -670,12 +752,15 @@ def run(capture, args, flows, chosen):
         except LookupError as e:
             print(f"guest-net: {source}: {e}", file=sys.stderr)
     # A TLS 1.3 flow whose first secrets are gone may have updated its keys with KeyUpdates sent padded, which no record's size
-    # tells, so its newest secret is looked for at more records, in what was searched for it before.
+    # tells, and a QUIC flow's updates show in no packet at all, so the newest secrets of both are looked for at the records
+    # they may open, in what was searched for them before.
     covered = {s.flow["id"] for s in picked if s.epochs}
-    retry = {s.flow["id"]: s for s in picked if not s.epochs and not s.quic and s.version == 0x0304 and not finished(s)
+    retry = {s.flow["id"]: s for s in picked if not s.epochs and s.version == 0x0304 and not finished(s)
              and id(s) in searched and s.flow["id"] not in covered}
     again = {}
-    for newer in newer_sessions(capture, args, list(retry.values()), broad=True):
+    retried = (newer_sessions(capture, args, [s for s in retry.values() if not s.quic], broad=True)
+               + late_quic_sessions(capture, args, [s for s in retry.values() if s.quic]))
+    for newer in retried:
         for source in searched[id(retry[newer.flow["id"]])]:
             again.setdefault(source, []).append(newer)
         picked.append(newer)
@@ -684,6 +769,13 @@ def run(capture, args, flows, chosen):
             search(scanner, source, group, args)
         except LookupError as e:
             print(f"guest-net: {source}: {e}", file=sys.stderr)
+    for late, newer in acknowledged_sessions(scanner, [s for s in retried if s.quic and not finished(s)]):
+        for source in searched[id(retry[late.flow["id"]])]:
+            try:
+                search(scanner, source, [newer], args)
+            except LookupError as e:
+                print(f"guest-net: {source}: {e}", file=sys.stderr)
+        late.found.update(newer.found)
     lines = [hit.line for s in picked if not s.epochs for hit in s.found.values()]
     later = [hit.line for s in picked if s.epochs for hit in s.found.values()]
     for at in range(0, len(lines), 4096):

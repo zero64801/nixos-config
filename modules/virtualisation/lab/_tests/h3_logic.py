@@ -4,7 +4,10 @@ needs to find, every request has to be listed and shown in full, headers that us
 own then has to wait for table instructions that come after the headers that need them, put pieces that come out of
 order or twice back together, and live through what a hostile guest sends.
 
-usage: h3_logic.py CAPTURE_CODE TSHARK_FOLDER CURL"""
+The server updates its keys before its first answer. With only the secrets after that update, which is all a program
+holds once it updated them, guest-net has to open the rest of the connection itself and list what was asked there.
+
+usage: h3_logic.py CAPTURE_CODE TSHARK_FOLDER CURL LIBTLSSCAN"""
 import argparse
 import asyncio
 import base64
@@ -12,6 +15,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -25,10 +29,11 @@ from aioquic.h3.connection import H3_ALPN, H3Connection
 from aioquic.h3.events import DataReceived, HeadersReceived
 from aioquic.quic.configuration import QuicConfiguration
 
-code, wireshark, curl = sys.argv[1:4]
+code, wireshark, curl, library = sys.argv[1:5]
 sys.path.insert(0, code)
 import capture
 import net
+import scan
 
 subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", "key.pem",
                 "-out", "cert.pem", "-days", "1", "-subj", "/CN=localhost"], check=True, capture_output=True)
@@ -81,6 +86,8 @@ class Server(QuicConnectionProtocol):
                 asked = self.asked[e.stream_id]
                 body = json.dumps({"path": asked[b":path"].decode(), "method": asked[b":method"].decode(),
                                    "got": self.bodies.get(e.stream_id, b"").decode()}).encode()
+                if asked[b":path"] == b"/first":
+                    self._quic.request_key_update()
                 self.h3.send_headers(e.stream_id, [(b":status", b"200"), (b"content-type", b"application/json"), (b"x-answered", b"by aioquic")])
                 self.h3.send_data(e.stream_id, body, end_stream=True)
                 self.transmit()
@@ -150,7 +157,7 @@ with open("keys.full") as f, open("capture/keys.log", "w") as out:
 with open("box", "w") as f:
     f.write('#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n')
 os.chmod("box", 0o755)
-capture.SETTINGS = capture.Settings("net", wireshark, os.path.abspath("box"), "-", "-", "-", "-", "-")
+capture.SETTINGS = capture.Settings("net", wireshark, os.path.abspath("box"), "-", "-", "-", library, "-")
 recorded = capture.Capture("capture")
 args = argparse.Namespace(since=None, until=None, keys=None, process=None, children=False, host=None, id=None, max=300, body=4000, save=None,
                           request=False)
@@ -248,6 +255,7 @@ print("what a hostile guest sends breaks nothing")
 class Answered:
     """tshark's JSON of a connection whose client sent its first request as early data: the first data on a stream of even
     number the keys open is the server's answer, then the client's own control stream."""
+    folder = "."
 
     def keylog(self, keys):
         return "keys"
@@ -310,3 +318,47 @@ assert {"name": "x-asked", "value": "by curl"} in form_entry["request"]["headers
 assert form_entry["response"]["status"] == 200 and json.loads(form_entry["response"]["content"]["text"])["got"] == "name=alice&pin=1234", form_entry["response"]
 assert form_entry["startedDateTime"].endswith("Z") and form_entry["timings"]["wait"] >= 0 and form_entry["connection"].startswith("u"), form_entry
 print("the calls are written as HAR")
+
+# After the server's key update the client holds only the secrets after it, which keys scan finds and tshark cannot open the
+# connection with, so guest-net opens what came after the update itself, without the header protection key.
+os.makedirs("late", exist_ok=True)
+for name in ("net.pcapng", "capture.json"):
+    shutil.copy(os.path.join("capture", name), os.path.join("late", name))
+hello = next(iter(scan.quic_hellos(recorded).values()))
+scanner = scan.Scanner(library)
+with open("keys.full") as f:
+    first_secrets = [line.split() for line in f if line.startswith(("CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"))]
+with open("late/updated.log", "w") as out:
+    out.writelines(f"{label[:-1]}1 {random} {scanner.quic_next(1, hello['suite'], bytes.fromhex(secret)).hex()}\n" for label, random, secret in first_secrets)
+moved = capture.Capture("late")
+tshark_alone = subprocess.run([f"{wireshark}/tshark", "-n", "-r", "late/net.pcapng", "-o", "tls.keylog_file:late/updated.log", "-Y", "quic.stream_data"],
+                              capture_output=True, text=True, check=True).stdout
+assert not tshark_alone.strip(), "tshark opened QUIC with secrets after an update, so this test no longer tests what it should"
+after = net.exchanges(moved, args)
+listed = [(r["method"], r["url"].rsplit("/", 1)[-1], r["status"], r["version"]) for r in after]
+# The first request went before the update and only its answer after, and the host each named was in the client's table.
+assert listed == [("?", "(asked before the key update it was read from)", "200", "3"), ("GET", "second", "200", "3"),
+                  ("GET", "third", "200", "3"), ("POST", "form", "200", "3")], listed
+assert after[1]["url"].startswith("https://?/") and after[0]["flow"] == after[1]["flow"] == found[0]["flow"], after
+with contextlib.redirect_stdout(io.StringIO()) as out:
+    net.http(moved, argparse.Namespace(**{**vars(args), "id": after[3]["id"]}))
+form = out.getvalue()
+assert "POST https://?/form" in form and "name=alice&pin=1234" in form and '"got": "name=alice&pin=1234"' in form, form
+assert "?: (set before the update)" in form and "x-answered: by aioquic" in form, form
+print("after a key update, the requests and answers from then on are read with the secrets after it alone")
+
+# keys scan on the same capture: the flow's first secrets are not in the memory, so it takes the flow's last packets from
+# the capture and finds the secrets after the update among made up memory.
+looked = argparse.Namespace(since=None, until=None, flow=None, again=True)
+opening = scan.quic_sessions(moved, looked, net.flows(moved, None), {})
+assert len(opening) == 1 and opening[0].quic == 1 and not opening[0].epochs, opening
+latest = scan.late_quic_sessions(moved, looked, opening)
+assert len(latest) == 1 and {side for side, *_ in latest[0].records} == {0, 1}, latest
+with open("late/updated.log") as f:
+    hidden = {label: bytes.fromhex(secret) for label, _, secret in (line.split() for line in f)}
+memory = bytearray(os.urandom(1 << 16))
+memory[1024: 1024 + len(hidden["CLIENT_TRAFFIC_SECRET_1"])] = hidden["CLIENT_TRAFFIC_SECRET_1"]
+memory[9000: 9000 + len(hidden["SERVER_TRAFFIC_SECRET_1"])] = hidden["SERVER_TRAFFIC_SECRET_1"]
+hits = scanner.scan(memory, len(memory), 0, latest, step=8)
+assert {(hit.label, hit.secret) for hit in hits} == set(hidden.items()), [(hit.label, hit.address) for hit in hits]
+print("keys scan takes a QUIC flow's last packets from the capture and finds its secrets after the update with them")

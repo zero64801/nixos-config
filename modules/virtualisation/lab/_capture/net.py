@@ -26,6 +26,7 @@ import capture as shared
 import grpc
 import owners
 import plaintext
+import quiclate
 import scan
 import schannel
 import scope
@@ -188,10 +189,10 @@ def quic_streams(capture, keys, only):
     """The stream data of each QUIC connection the keys open, as h3.py takes it: by connection, in the order of the packets,
     each chunk with the side that sent it, 0 for the client. Only the side that opens a unidirectional stream sends on it,
     and the client opens those of even number, which tells the sides apart even when the client's first requests went as
-    early data that the keys do not open."""
-    if not capture.keylog(keys):
-        return []
-    text = capture.output(NET, ["-Y", joined(None, only, "quic.stream_data"), "-T", "json", "--no-duplicate-keys", "-J", "frame udp quic"], keys)
+    early data that the keys do not open. A side tshark opened nothing of may be one keys scan found the secrets of after
+    its key updates, which guest-net opens itself."""
+    text = capture.output(NET, ["-Y", joined(None, only, "quic.stream_data"), "-T", "json", "--no-duplicate-keys", "-J", "frame udp quic"], keys) \
+        if capture.keylog(keys) else ""
     try:
         packets = json.loads(text) if text.strip() else []
     except ValueError:
@@ -230,13 +231,46 @@ def quic_streams(capture, keys, only):
                     connection["guessed"] = sent
                 fin = str(each.get("quic.frame_type_tree", {}).get("quic.stream.fin", "0")) == "1"
                 connection["chunks"].append((when, number, sent, stream, offset, bytes.fromhex(data.replace(":", "")), fin))
-    out = []
+    out, opened = [], {}
     for connection in connections.values():
         known = connection["guest_is_client"] if connection["guest_is_client"] is not None else connection["guessed"]
         guest_is_client = known is not False
         events = [[when, number, 0 if sent == guest_is_client else 1, stream, offset, base64.b64encode(data).decode(), fin]
                   for when, number, sent, stream, offset, data, fin in connection["chunks"]]
+        opened[connection["flow"]] = {event[2] for event in events}
         out.append({"flow": connection["flow"], "events": events})
+    by_flow = {connection["flow"]: connection for connection in out}
+    for flow, (events, missed) in quic_after_updates(capture, keys, only, opened).items():
+        connection = by_flow.get(flow) or {"flow": flow, "events": []}
+        if flow not in by_flow:
+            out.append(connection)
+        connection["events"] = sorted(connection["events"] + [[when, number, side, stream, offset, base64.b64encode(data).decode(), fin]
+                                                              for when, number, side, stream, offset, data, fin in events], key=lambda e: (e[0], e[1]))
+        connection["late"] = True
+        if missed:
+            print(f"guest-net: {flow}: {missed} packets after the key updates did not open", file=sys.stderr)
+    return out
+
+
+def quic_after_updates(capture, keys, only, opened):
+    """The stream data of the QUIC flows keys scan found secrets of after their key updates, of the sides tshark opened
+    nothing of, which guest-net opens itself, as {flow: ([(time, frame number, side, stream, offset, data, fin)], how many
+    packets did not open)}. opened says which sides tshark opened of each flow."""
+    later = scan.updated(capture)
+    if not later:
+        return {}
+    hellos = {stream: hello for stream, hello in scan.quic_hellos(capture, only, keys).items()
+              if "suite" in hello and hello.get("random", b"").hex() in later}
+    taken = scan.datagrams_of(capture, dict.fromkeys(hellos), fields=("frame.time_epoch", "frame.number"))
+    scanner, out = scan.Scanner(shared.SETTINGS.scan), {}
+    for stream, hello in hellos.items():
+        known, done = later[hello["random"].hex()], opened.get(f"u{stream}", set())
+        secrets = {side: [secret for label, secret in known.items() if label.startswith(role)]
+                   for side, role in enumerate(("CLIENT_", "SERVER_")) if side not in done}
+        if not any(secrets.values()):
+            continue
+        datagrams = [(0 if from_guest == hello["guest_is_client"] else 1, data, when, number) for from_guest, data, when, number in taken.get(stream, [])]
+        out[f"u{stream}"] = quiclate.read(scanner, hello["suite"], secrets, datagrams, 0 if hello["guest_is_client"] else 1)
     return out
 
 

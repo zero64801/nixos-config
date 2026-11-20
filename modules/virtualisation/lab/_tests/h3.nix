@@ -6,6 +6,7 @@
 
 let
   inherit (host) pkgs;
+  tlsscan = pkgs.callPackage ../_capture/tlsscan/tlsscan.nix { };
   python = pkgs.python3.withPackages (packages: [
     packages.aioquic
     packages.brotli
@@ -14,6 +15,6 @@ let
 in
 pkgs.runCommand "guest-net-h3" { nativeBuildInputs = [ pkgs.openssl ]; } ''
   cd "$(mktemp -d)"
-  ${python}/bin/python3 -I -B ${./h3_logic.py} ${../_capture} ${pkgs.wireshark-cli}/bin ${pkgs.curl.bin}/bin/curl
+  ${python}/bin/python3 -I -B ${./h3_logic.py} ${../_capture} ${pkgs.wireshark-cli}/bin ${pkgs.curl.bin}/bin/curl ${tlsscan}/lib/libtlsscan.so
   touch $out
 ''

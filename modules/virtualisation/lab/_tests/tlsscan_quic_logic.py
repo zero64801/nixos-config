@@ -5,6 +5,11 @@ memory among noise. The scanner has to find each where it was put, name it as ai
 It also has curl, on ngtcp2, talk HTTP/3 to aioquic's server, whose hellos have to be read from its Initial packets
 alone, and two datagrams sent in one batch, as a network card does with GSO, taken apart again.
 
+Then aioquic's client updates its keys, twice, while the relay loses some of the server's datagrams before it keeps them,
+as the network before a guest does. With only the newest secrets in the memory, the scanner has to find them from the
+last packets alone, without the header protection key, and the reader has to open the connection from an update on.
+A long download that loses many has to have its server's secret found through what the client acknowledged.
+
 usage: tlsscan_quic_logic.py CAPTURE_CODE LIBTLSSCAN CURL_OF_HTTP3"""
 import asyncio
 import os
@@ -21,6 +26,7 @@ from aioquic.quic.packet import QuicProtocolVersion
 from aioquic.tls import CipherSuite
 
 sys.path.insert(0, sys.argv[1])
+import quiclate
 import scan
 import tlsrecords
 
@@ -231,3 +237,156 @@ damaged = tlsrecords.Session()
 damaged.__dict__.update(sessions[0].__dict__, records=[(s, k, at, packet[:-1] + bytes([packet[-1] ^ 1])) for s, k, at, packet in sessions[0].records])
 assert scanner.scan(memory, len(memory), base, [damaged], step=8) == [], "a damaged packet was opened"
 print("tlsscan finds QUIC's secrets and nothing else")
+
+
+
+class Losing(Relay):
+    """A relay that loses the server's datagrams of these numbers on the way, before it keeps them."""
+
+    def __init__(self, server, lost):
+        self.lost, self.count = set(lost), 0
+        super().__init__(server)
+
+    def in_to_out(self):
+        while True:
+            data = self.inside.recv(65536)
+            self.count += 1
+            if self.count in self.lost:
+                continue
+            self.kept.append((1, data))
+            if self.client:
+                self.outside.sendto(data, self.client)
+
+
+async def ask(client, question):
+    reader, writer = await client.create_stream()
+    writer.write(question)
+    writer.write_eof()
+    return await reader.read()
+
+
+async def updating(suite, version, keys, lost):
+    """A connection whose client asks, updates its keys and asks again, twice, and then asks more."""
+    server_configuration = QuicConfiguration(alpn_protocols=["test"], is_client=False, cipher_suites=[suite], supported_versions=[version])
+    server_configuration.load_cert_chain("cert.pem", "key.pem")
+    port = free_port()
+    listener = await serve("127.0.0.1", port, configuration=server_configuration,
+                           stream_handler=lambda reader, writer: asyncio.ensure_future(handle(reader, writer)))
+    relay = Losing(port, lost)
+    client_configuration = QuicConfiguration(alpn_protocols=["test"], is_client=True, verify_mode=ssl.CERT_NONE, cipher_suites=[suite],
+                                             supported_versions=[version], secrets_log_file=keys)
+    async with connect("127.0.0.1", relay.port, configuration=client_configuration) as client:
+        assert await ask(client, b"before") == b"answer to before"
+        for update in range(2):
+            await asyncio.sleep(0.1)
+            client._quic.request_key_update()
+            client.transmit()
+            assert await ask(client, b"after %d" % update) == b"answer to after %d" % update
+        for more in range(10):
+            await ask(client, b"more %d" % more)
+        await asyncio.sleep(0.2)
+    listener.close()
+    return relay.kept
+
+
+def said(events):
+    """The data of each stream of the reader's events put together, by side and stream."""
+    pieces = {}
+    for _, _, side, stream, offset, data, _ in events:
+        pieces.setdefault((side, stream), {})[offset] = data
+    return {key: b"".join(data for _, data in sorted(parts.items())) for key, parts in pieces.items()}
+
+
+for suite, version in CASES[:-1]:
+    with open("updated.log", "w") as keys:
+        datagrams = asyncio.run(updating(suite, version, keys, (25, 26, 28)))
+    with open("updated.log") as f:
+        logged = {label: bytes.fromhex(secret) for label, _, secret in (line.split() for line in f if line.strip() and not line.startswith("#"))}
+    random_, chosen, _ = tlsrecords.quic_hellos(datagrams, scanner.quic_initial)
+    opening = tlsrecords.quic_session(datagrams, random_, chosen)
+    # aioquic 1.3 makes the next secret with QUIC version 1's label in version 2 too, where RFC 9369 names one of its own, so
+    # its secrets are made its way here, and the reader follows updates of version 2 only as the RFC has them.
+    newest = {}
+    for role in ("CLIENT", "SERVER"):
+        secret = logged[f"{role}_TRAFFIC_SECRET_0"]
+        for _ in range(2):
+            secret = scanner.quic_next(1, chosen, secret)
+        newest[role] = secret
+    late = tlsrecords.quic_late(datagrams, opening)
+    assert late and {side for side, kind, *_ in late.records} == {0, 1} and all(kind == tlsrecords.LATE_PACKET for _, kind, *_ in late.records), late
+    memory = bytearray(os.urandom(1 << 18))
+    places = {"CLIENT": 4096, "SERVER": 65536 + 8}
+    for role, place in places.items():
+        memory[place: place + len(newest[role])] = newest[role]
+        memory[place + 128: place + 128 + len(newest[role])] = bytes([newest[role][0] ^ 1]) + newest[role][1:]
+    hits = scanner.scan(memory, len(memory), base, [late], step=8, threads=2)
+    labels = {(hit.label, hit.secret, hit.address) for hit in hits}
+    # Two updates make the key phase what it was at first, which is all a packet tells, so the least it names is 2.
+    assert labels == {(f"{role}_TRAFFIC_SECRET_2", newest[role], base + places[role]) for role in places}, (suite, version, labels)
+    damaged = tlsrecords.Session()
+    damaged.__dict__.update(late.__dict__, records=[(s, k, where, packet[:-1] + bytes([packet[-1] ^ 1]), n) for s, k, where, packet, n in late.records])
+    assert scanner.scan(memory, len(memory), base, [damaged], step=8) == [], (suite, version, "a damaged packet was opened")
+    timed = [(side, data, 1000.0 + n, n + 1) for n, (side, data) in enumerate(datagrams)]
+    if version == QuicProtocolVersion.VERSION_1:
+        # From the secrets after the first update the reader follows the second by itself.
+        start = {side: [scanner.quic_next(1, chosen, logged[f"{role}_TRAFFIC_SECRET_0"])] for side, role in enumerate(("CLIENT", "SERVER"))}
+        expected = [b"after 0", b"answer to after 0", b"after 1", b"answer to after 1", b"more 9", b"answer to more 9"]
+    else:
+        start, expected = {side: [newest[role]] for side, role in enumerate(("CLIENT", "SERVER"))}, [b"after 1", b"answer to more 9"]
+    events, missed = quiclate.read(scanner, chosen, start, timed, 0)
+    streams = said(events).values()
+    assert missed == 0 and all(text in streams for text in expected) and b"before" not in streams, (suite, version, missed, sorted(streams))
+    if version == QuicProtocolVersion.VERSION_1:
+        # A secret two updates old opens none of the last packets: it is found back where the one after it ends, and the
+        # second update is followed from there.
+        events, missed = quiclate.read(scanner, chosen, {side: [logged[f"{role}_TRAFFIC_SECRET_0"]] for side, role in enumerate(("CLIENT", "SERVER"))},
+                                       timed, 0)
+        streams = said(events).values()
+        assert missed == 0 and all(text in streams for text in expected + [b"before", b"answer to before"]), (suite, missed, sorted(streams))
+print("tlsscan finds QUIC's secrets after key updates from the last packets alone, and the reader opens the connection from them")
+
+
+async def downloading(keys):
+    """A long download over a relay that loses every fifth of the server's datagrams, then a key update and a question."""
+    async def big(reader, writer):
+        asked = await reader.read()
+        writer.write(b"y" * 3_000_000 if asked == b"big" else b"answer to " + asked)
+        writer.write_eof()
+
+    configuration = QuicConfiguration(alpn_protocols=["test"], is_client=False)
+    configuration.load_cert_chain("cert.pem", "key.pem")
+    port = free_port()
+    listener = await serve("127.0.0.1", port, configuration=configuration, stream_handler=lambda reader, writer: asyncio.ensure_future(big(reader, writer)))
+    relay = Losing(port, range(25, 100000, 5))
+    client_configuration = QuicConfiguration(alpn_protocols=["test"], is_client=True, verify_mode=ssl.CERT_NONE, secrets_log_file=keys)
+    async with connect("127.0.0.1", relay.port, configuration=client_configuration) as client:
+        assert len(await ask(client, b"big")) == 3_000_000
+        client._quic.request_key_update()
+        client.transmit()
+        assert await ask(client, b"after") == b"answer to after"
+        await asyncio.sleep(0.2)
+    listener.close()
+    return relay.kept
+
+
+with open("download.log", "w") as keys:
+    datagrams = asyncio.run(downloading(keys))
+with open("download.log") as f:
+    logged = {label: bytes.fromhex(secret) for label, _, secret in (line.split() for line in f if line.strip() and not line.startswith("#"))}
+random_, chosen, _ = tlsrecords.quic_hellos(datagrams, scanner.quic_initial)
+newest = {role: scanner.quic_next(1, chosen, logged[f"{role}_TRAFFIC_SECRET_0"]) for role in ("CLIENT", "SERVER")}
+late = tlsrecords.quic_late(datagrams, tlsrecords.quic_session(datagrams, random_, chosen))
+memory = bytearray(os.urandom(1 << 18))
+memory[4096: 4096 + 32], memory[8192: 8192 + 32] = newest["CLIENT"], newest["SERVER"]
+late.found, late.datagrams = {}, datagrams
+scan.took(scanner.scan(memory, len(memory), 0, [late], step=8, threads=2), [late])
+assert set(late.found) == {"CLIENT_TRAFFIC_SECRET_1"}, "the server's last packets are where their place says, so this tests nothing"
+again = scan.acknowledged_sessions(scanner, [late])
+assert len(again) == 1 and {side for side, *_ in again[0][1].records} == {1}, again
+newer = again[0][1]
+scan.took(scanner.scan(memory, len(memory), 0, [newer], step=8, threads=2), [newer])
+assert {label: hit.secret for label, hit in newer.found.items()} == {"SERVER_TRAFFIC_SECRET_1": newest["SERVER"]}, newer.found
+timed = [(side, data, 1000.0 + n, n + 1) for n, (side, data) in enumerate(datagrams)]
+events, missed = quiclate.read(scanner, chosen, {0: [newest["CLIENT"]], 1: [newest["SERVER"]]}, timed, 0)
+assert missed == 0 and b"answer to after" in said(events).values(), (missed, said(events))
+print("the server's secret is found where the client's acknowledgements put its packets, past the many lost on the way")

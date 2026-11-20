@@ -139,7 +139,7 @@ class Capture:
     usb.pcapng holds the records of the USB monitor for the devices the guest has. capture.json says what was recorded
     and how it ended, notes.jsonl holds the moments tools marked, owners.jsonl which program a connection was
     found to be of, processes.jsonl which program started which, keys.log the TLS secrets that tools found, for
-    whatever reads the capture to decrypt with, and updated.log those of TLS 1.3 after key updates.
+    whatever reads the capture to decrypt with, and updated.log those of TLS 1.3 and QUIC after key updates.
     """
 
     def __init__(self, domain, recorded, limit):

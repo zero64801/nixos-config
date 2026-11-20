@@ -5,6 +5,9 @@ undoes the headers' compression, is C.
 Each connection's stream data comes in the order of the packets, as chunks of a stream at an offset, and is put back
 together per stream and per side. The unidirectional streams carry each side's settings and the instructions for its
 headers' table, the bidirectional ones a request and its answer as HTTP/3 frames.
+
+A connection guest-net read only from a key update on, with the secrets after it, misses the start of the streams that
+carry the tables, so what a header block takes from a table is left unread and the rest of it read.
 """
 import base64
 import json
@@ -13,6 +16,10 @@ import sys
 import pylsqpack
 
 LIMIT = 64 << 20
+# What stands for a header whose name and value, or whose name, were in a table filled before the key update read from:
+# a literal name of QPACK (RFC 9204 4.5.6), and a value after it.
+UNREAD_NAME = b"\x21?"
+UNREAD = UNREAD_NAME + bytes([23]) + b"(set before the update)"
 # HTTP/3's frames, settings and unidirectional streams, after RFC 9114 and RFC 9204.
 DATA, HEADERS, SETTINGS = 0x00, 0x01, 0x04
 TABLE_CAPACITY, BLOCKED_STREAMS = 0x01, 0x07
@@ -47,6 +54,62 @@ def prefixed(data, at, bits):
     return None
 
 
+def string_end(data, at):
+    """Where a string of QPACK that begins at this offset ends, past its Huffman bit and its length, or None."""
+    length = prefixed(data, at, 7)
+    if length is None or length[1] + length[0] > len(data):
+        return None
+    return length[1] + length[0]
+
+
+def without_table(block):
+    """A header block of QPACK with what it takes from the dynamic table left as headers named ?, so that it decodes without
+    one, or None when it does not parse. A literal value whose name was in the table keeps its value."""
+    count = prefixed(block, 0, 8)
+    base = count and prefixed(block, count[1], 7)
+    if not base:
+        return None
+    out, at = bytearray(b"\x00\x00"), base[1]
+    while at < len(block):
+        byte = block[at]
+        if byte & 0x80:
+            # An entry by index, of the static table when its T bit is set.
+            end = prefixed(block, at, 6)
+            if end is None:
+                return None
+            out += block[at: end[1]] if byte & 0x40 else UNREAD
+            at = end[1]
+        elif byte & 0x40:
+            # A literal value after a name by index, of the static table when its T bit is set.
+            name = prefixed(block, at, 4)
+            end = name and string_end(block, name[1])
+            if not end:
+                return None
+            out += block[at: end] if byte & 0x10 else UNREAD_NAME + block[name[1]: end]
+            at = end
+        elif byte & 0x20:
+            name = prefixed(block, at, 3)
+            end = name and name[1] + name[0] <= len(block) and string_end(block, name[1] + name[0])
+            if not end:
+                return None
+            out += block[at: end]
+            at = end
+        elif byte & 0x10:
+            end = prefixed(block, at, 4)
+            if end is None:
+                return None
+            out += UNREAD
+            at = end[1]
+        else:
+            name = prefixed(block, at, 3)
+            end = name and string_end(block, name[1])
+            if not end:
+                return None
+            out += UNREAD_NAME + block[name[1]: end]
+            at = end
+    return bytes(out)
+
+
 class Side:
     """What one side of a connection said: its settings and its own table of headers, which only it fills. sized says
     whether the table's decoder was made with what the other side allowed."""
@@ -56,8 +119,8 @@ class Side:
 
 
 class Connection:
-    def __init__(self, flow):
-        self.flow, self.sides = flow, (Side(), Side())
+    def __init__(self, flow, late=False):
+        self.flow, self.sides, self.late = flow, (Side(), Side()), late
         self.streams, self.requests, self.blocked, self.notes = {}, {}, {}, []
 
     def decoder(self, sender, first=b""):
@@ -161,8 +224,18 @@ class Connection:
     def headers(self, key, sender, payload=None, resume=False):
         stream = key[0]
         decoder = self.decoder(sender)
+        bare = None
+        if self.late and not resume and (prefixed(payload, 0, 8) or (1,))[0]:
+            # Its table was filled before the update the connection was read from, so a block that needs it decodes without.
+            bare = without_table(payload)
+            if bare is None:
+                self.notes.append(f"{self.flow} stream {stream}: headers that do not parse")
+                return
         try:
-            _, headers = decoder.resume_header(stream) if resume else decoder.feed_header(stream, payload)
+            if bare is not None:
+                _, headers = pylsqpack.Decoder(0, 0).feed_header(stream, bare)
+            else:
+                _, headers = decoder.resume_header(stream) if resume else decoder.feed_header(stream, payload)
         except pylsqpack.StreamBlocked:
             self.blocked[(stream, sender)] = key
             if sender == 0 and stream not in self.requests:
@@ -204,7 +277,7 @@ def main():
     given = json.load(sys.stdin)
     out, notes = [], []
     for each in given["connections"]:
-        connection = Connection(each["flow"])
+        connection = Connection(each["flow"], bool(each.get("late")))
         for when, frame, sender, stream, offset, data, fin in each["events"]:
             connection.take((when, frame, sender, stream, offset, base64.b64decode(data), fin))
         for stream, request in sorted(connection.requests.items()):
@@ -212,7 +285,8 @@ def main():
             if asked:
                 url = f"{asked.get(':scheme', 'https')}://{asked.get(':authority', '?')}{asked.get(':path', '')}"
             else:
-                url = "(asked in early data)" if request["early"] else "(its headers need table entries sent as early data)"
+                url = "(asked before the key update it was read from)" if request["early"] and connection.late else \
+                    "(asked in early data)" if request["early"] else "(its headers need table entries sent as early data)"
             took = request["answered"] - request["time"] if request["answered"] is not None and not request["early"] else None
             out.append({"id": f"h{request['frame']}.{stream}", "flow": connection.flow, "time": request["time"],
                         "method": asked.get(":method", "?"), "url": url,

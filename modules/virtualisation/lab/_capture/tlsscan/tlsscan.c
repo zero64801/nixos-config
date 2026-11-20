@@ -21,15 +21,19 @@
 enum { H_SHA1 = 1, H_SHA256 = 2, H_SHA384 = 3, H_MD5 = 4, H_LEGACY = 5 };
 enum { GCM = 1, CHACHA = 2, CBC = 3, CCM = 4, CCM8 = 5, CBC3 = 6, RC4 = 7 };
 enum { MAXRECORDS = 32, LARGEST = (1 << 14) + 2048 };
+/* A short QUIC packet under a secret after key updates, and how many packet numbers from the least it can have are tried,
+ * since a sender may skip some, as quic-go does now and then. */
+enum { LATE_PACKET = 4, SLACK = 8 };
 
-/* A record of TLS, or for QUIC a whole protected packet: then type is 2 for a Handshake packet and 3 for one with a
- * short header, and version is where its packet number starts. */
+/* A record of TLS, or for QUIC a whole protected packet: then type is 2 for a Handshake packet, 3 for one with a short
+ * header and LATE_PACKET for one with a short header after key updates, and version is where its packet number starts. */
 typedef struct {
     uint32_t direction; /* 0 the client sent it, 1 the server */
     uint32_t type;      /* the outer content type */
     uint32_t version;   /* the record header's version */
     uint32_t length;
     const uint8_t *body;
+    uint64_t number; /* LATE_PACKET: the least packet number it can have, from its place among the packets of its direction */
 } tls_record;
 
 typedef struct {
@@ -387,6 +391,30 @@ static int ccm_block(crypto *c, size_t keylen, const uint8_t *key, const uint8_t
     return aes_block(c, 1, keylen, key, block, out);
 }
 
+/* The byte of keystream over this offset of an AEAD's plaintext, which one block of the cipher gives: GCM counts its blocks
+ * of plaintext from 2, CCM from 1, and ChaCha20 its blocks of 64 bytes from 1. */
+static int stream_byte(crypto *c, int mode, size_t keylen, const uint8_t *key, const uint8_t nonce[12], size_t offset, uint8_t *out) {
+    uint8_t block[64];
+    if (mode == CCM || mode == CCM8) {
+        if (!ccm_block(c, keylen, key, nonce, (uint32_t)(1 + offset / 16), block))
+            return 0;
+        *out = block[offset % 16];
+    } else if (mode == GCM) {
+        uint8_t counter[16];
+        uint32_t n = (uint32_t)(2 + offset / 16);
+        memcpy(counter, nonce, 12);
+        counter[12] = (uint8_t)(n >> 24), counter[13] = (uint8_t)(n >> 16), counter[14] = (uint8_t)(n >> 8), counter[15] = (uint8_t)n;
+        if (!aes_block(c, 1, keylen, key, counter, block))
+            return 0;
+        *out = block[offset % 16];
+    } else {
+        if (!chacha_block(c, key, nonce, offset, block))
+            return 0;
+        *out = block[offset % 64];
+    }
+    return 1;
+}
+
 /* The whole AEAD record, tag included. The plaintext is left in c->plain. */
 static int aead_open(crypto *c, int mode, size_t keylen, const uint8_t *key, const uint8_t nonce[12], const uint8_t *aad,
                      size_t aadlen, const uint8_t *body, size_t length) {
@@ -504,26 +532,9 @@ static void try13(job *j, crypto *c, prepared *t, const uint8_t *key, const uint
             continue;
         size_t clen = x->length - tag_size(s->mode), last = clen - 1;
         uint8_t byte;
-        if (s->mode == CCM || s->mode == CCM8) {
-            uint8_t stream[16];
-            if (!ccm_block(c, s->keylen, key, iv, (uint32_t)(1 + last / 16), stream))
-                continue;
-            byte = x->body[last] ^ stream[last % 16];
-        } else if (s->mode == GCM) {
-            uint8_t counter[16], stream[16];
-            uint32_t block = (uint32_t)(2 + last / 16);
-            memcpy(counter, iv, 12);
-            counter[12] = (uint8_t)(block >> 24), counter[13] = (uint8_t)(block >> 16), counter[14] = (uint8_t)(block >> 8),
-            counter[15] = (uint8_t)block;
-            if (!aes_block(c, 1, s->keylen, key, counter, stream))
-                continue;
-            byte = x->body[last] ^ stream[last % 16];
-        } else {
-            uint8_t stream[64];
-            if (!chacha_block(c, key, iv, last, stream))
-                continue;
-            byte = x->body[last] ^ stream[last % 64];
-        }
+        if (!stream_byte(c, s->mode, s->keylen, key, iv, last, &byte))
+            continue;
+        byte ^= x->body[last];
         /* The last byte of an inner plaintext is its content type, or 0 when the sender padded it. */
         if (byte != 0 && byte != 21 && byte != 22 && byte != 23)
             continue;
@@ -546,14 +557,67 @@ static void try13(job *j, crypto *c, prepared *t, const uint8_t *key, const uint
     }
 }
 
+/* Whether a byte can begin a QUIC packet's plaintext: a frame type of RFC 9000 19, IMMEDIATE_ACK, DATAGRAM, or the first
+ * byte of a type of two bytes up to 0xff, as ACK_FREQUENCY's. */
+static int frame_start(uint8_t b) { return b <= 0x1f || b == 0x30 || b == 0x31 || b == 0x40; }
+
+/* RFC 9001 5.4 and 6: a short packet opened with the key and IV of a secret after key updates, without the header
+ * protection key, which comes from the first secret alone. What that key hides is tried instead: the key phase bit, the
+ * packet number's length, and the packet number from low on for count numbers. Unless any, a try goes on to the whole
+ * packet only when its first byte of plaintext can begin a frame, which one block of keystream tells. The plaintext stays
+ * in c->plain. Returns its length, or -1. */
+static long open_late(crypto *c, const suite_info *s, const uint8_t *key, const uint8_t *iv, const uint8_t *packet, size_t length,
+                      size_t at, uint64_t low, uint64_t count, int any, uint32_t *phase, uint64_t *number) {
+    uint8_t header[32], nonce[12], byte = 0;
+    /* A short header has a connection ID of 20 bytes at most, and a packet the sample of header protection, 4 bytes after its number begins. */
+    if (at < 1 || at > 21 || at + 4 + 16 > length || length > LARGEST)
+        return -1;
+    memcpy(header, packet, at);
+    for (uint64_t n = low; n - low < count; n++) {
+        memcpy(nonce, iv, 12);
+        for (int i = 0; i < 8; i++)
+            nonce[11 - i] ^= (uint8_t)(n >> (8 * i));
+        if (!any && !stream_byte(c, s->mode, s->keylen, key, nonce, 0, &byte))
+            continue;
+        for (size_t pnlen = 1; pnlen <= 4; pnlen++) {
+            if (!any && !frame_start(packet[at + pnlen] ^ byte))
+                continue;
+            for (size_t i = 0; i < pnlen; i++)
+                header[at + i] = (uint8_t)(n >> (8 * (pnlen - 1 - i)));
+            for (uint32_t kp = 0; kp < 2; kp++) {
+                /* The form, fixed and spin bits are not protected, and the reserved bits are zero. */
+                header[0] = (uint8_t)((packet[0] & 0xe0) | kp << 2 | (pnlen - 1));
+                if (aead_open(c, s->mode, s->keylen, key, nonce, header, at + pnlen, packet + at + pnlen, length - at - pnlen)) {
+                    *phase = kp;
+                    *number = n;
+                    return (long)(length - at - pnlen - tag_size(s->mode));
+                }
+            }
+        }
+    }
+    return -1;
+}
+
 /* QUIC (RFC 9001 5): the secret's key, IV and header protection key open a protected packet at its own packet number,
- * which the start of a connection keeps small enough to be whole in the packet. */
+ * which the start of a connection keeps small enough to be whole in the packet. A packet after key updates is opened
+ * without the header key, which a newer secret does not give. */
 static void tryquic(job *j, crypto *c, prepared *t, const uint8_t *key, const uint8_t *iv, const uint8_t *hp, const uint8_t *secret,
                     size_t offset) {
     const suite_info *s = t->suite;
     for (uint32_t r = 0; r < t->nrecords; r++) {
         const tls_record *x = &t->target->records[r];
         size_t at = x->version;
+        if (x->type == LATE_PACKET) {
+            uint32_t phase;
+            uint64_t number;
+            if (atomic_load(&t->solved) >> r & 1 || open_late(c, s, key, iv, x->body, x->length, at, x->number, SLACK, 0, &phase, &number) < 0)
+                continue;
+            /* The key phase bit is all a packet tells of how many updates came before: whether they were odd or even in number. */
+            report(j, t, r, x->type, phase, secret, hash_size(s->prf), offset);
+            atomic_store(x->direction ? &t->server : &t->client, 1);
+            settle(j, t);
+            continue;
+        }
         /* RFC 9001 5.4.2: the sample is the 16 bytes from 4 after the packet number's start, the tag among them in a short packet. */
         if (atomic_load(&t->solved) >> r & 1 || at > 64 || at + 4 + 16 > x->length || x->length > LARGEST)
             continue;
@@ -859,11 +923,6 @@ size_t tlsscan_scan(const uint8_t *memory, size_t length, uint64_t base, size_t 
     return atomic_load(&nhits);
 }
 
-/*
- * Opens a QUIC Initial packet (RFC 9001 5.2), whose keys come from the client's first destination connection ID, which
- * anyone on the path knows, to read the hellos in it. at is where its packet number starts. Returns the length of the
- * plaintext written to out, or -1.
- */
 /* One record of TLS 1.3, its header and the rest, opened with a traffic secret at a sequence number: the records after a key
  * update, which tshark opens only from the first secret on. The plaintext, inner type and padding still on it, goes to out. */
 long tlsscan_open13(uint32_t suite, const uint8_t *secret, uint64_t seq, const uint8_t *record, size_t length, uint8_t *out, size_t room) {
@@ -903,6 +962,50 @@ int tlsscan_next13(uint32_t suite, const uint8_t *secret, uint8_t *out) {
     return (int)hash_size(s->prf);
 }
 
+/* A short QUIC packet after key updates opened with a traffic secret as keys scan checks one, its packet number tried from
+ * low on for count numbers: the packets guest-net reads itself, since tshark opens QUIC only from the first secrets on. The
+ * plaintext goes to out. Returns its length, or -1, with the key phase and the packet number it had. */
+long tlsscan_quic_late(uint32_t version, uint32_t suite, const uint8_t *secret, const uint8_t *packet, size_t length, size_t at,
+                       uint64_t low, uint64_t count, int any, uint8_t *out, size_t room, uint32_t *phase, uint64_t *number) {
+    const suite_info *s = suite_of(0x0304, suite);
+    hmac_key k;
+    uint8_t key[32], iv[12];
+    long result = -1;
+    if (!s || (version != 1 && version != 2))
+        return -1;
+    hmac_setup(&k, s->prf, secret, hash_size(s->prf));
+    expand_label(&k, version == 1 ? "quic key" : "quicv2 key", s->keylen, key);
+    expand_label(&k, version == 1 ? "quic iv" : "quicv2 iv", 12, iv);
+    crypto *c = calloc(1, sizeof *c);
+    if (!c)
+        return -1;
+    long plain = open_late(c, s, key, iv, packet, length, at, low, count, any, phase, number);
+    if (plain >= 0 && (size_t)plain <= room) {
+        memcpy(out, c->plain, (size_t)plain);
+        result = plain;
+    }
+    crypto_free(c);
+    free(c);
+    return result;
+}
+
+/* The secret a key update of QUIC turns one into (RFC 9001 6.1, RFC 9369 3.3.2), and its length. The header protection key
+ * stays the one of the first secret. */
+int tlsscan_quic_next(uint32_t version, uint32_t suite, const uint8_t *secret, uint8_t *out) {
+    const suite_info *s = suite_of(0x0304, suite);
+    hmac_key k;
+    if (!s || (version != 1 && version != 2))
+        return 0;
+    hmac_setup(&k, s->prf, secret, hash_size(s->prf));
+    expand_label(&k, version == 1 ? "quic ku" : "quicv2 ku", hash_size(s->prf), out);
+    return (int)hash_size(s->prf);
+}
+
+/*
+ * Opens a QUIC Initial packet (RFC 9001 5.2), whose keys come from the client's first destination connection ID, which
+ * anyone on the path knows, to read the hellos in it. at is where its packet number starts. Returns the length of the
+ * plaintext written to out, or -1.
+ */
 long tlsscan_quic_initial(const uint8_t *packet, size_t length, size_t at, uint32_t version, const uint8_t *dcid, size_t dcidlen,
                           int from_server, uint8_t *out, size_t room) {
     static const uint8_t salt1[20] = {0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
