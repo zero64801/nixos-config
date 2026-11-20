@@ -167,17 +167,10 @@ What a capture holds was sent or received by the guest: the readers run `tshark`
 - `--physical` searches the whole RAM around each client random, `--deep` all of it, and `--process` keeps to a program and searches it for flows whose program is not known.
 - It says why a flow was not found: closed before its program was seen, or no secrets in the copy.
 
-To watch a program from its start, arm before you launch it:
-
-```
-guest-net keys scan --follow --pause --seconds 120 > out/keys.txt 2>&1 &
-guest-mark start
-guest-exec --as-user --job PROGRAM
-guest-mark started
-```
-
-and read it with `guest-net flows --since start --process PROGRAM --children`, and the same of `http` and `tls`.
-Run `guest-net owners --follow` alongside, so that each flow's program and which program started which are known.
+To watch a program from its start, `guest-net trace [--pause] [--seconds N] -- PROGRAM ARGS` arms `keys scan --follow` and `owners --follow`, starts the program as the logged in user once both follow, waits for it to end or for the time to run out, and shows the flows, requests and handshakes of it and of the programs it started.
+It marks the start as `trace-HHMMSS`, so `guest-net http --since trace-HHMMSS --process PROGRAM --children` and the other readers read the same stretch again.
+`--user NAME` or `--agent` start it as another account, `--physical` is for a guest that is not Windows.
+A QUIC flow whose socket Windows does not list is tried in the traced program's own processes, and taken from the one whose memory has its client random.
 
 `keys scan --pause`, `keys schannel`, `guest-dbg` and `guest-gdb` all go through the guest's one debug stub, so only one of them can run at a time.
 `--pause` and `keys schannel` stop the guest or `lsass` only for moments, and the agent waits each hold out.

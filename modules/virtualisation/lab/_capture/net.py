@@ -4,11 +4,13 @@ A flow is named t then tshark's number for a TCP stream, or u for UDP. A request
 the packet it began in. Everything shown was sent or received by the guest. --process and --host keep the flows of some
 programs or to some hosts, as scope.py chooses them.
 """
+import argparse
 import base64
 import calendar
 import datetime
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -882,6 +884,72 @@ def summary(capture, args):
         print(f"names    {plain(', '.join(names), 2000) or 'none'}")
 
 
+def trace(capture, args):
+    """Arms keys scan --follow and owners --follow, starts the program in the guest as the user, waits for it to end or for
+    the time to run out, and shows the flows, requests and handshakes of it and of the programs it started."""
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        fail("trace takes the program to start and its arguments, after --")
+    # The program goes by its file's name, in the guest's own way of writing paths.
+    name = command[0].replace("\\", "/").rsplit("/", 1)[-1]
+    me = [sys.executable, "-I", "-B", os.path.dirname(os.path.abspath(__file__)), *sys.argv[1:9]]
+    if args.physical:
+        scan_options = ["--physical"]
+    else:
+        scan_options = ["--process", name, "--children"]
+    scan_options += ["--pause"] if args.pause else []
+    # Twice a second, since a program just started often holds a connection for only a moment.
+    watchers = [subprocess.Popen(me + ["owners", "--follow", "--every", "0.5"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                subprocess.Popen(me + ["keys", "scan", "--follow", *scan_options], stderr=subprocess.PIPE, text=True, errors="replace")]
+    # MemProcFS takes some seconds to open the guest, and the program starts only once the scan follows.
+    for line in watchers[1].stderr:
+        print(line.rstrip("\n"), file=sys.stderr)
+        if "following the capture" in line:
+            break
+    else:
+        fail("keys scan did not begin to follow")
+    threading.Thread(target=lambda: [print(line.rstrip("\n"), file=sys.stderr) for line in watchers[1].stderr], daemon=True).start()
+    label = f"trace-{time.strftime('%H%M%S')}"
+    tell({"do": "mark", "label": label})
+    whom = ["--user", args.user] if args.user else [] if args.agent else ["--as-user"]
+    started = subprocess.run(["guest-exec", *whom, "--job", *command], capture_output=True, text=True, errors="replace", check=False)
+    job = started.stdout.split()[1] if started.returncode == 0 and started.stdout.startswith("job ") else None
+    if job is None:
+        for watcher in watchers:
+            watcher.terminate()
+        fail(f"the program did not start: {plain(started.stderr.strip() or started.stdout.strip(), 300)}")
+    print(f"guest-net: {name} started as job {job}, marked {label}", file=sys.stderr)
+    until = time.monotonic() + args.seconds
+    try:
+        while time.monotonic() < until:
+            status = subprocess.run(["guest-job", "status", job], capture_output=True, text=True, errors="replace", check=False).stdout
+            if "running" not in status:
+                break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    # The scan checks what it copied as the last records come in, a moment after the program ended.
+    time.sleep(2)
+    tell({"do": "mark", "label": label + "-end"})
+    for watcher in watchers:
+        watcher.send_signal(signal.SIGINT)
+    for watcher in watchers:
+        try:
+            watcher.wait(30)
+        except subprocess.TimeoutExpired:
+            watcher.kill()
+    shown = argparse.Namespace(since=label, until=None, keys=None, process=[name], children=True, host=None, name=None, json=False, max=200, id=None,
+                               body=4000, save=None, proto=None, type=None)
+    # Read again, for the marks, owners and processes that came while it ran.
+    capture = shared.Capture(capture.folder)
+    print(f"== flows of {name} and what it started")
+    show_flows(capture, shown)
+    print("== requests")
+    http(capture, shown)
+    print("== handshakes")
+    tls(capture, shown)
+
+
 def keys(capture, args):
     """TLS secrets for the capture: added from a key log of this side, pulled from the guest, read from lsass, or listed."""
     if args.action == "schannel":
@@ -1022,6 +1090,18 @@ def build(parser):
                                                                            "is no larger than this, 64 MiB by default, otherwise only "
                                                                            "around the client random")
     sub.set_defaults(run=keys)
+    sub = actions.add_parser("trace", help="start a program in the guest with keys scan and owners already following, and show its traffic",
+                             description="Arms keys scan --follow and owners --follow, starts the program in the guest as the logged in user, waits "
+                                         "for it to end or for the time to run out, and shows the flows, requests and handshakes of it and of the "
+                                         "programs it started, from the mark it set when it started it.")
+    common(sub)
+    sub.add_argument("--seconds", type=float, default=60, help="how long to wait for the program to end, 60 by default")
+    sub.add_argument("--pause", action="store_true", help="hold the guest still while keys scan copies, as keys scan --pause")
+    sub.add_argument("--physical", action="store_true", help="search the whole RAM, for a guest that is not Windows")
+    sub.add_argument("--user", metavar="NAME", help="start it as this account instead of the logged in user")
+    sub.add_argument("--agent", action="store_true", help="start it as the agent's own account instead of the logged in user")
+    sub.add_argument("command", nargs=argparse.REMAINDER, help="-- then the program and its arguments, as guest-exec takes them")
+    sub.set_defaults(run=trace)
     sub = reader("export", export, "copy the capture, or a part of it, to ./out, with --decrypted with its TLS secrets in it")
     sub.add_argument("file", nargs="?", help="the name in ./out")
     sub.add_argument("--filter", help="only packets that match this display filter")

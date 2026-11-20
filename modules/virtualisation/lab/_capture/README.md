@@ -25,6 +25,7 @@ What it says is shown with the characters a terminal acts on taken out.
 | `body ID` | The body of an answer into `./out`, or with `--request` the request's, undone of its encoding |
 | `packets [FILTER]` | Wireshark's line for each packet, with a display filter |
 | `watch` | Names, requests and handshakes as the guest makes them |
+| `trace [--pause] -- PROGRAM ARGS` | Starts a program in the guest as the logged in user once `keys scan --follow` and `owners --follow` both follow it, and shows the flows, requests and handshakes of it and of the programs it started, from the mark it set. `--user NAME`, `--agent`, `--physical` for a guest that is not Windows, `--seconds N`, 60 by default |
 | `owners [--follow]` | Which program each connection belongs to, kept in the capture for `flows` and `http` |
 | `keys add\|pull\|schannel\|scan\|list` | TLS secrets for the capture |
 | `export [--decrypted]` | The capture, or a part of it, into `./out`, with the secrets inside |
@@ -150,7 +151,7 @@ The fifth undoes the encodings of bodies, gzip, deflate, brotli and zstd, alone 
 The sixth runs OpenSSL's client and server in every suite `keys scan` knows, and GnuTLS's in RC4 and 3DES, which OpenSSL no longer has, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
 The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
 The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, also of a client that sends a token in them, splits datagrams sent in one batch, has a client come back with a ticket and send early data, and has the search find each secret where it was put, that of the early data among them.
-The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found.
+The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found, then has `trace` start a shell that runs curl and show curl's flow under the shell.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
 The eleventh reads a WebSocket of HTTP/1 through tshark, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is.
 The first also exports its requests as HAR, and the tenth those of HTTP/3.

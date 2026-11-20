@@ -873,15 +873,22 @@ class Follower:
             if self.pause:
                 self.pause.release()
         took_ms = (time.monotonic() - held) * 1000
+        # A flow without a socket was put to each program it may be of, and is that of the first whose memory has its client random.
+        placed, missed = set(), {}
         for source, members, windows, whole in copies:
             print(f"guest-net: {len(members)} new flows of {source}, {sum(1 for w in windows.values() if w)} with their client random "
                   f"found{', all of its memory kept' if whole else ''}, copied {waited * 1000:.0f} ms after the handshake in {took_ms:.0f} ms",
                   file=sys.stderr)
             for stream, _ in members:
-                if stream in self.guessed and not windows[stream]:
-                    print(f"{self.flow_of(stream)}: no socket of it was seen, and its client random is not in {source}", file=sys.stderr)
-                    continue
+                if stream in self.guessed:
+                    if not windows[stream] or stream in placed:
+                        missed.setdefault(stream, []).append(str(source))
+                        continue
+                    placed.add(stream)
                 self.pending[stream] = Pending(self.flow_of(stream), windows[stream], whole, source, early=stream[0] == "early")
+        for stream, sources in missed.items():
+            if stream not in placed:
+                print(f"{self.flow_of(stream)}: no socket of it was seen, and its client random is in none of {', '.join(sources)}", file=sys.stderr)
 
     def owners(self, batch):
         """The flows of a batch by the process their connection belongs to, as the guest's memory shows it now, which is
@@ -910,13 +917,17 @@ class Follower:
                     name = ""
             return self.chosen.covers(pid, name, parent_of)
 
+        candidates = None
         for stream, found in batch:
             entry = entries[stream] = socket_of(live, self.flow_of(stream))
-            if entry is None and self.flow_of(stream).proto == "udp" and self.recent is not None:
-                # A QUIC connection of a browser is its network process's like its others, which its client random proves.
-                if wanted(self.recent):
+            if entry is None and self.flow_of(stream).proto == "udp":
+                # A QUIC connection of a browser is its network process's like its others, and one of a program just started
+                # is its own or a child's, which its client random proves.
+                candidates = self.candidates(windows, wanted) if candidates is None else candidates
+                if candidates:
                     self.guessed.add(stream)
-                    by.setdefault(self.recent, []).append((stream, found))
+                    for pid in candidates:
+                        by.setdefault(pid, []).append((stream, found))
                 continue
             if entry is None:
                 late = (time.time() - self.trigger_of(stream)) * 1000
@@ -944,6 +955,23 @@ class Follower:
             source = Process(windows, pid)
             groups.append((source, members, sum(length for _, length in source.ranges())))
         return sorted(groups, key=lambda group: group[2])
+
+    def candidates(self, windows, wanted):
+        """The programs a QUIC flow without a socket may be of: those --process asked for that run now, newest last and four at
+        most, and the one whose connection was seen last."""
+        found = []
+        if self.chosen.processes:
+            windows.vmm.VMMDLL_ConfigSet(windows.handle, REFRESH_PROCESSES, 1)
+            listed = {pid: (parent, name) for pid, parent, name in windows.processes()}
+
+            def parent_of(child):
+                parent = listed.get(child, (None, ""))[0]
+                return (parent, listed[parent][1]) if parent in listed else (None, "")
+
+            found = [pid for pid, (_, name) in listed.items() if self.chosen.covers(pid, name, parent_of)][-4:]
+        if self.recent is not None and self.recent not in found and wanted(self.recent):
+            found.append(self.recent)
+        return found
 
     def check(self, pending, stream, final=False):
         """Tries the copy against the flow's records when more have come, and adds what opens them. Whether it is done."""

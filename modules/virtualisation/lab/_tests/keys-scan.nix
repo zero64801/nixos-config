@@ -25,7 +25,8 @@ let
     sleep 3
   '';
 
-  # A server of HTTP/3 that answers every request with a page of its own.
+  # A server of HTTP/3 that answers every request with a page of its own, after a second, so that the client lives long enough
+  # to be held still, as slow.py does for TCP.
   quicServer = pkgs.writeText "quic.py" ''
     import asyncio
     from aioquic.asyncio import QuicConnectionProtocol, serve
@@ -36,13 +37,16 @@ let
     class Server(QuicConnectionProtocol):
         h3 = None
 
+        def answer(self, stream):
+            self.h3.send_headers(stream, [(b":status", b"200"), (b"content-type", b"text/plain")])
+            self.h3.send_data(stream, b"over HTTP/3\n", end_stream=True)
+            self.transmit()
+
         def quic_event_received(self, event):
             self.h3 = self.h3 or H3Connection(self._quic)
             for e in self.h3.handle_event(event):
                 if isinstance(e, (HeadersReceived, DataReceived)) and e.stream_ended:
-                    self.h3.send_headers(e.stream_id, [(b":status", b"200"), (b"content-type", b"text/plain")])
-                    self.h3.send_data(e.stream_id, b"over HTTP/3\n", end_stream=True)
-                    self.transmit()
+                    asyncio.get_running_loop().call_later(1, self.answer, e.stream_id)
 
     async def main():
         configuration = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=False)
@@ -53,7 +57,8 @@ let
     asyncio.run(main())
   '';
 
-  # Answers after a second and closes, so that the client lives long enough to be held still and no longer.
+  # Answers after a second and closes, so that the client lives long enough to be held still and no longer, and what trace
+  # starts after three, so that its connection is seen by the owners sampled meanwhile.
   slow = pkgs.writeText "slow.py" ''
     import socket, ssl, threading, time
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -62,8 +67,8 @@ let
 
     def answer(connection):
         with context.wrap_socket(connection, server_side=True) as tls:
-            tls.recv(4096)
-            time.sleep(1)
+            asked = tls.recv(4096)
+            time.sleep(3 if b"/traced" in asked else 1)
             tls.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nslow\n")
 
     while True:
@@ -119,6 +124,9 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == follow; (guest-net keys scan --follow --physical --pause --seconds 15 &"
           " sleep 3; guest-exec --shell 'SSLKEYLOGFILE=/tmp/short.log curl -sk --resolve tls.test:9443:10.9.9.1 https://tls.test:9443/' > /dev/null;"
           " guest-exec --shell 'SSLKEYLOGFILE=/tmp/quic.log curl -sk --http3-only --max-time 3 --resolve tls.test:8444:10.9.9.1 https://tls.test:8444/over' > /dev/null; wait)",
+          "echo == trace; guest-net trace --physical --pause --agent --seconds 20 -- /bin/sh -c"
+          " 'SSLKEYLOGFILE=/tmp/traced.log curl -sk --resolve tls.test:9443:10.9.9.1 https://tls.test:9443/traced'",
+          "echo == traced; guest-exec --shell 'cat /tmp/traced.log'",
           "echo == held; guest-exec --shell 'cat /tmp/held1_3.log /tmp/held1_2.log'",
           "echo == short; guest-exec --shell 'cat /tmp/short.log'",
           "echo == quic; guest-exec --shell 'cat /tmp/quic.log'",
@@ -138,7 +146,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           return {line for line in lines if only is None or line.split()[0] in only}
 
       traffic = ("CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0", "CLIENT_RANDOM")
-      everything = secrets(section["held"] + section["short"] + section["quic"])
+      everything = secrets(section["held"] + section["short"] + section["quic"] + section["traced"])
       found = secrets(section["keys"])
       held, short = secrets(section["held"], traffic), secrets(section["short"], traffic)
 
@@ -167,6 +175,13 @@ host.needs [ "modules/virtualisation/inspect" ] (
       with subtest("the HTTP/3 of the QUIC connection is read with the secrets found, though tshark reads it only with the handshake's"):
           assert re.search(r"GET https://tls\.test:8444/over -> 200 in \d+ ms text/plain", section["http3"]), section["http3"]
           assert "over HTTP/3" in section["http3"] and "user-agent: curl" in section["http3"], section["http3"]
+
+      with subtest("trace starts a program with the scan already following, and shows its flows and those of what it started"):
+          traced = secrets(section["traced"], traffic)
+          assert len(traced) == 2 and traced <= found, f"missing {traced - found}: {section['trace']}"
+          started = section["flows of sh and what it started"]
+          assert re.search(r"10\.9\.9\.50:\d+ -> 10\.9\.9\.1:9443 .* curl\[\d+\]", started), started
+          assert "decrypted" in section["handshakes"], section["handshakes"]
 
       with subtest("the flows read as decrypted"):
           assert section["tls"].count("decrypted") >= 3, section["tls"]
