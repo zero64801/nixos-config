@@ -1,5 +1,5 @@
 # nix build --no-link -L .#tests.lab.h3
-# guest-net's reading of HTTP/3 from curl and aioquic's server with only the traffic secrets, and h3.py on its own with headers that wait on the table, pieces out of order and a hostile guest's bytes.
+# guest-net's reading of HTTP/3 from curl and aioquic's server with only the traffic secrets, and h3.py on its own with headers that wait on the table, pieces out of order, table entries added after a key update and a hostile guest's bytes.
 {
   host,
 }:

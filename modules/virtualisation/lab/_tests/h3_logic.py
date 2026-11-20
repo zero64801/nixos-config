@@ -5,7 +5,8 @@ own then has to wait for table instructions that come after the headers that nee
 order or twice back together, and live through what a hostile guest sends.
 
 The server updates its keys before its first answer. With only the secrets after that update, which is all a program
-holds once it updated them, guest-net has to open the rest of the connection itself and list what was asked there.
+holds once it updated them, guest-net has to open the rest of the connection itself and list what was asked there. h3.py
+on its own has to read the entries an encoder added to its table after such an update and place them right.
 
 usage: h3_logic.py CAPTURE_CODE TSHARK_FOLDER CURL LIBTLSSCAN"""
 import argparse
@@ -249,7 +250,55 @@ hostile = [
 ]
 survived = decoded([{"flow": "u1", "events": hostile}])
 assert survived["requests"] == [] and len(survived["notes"]) >= 1, survived
+# Read from a key update on, an encoder stream of instructions of a byte as long as it may be, and blocks that need a table.
+decoded([{"flow": "u2", "late": True, "events": hostile + [chunk(8, 0, 6, 9, b"\x01" * (2 << 20) + os.urandom(3000))]
+          + [chunk(9 + n, 0, 20 + 4 * n, 0, h3frame(0x01, bytes([5, 0, 0x80, 0x10, 0x81, 0x51, 0x01, 0x61]))) for n in range(4)]}])
 print("what a hostile guest sends breaks nothing")
+
+# A connection read from a key update on: the client's table instructions from then on give what its header blocks take
+# from entries added since, placed by how many came before, which three or more blocks agree on. What came before stays
+# unread, as does the entry the update fell within and, when the stream's first piece begins within an entry, the next,
+# which could be read from within it. A side whose encoder stream began after the update has its whole table.
+client = pylsqpack.Encoder()
+opened = b"\x02" + client.apply_settings(4096, 16)
+shared = [(b":method", b"GET"), (b":scheme", b"https"), (b":authority", b"cut.test")]
+before = shared + [(b":path", b"/before"), (b"x-before", b"a value set before the update")]
+after = shared + [(b":path", b"/after"), (b"x-after", b"a value set after the update"), (b"x-trace", b"0123456789abcdef")]
+renamed = shared + [(b":path", b"/after"), (b"x-after", b"another value after it"), (b"x-before", b"a new value for an old name")]
+sent, asks = len(opened), []
+for number, headers in enumerate([before, before, after, after, after, renamed, renamed, renamed, renamed, after]):
+    instructions, block = client.encode(4 * number, headers)
+    asks.append((sent, instructions, 4 * number, block, headers))
+    sent += len(instructions)
+
+
+def read_late(first, into=0, last=None, opening=False):
+    events, when = [chunk(0, 0, 6, 0, opened)] if opening else [], 0
+    for offset, instructions, stream, block, _ in asks[first:last]:
+        if instructions[into:]:
+            events.append(chunk(when := when + 1, 0, 6, offset + into, instructions[into:]))
+        into = 0
+        events.append(chunk(when := when + 1, 0, stream, 0, h3frame(0x01, block), True))
+    # The client's decoder stream, which also begins past its start, is no table's.
+    events.append(chunk(when + 1, 0, 10, 9, b"\x8c\x88\x01\x94"))
+    return [r["request_headers"] for r in decoded([{"flow": "u5", "late": True, "events": events}])["requests"]]
+
+
+def unread(first, entries, names, last=None):
+    return [[["?", "(set before the update)"] if (name, value) in entries else ["?", value.decode()] if name in names else [name.decode(), value.decode()]
+             for name, value in headers] for *_, headers in asks[first:last]]
+
+
+earlier = {(b":authority", b"cut.test"), (b":path", b"/before"), (b"x-before", b"a value set before the update")}
+assert asks[3][1] and asks[6][1], "the encoder added nothing after the update, so there is nothing to place"
+assert read_late(3) == unread(3, earlier, {b"x-before"}), read_late(3)
+split = earlier | {(b":path", b"/after"), (b"x-after", b"a value set after the update")}
+assert read_late(3, into=3) == unread(3, split, {b"x-before", b"x-after"}), read_late(3, into=3)
+everything = {(name, value) for *_, headers in asks for name, value in headers if name not in (b":method", b":scheme")}
+assert read_late(6, last=8) == unread(6, everything, set(), last=8), read_late(6, last=8)
+# A client that opened its encoder stream after the update, as one does at its first entry, has all of its table there.
+assert read_late(0, opening=True) == unread(0, set(), set()), read_late(0, opening=True)
+print("after a key update, the entries added since are read and placed by the blocks' vote, those before stay unread")
 
 
 class Answered:
