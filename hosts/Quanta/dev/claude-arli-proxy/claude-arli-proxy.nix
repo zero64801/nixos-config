@@ -142,6 +142,7 @@ in
           CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING = "1";
           CLAUDE_CODE_MAX_CONTEXT_TOKENS = "524288";
           CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = toString settings.max_parallel;
+          CLAUDE_CODE_AUTO_MODE_SERVER = "0";
         };
         modelPicker.options = map (m: {
           model = prefix + m.name;
