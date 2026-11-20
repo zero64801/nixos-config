@@ -18,6 +18,7 @@ What it says is shown with the characters a terminal acts on taken out.
 | `flows` | Each TCP and UDP flow: the guest's end and the other, the names it went by, what went each way, and the program it was of |
 | `dns` | The names looked up and what came back |
 | `http [ID]` | The requests of HTTP/1, HTTP/2 and HTTP/3, their answers and how long each took, or one in full: the headers and bodies of both ways, undone of their encoding, JSON laid out, `--save NAME` writes them to `./out` |
+| `ws [ID]` | The messages of each WebSocket both ways, text, binary, ping, pong and close, fragments put together and undone of permessage-deflate, or of one in full with its JSON laid out, `--save NAME` writes them to `./out` as JSON lines. Those of HTTP/1 by flow, those a CONNECT of HTTP/2 or HTTP/3 opened by request, without times of their own |
 | `tls` | Each handshake: the name asked for, version, cipher, ALPN, JA4, the certificate's names where it is readable, and whether the keys open it |
 | `stream ID` | What went each way in one flow, `--decrypted` inside TLS, `--hex`, `--save NAME` |
 | `body ID` | The body of an answer into `./out`, or with `--request` the request's, undone of its encoding |
@@ -148,4 +149,5 @@ The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each con
 The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, also of a client that sends a token in them, splits datagrams sent in one batch, has a client come back with a ticket and send early data, and has the search find each secret where it was put, that of the early data among them.
 The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
+The eleventh reads a WebSocket of HTTP/1 through tshark, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is.
 `keys schannel`, `owners` from memory and `keys scan` of a process were tried on a real Windows 11 guest, with Edge, Defender and Windows' own services.

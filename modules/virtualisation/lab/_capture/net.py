@@ -19,6 +19,7 @@ import owners
 import scan
 import schannel
 import scope
+import websocket
 from capture import KEYLOG, common, fail, finished, first, plain, size, tell, timed
 from scope import Scope
 
@@ -254,6 +255,7 @@ def http3(capture, args, keys=None, only=""):
                       "status": answer.get(":status", ""), "type": answer.get("content-type", ""),
                       "size": answer.get("content-length", "") or (str(len(body)) if body else ""), "answer": None, "version": "3",
                       "took": request["took"], "sent": request["request_headers"] + request["trailers"], "got": request["headers"],
+                      "protocol": dict(request["request_headers"]).get(":protocol", ""),
                       "asked": base64.b64decode(request["request_body"]), "body": body})
     # Only what concerns the connections shown, and with one request asked for only its own.
     shown = {r["flow"] for r in found if not getattr(args, "id", None) or r["id"] == args.id}
@@ -285,7 +287,7 @@ def exchanges(capture, args, keys=None, only=""):
                 url = f"{said.get(':scheme', 'https')}://{said.get(':authority', '?')}{said.get(':path', '')}"
                 streams[key] = requests[f"{number}.{stream}"] = {"id": f"h{number}.{stream}", "time": stamp, "flow": f"t{tcp}", "method": said[":method"],
                                                                  "url": url, "status": "", "type": "", "size": "", "answer": None, "version": "2",
-                                                                 "took": None}
+                                                                 "took": None, "protocol": said.get(":protocol", "")}
             elif kind == 1 and ":status" in said and key in streams:
                 streams[key].update(status=said[":status"], type=said.get("content-type", ""), size=said.get("content-length", ""),
                                     took=float(stamp) - float(streams[key]["time"]))
@@ -304,6 +306,8 @@ def http(capture, args):
     for request in found[: args.max]:
         owner = owners.owner_of(known, flows_by_id[request["flow"]]) if request["flow"] in flows_by_id else ""
         took = f" in {request['took'] * 1000:.0f} ms" if request["took"] is not None else ""
+        if request["status"].startswith("101") or request.get("protocol") == "websocket":
+            took += f" websocket, guest-net ws {request['flow'] if request['version'] == '1' else request['id']}"
         print(f"{request['id']:<10} {capture.relative(request['time']):>9} {request['flow']:<6} {request['method']} {plain(request['url'], 160)} -> "
               f"{plain(request['status'] or 'no answer', 40)}{took} {plain(request['type'], 60)} {request['size'] and size(int(request['size']))}  {plain(owner or '', 60)}")
     if not found:
@@ -363,6 +367,104 @@ def detail(capture, args, found):
             for line in packet["http.response.line"]:
                 print("  " + plain(line.rstrip(), 400))
             show_body(args, data, headers)
+
+
+def sockets(capture, args, keys, only):
+    """The WebSockets of the flows kept, each as its opening and its messages in order: HTTP/1's from tshark, which unmasks
+    their frames, and those that a CONNECT of HTTP/2 or HTTP/3 opened from the bytes of its stream, which carry no times of
+    their own."""
+    found = {}
+    fields = ["tcp.stream", "frame.time_epoch", "http.request.full_uri", "http.upgrade", "http.response.code", "http.sec_websocket_extensions"]
+    for packet in capture.ek(NET, fields, joined(None, only, "http.upgrade || http.response.code == 101"), keys):
+        socket = found.setdefault(f"t{first(packet, 'tcp.stream')}", {"time": float(first(packet, "frame.time_epoch", "0")), "url": "", "agreed": "", "messages": []})
+        uri = first(packet, "http.request.full_uri")
+        if uri.startswith("http") and "websocket" in ",".join(packet["http.upgrade"]).lower():
+            socket["url"] = "ws" + uri[4:]
+        if first(packet, "http.response.code") == "101":
+            socket["agreed"] = ", ".join(packet["http.sec_websocket_extensions"])
+    text = capture.output(NET, ["-Y", joined(None, only, "websocket"), "-T", "json", "--no-duplicate-keys", "-J", "frame tcp websocket"], keys)
+    try:
+        packets = json.loads(text) if text.strip() else []
+    except ValueError:
+        fail("tshark's JSON of the WebSockets does not read")
+    sides = {}
+    for packet in packets:
+        layers = packet.get("_source", {}).get("layers", {})
+        frame, tcp = layers.get("frame", {}), layers.get("tcp", {})
+        if not isinstance(frame, dict) or not isinstance(tcp, dict):
+            continue
+        flow = f"t{tcp.get('tcp.stream', '?')}"
+        try:
+            sent, when = int(frame.get("frame.packet_flags", "0"), 16) & 3 == int(SENT, 16), epoch(frame.get("frame.time_epoch", "0"))
+        except ValueError:
+            continue
+        socket = found.setdefault(flow, {"time": when, "url": "", "agreed": "", "messages": []})
+        frames_ = layers.get("websocket")
+        for each in frames_ if isinstance(frames_, list) else [frames_]:
+            if not isinstance(each, dict):
+                continue
+            try:
+                opcode = int(each.get("websocket.opcode", "-1"))
+                payload = bytes.fromhex(str(each.get("websocket.payload", "")).replace(":", ""))
+            except ValueError:
+                continue
+            said = sides.setdefault((flow, sent), websocket.Messages()).add(each.get("websocket.fin") == "1", each.get("websocket.pmc") == "1", opcode, payload)
+            if said:
+                socket["messages"].append((when, sent, *said))
+    for request in exchanges(capture, None, keys, only):
+        if request.get("protocol") != "websocket":
+            continue
+        if request["version"] == "3":
+            asked, answer = request["asked"], request["body"]
+        else:
+            _, _, asked, answer = both_ways(capture, request, keys)
+        socket = found[request["id"]] = {"time": float(request["time"]), "url": request["url"].replace("https://", "wss://", 1), "agreed": "", "messages": []}
+        for sent, data in ((True, asked), (False, answer)):
+            messages = websocket.Messages()
+            for each in websocket.frames(data):
+                said = messages.add(*each)
+                if said:
+                    socket["messages"].append((float(request["time"]), sent, *said))
+    return found
+
+
+def ws(capture, args):
+    """The messages of each WebSocket, or of one in full, both ways."""
+    known = owners.known(capture)
+    every = flows(capture, None, args.keys) if known or Scope(capture, args) else []
+    _, only = scoped(capture, args, every)
+    by_id = {f["id"]: f for f in every}
+    since = capture.moment(args.since) if getattr(args, "since", None) else None
+    until = capture.moment(args.until) if getattr(args, "until", None) else None
+    found = sockets(capture, args, args.keys, only)
+    if args.id and args.id not in found:
+        fail(f"there is no WebSocket {args.id}, guest-net ws lists them")
+    saved_lines = []
+    for name, socket in sorted(found.items(), key=lambda item: item[1]["time"]):
+        if args.id and name != args.id:
+            continue
+        flow = by_id.get(name) or by_id.get(name.split(".")[0])
+        owner = owners.owner_of(known, flow) if flow else ""
+        print(f"{name:<10} {capture.relative(socket['time']):>9} {plain(socket['url'] or '?', 200)}  {plain(socket['agreed'], 120)}  "
+              f"{len(socket['messages'])} messages  {plain(owner, 60)}")
+        shown = [m for m in socket["messages"] if (since is None or m[0] >= since) and (until is None or m[0] <= until)]
+        for when, sent, kind, data, deflated, note in shown[: args.max]:
+            if kind == "close":
+                said = websocket.closed(data)
+            elif kind in ("text", "ping", "pong"):
+                said = (bodies.text(data, "", args.body) if args.id else None) or data.decode("utf-8", "replace")
+            else:
+                said = data[:48].hex(" ") + (" ..." if len(data) > 48 else "")
+            print(f"  {capture.relative(when):>9} {'->' if sent else '<-'} {kind} {size(len(data))}{' deflated' if deflated else ''}"
+                  f"{'  (' + note + ')' if note else ''}  {plain(said, args.body)}")
+            saved_lines.append({"socket": name, "time": when, "sent": sent, "kind": kind, "deflated": deflated,
+                                **({"text": data.decode("utf-8", "replace")} if kind == "text" else {"base64": base64.b64encode(data).decode()})})
+        if len(shown) > args.max:
+            print(f"  ... {len(shown) - args.max} more, --max shows more")
+    if not found:
+        print("no WebSocket in " + ("the flows chosen" if only else "this capture"))
+    if args.save:
+        saved(args.save, "".join(json.dumps(line) + "\n" for line in saved_lines).encode())
 
 
 def show_body(args, data, headers, request=False):
@@ -743,6 +845,12 @@ def build(parser):
     sub.add_argument("--save", metavar="NAME", help="write the answer's body to ./out under this name, and the request's as NAME.request")
     sub.add_argument("--body", type=int, default=4000, help="characters of a text body to show, 4000 by default")
     sub.add_argument("--max", type=int, default=300)
+    sub = reader("ws", ws, "the messages of each WebSocket, or of one in full, both ways: text, binary, ping, pong and close, "
+                           "fragments put together and undone of permessage-deflate")
+    sub.add_argument("id", nargs="?", help="a WebSocket as the list names it: its flow, as t12, or for HTTP/2 and HTTP/3 its request, as h41.3")
+    sub.add_argument("--save", metavar="NAME", help="write the messages shown to ./out as NAME, one JSON line each")
+    sub.add_argument("--body", type=int, default=2000, help="characters of a message to show, 2000 by default")
+    sub.add_argument("--max", type=int, default=200, help="messages to show of each, 200 by default")
     sub = reader("tls", tls, "each TLS handshake: the name asked for, the version and cipher chosen, the client's JA4, whether the keys open it")
     sub.add_argument("--max", type=int, default=300)
     sub = reader("stream", stream, "what went each way in one flow", timed_too=False)
