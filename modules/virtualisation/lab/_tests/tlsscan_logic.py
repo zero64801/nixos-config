@@ -43,10 +43,11 @@ def server(*options, command=None):
 
 
 class Relay:
-    """Passes connections on to a server and keeps what each side sent, one pair for each connection."""
+    """Passes connections on to a server and keeps what each side sent, one pair for each connection, with when each piece
+    passed, as the marks of what scan.laid() gives."""
 
     def __init__(self, target):
-        self.target, self.kept, self.done = target, [], []
+        self.target, self.kept, self.done, self.marks = target, [], [], []
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.port = self.listener.getsockname()[1]
         threading.Thread(target=self.serve, daemon=True).start()
@@ -55,14 +56,16 @@ class Relay:
         while True:
             client, _ = self.listener.accept()
             upstream = socket.create_connection(("127.0.0.1", self.target))
-            pair, finished = [bytearray(), bytearray()], threading.Event()
+            pair, finished, marks = [bytearray(), bytearray()], threading.Event(), ([], [])
             self.kept.append(pair)
             self.done.append(finished)
+            self.marks.append(marks)
             ends = []
 
-            def pump(source, sink, into, ends=ends, finished=finished):
+            def pump(source, sink, into, passed, ends=ends, finished=finished):
                 while chunk := source.recv(65536):
                     into += chunk
+                    passed.append((len(into), time.time()))
                     sink.sendall(chunk)
                 try:
                     sink.shutdown(socket.SHUT_WR)
@@ -72,8 +75,8 @@ class Relay:
                 if len(ends) == 2:
                     finished.set()
 
-            threading.Thread(target=pump, args=(client, upstream, pair[0]), daemon=True).start()
-            threading.Thread(target=pump, args=(upstream, client, pair[1]), daemon=True).start()
+            threading.Thread(target=pump, args=(client, upstream, pair[0], marks[0]), daemon=True).start()
+            threading.Thread(target=pump, args=(upstream, client, pair[1], marks[1]), daemon=True).start()
 
 
 def talk(relay, *options):
@@ -185,6 +188,12 @@ echo_relay = Relay(echo_port)
 padded = updated(b"k", b"k", via=echo_relay, options=["-record_padding", "64"], lines=[b"line %d" % n for n in range(10)],
                  last=b"after the updates\n")
 echo_server.kill()
+# Both sides pad their records and update their keys right after the handshake, the server when the client asks it to.
+padding_server, padding_port = server("-record_padding", "64")
+padding_relay = Relay(padding_port)
+early_update = updated(b"K", via=padding_relay, options=["-record_padding", "64"])
+early_marks = padding_relay.marks[-1]
+padding_server.kill()
 plain_server.kill()
 retry_server.kill()
 old_server.kill()
@@ -301,3 +310,25 @@ opened = [scanner.open13(first.suite, secret, 0, record) for record in whole_rec
 assert sum(plain is not None for plain in opened) == 1, "the newest secret has to open one start, and only one, at sequence number 0"
 assert any(plain and b"after the updates" in plain for plain in opened), "the padded start did not open"
 print("after KeyUpdates sent padded the newest secret is found among more records, and opens the first record after them")
+
+# KeyUpdates sent padded right after the handshake put the records under the newer secrets among those the session of the
+# first keys tries, which then names them the first. The client's first secret opens its second record, and the server's
+# one before any the server sent after the client's Finished, so they are named again as newer and kept apart.
+client_bytes, server_bytes, logged = early_update
+for role in ("CLIENT", "SERVER"):
+    assert role + "_TRAFFIC_SECRET_0" in logged, logged
+first = tlsrecords.session(client_bytes, server_bytes)
+assert first and not first.early, first
+newest = {role: scanner.next13(first.suite, logged[f"{role}_TRAFFIC_SECRET_0"]) for role in ("CLIENT", "SERVER")}
+for secrets, named in ((newest, {"CLIENT_TRAFFIC_SECRET_1", "SERVER_TRAFFIC_SECRET_1"}),
+                       ({role: logged[f"{role}_TRAFFIC_SECRET_0"] for role in newest}, {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"})):
+    hidden = bytearray(os.urandom(1 << 16))
+    hidden[4096: 4096 + 32], hidden[12288: 12288 + 32] = secrets["CLIENT"], secrets["SERVER"]
+    session = tlsrecords.session(client_bytes, server_bytes)
+    session.found, session.sides = {}, ((client_bytes, early_marks[0]), (server_bytes, early_marks[1]))
+    scan.took(scanner.scan(hidden, len(hidden), 0, [session], step=8, threads=threads), [session])
+    assert set(session.found) == {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"}, sorted(session.found)
+    renamed = scan.renamed(session)
+    assert set(session.found) == named and {hit.secret for hit in session.found.values()} == set(secrets.values()), sorted(session.found)
+    assert all(hit.later for hit in renamed) and len(renamed) == (2 if secrets is newest else 0), [hit.label for hit in renamed]
+print("newer secrets a session of the first keys names first, after KeyUpdates sent padded right after the handshake, are named again")

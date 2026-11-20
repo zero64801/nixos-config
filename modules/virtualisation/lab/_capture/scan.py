@@ -7,6 +7,7 @@ programs use keep the client random beside the secrets, so its places in memory 
 
 The search runs in libtlsscan, in C on libcrypto, since it tries millions of windows.
 """
+import bisect
 import ctypes
 import importlib.util
 import json
@@ -56,7 +57,7 @@ class Found:
     def __init__(self, session, hit):
         direction = session.records[hit.record][0]
         index = sum(1 for r in session.records[: hit.record] if r[0] == direction)
-        self.session, self.address = session, hit.address
+        self.session, self.address, self.direction, self.index, self.later = session, hit.address, direction, index, False
         self.label = tlsrecords.label(session, direction, index, hit.inner, hit.first)
         self.secret = bytes(hit.secret[: hit.length])
 
@@ -268,19 +269,21 @@ def newer_sessions(capture, args, picked, broad=False):
 
 
 def openings(capture, streams):
-    """What each side of these TCP streams sent first, as {stream: (the guest's bytes, the other side's)}."""
+    """What each side of these TCP streams sent first, as {stream: ((the guest's bytes, marks), (the other side's, marks))},
+    with marks as laid() gives them."""
     pieces = {}
     if not streams:
         return {}
     display = f"tcp.len > 0 && tcp.seq < {OPENING} && tcp.stream in {{{', '.join(sorted(streams, key=int))}}}"
-    for packet in capture.ek(NET, ["tcp.stream", "frame.packet_flags_direction", "tcp.seq", "tcp.payload"], display):
+    for packet in capture.ek(NET, ["tcp.stream", "frame.packet_flags_direction", "tcp.seq", "tcp.payload", "frame.time_epoch"], display):
         try:
             seq, payload = int(first(packet, "tcp.seq")), bytes.fromhex(first(packet, "tcp.payload").replace(":", ""))
+            when = float(first(packet, "frame.time_epoch", "0"))
         except ValueError:
             continue
         side = 0 if first(packet, "frame.packet_flags_direction") == SENT else 1
-        pieces.setdefault(first(packet, "tcp.stream"), ([], []))[side].append((seq, payload))
-    return {stream: (contiguous(sides[0]), contiguous(sides[1])) for stream, sides in pieces.items()}
+        pieces.setdefault(first(packet, "tcp.stream"), ([], []))[side].append((seq, payload, when))
+    return {stream: (laid(sides[0]), laid(sides[1])) for stream, sides in pieces.items()}
 
 
 def keyed(capture):
@@ -303,14 +306,14 @@ def sessions(capture, args, flows):
     chosen = [flow for flow in flows if flow["proto"] == "tcp" and flow["id"][1:] in hello and (not args.flow or flow["id"] in args.flow)]
     data, have, picked = openings(capture, {flow["id"][1:] for flow in chosen}), keyed(capture), []
     for flow in chosen:
-        guest, other = data.get(flow["id"][1:], (b"", b""))
+        (guest, guest_marks), (other, other_marks) = data.get(flow["id"][1:], ((b"", []), (b"", [])))
         found = tlsrecords.session(guest, other)
         if found:
-            found.guest_is_client = True
+            found.guest_is_client, found.sides = True, ((guest, guest_marks), (other, other_marks))
         else:
             found = tlsrecords.session(other, guest)
             if found:
-                found.guest_is_client = False
+                found.guest_is_client, found.sides = False, ((other, other_marks), (guest, guest_marks))
         if not found:
             continue
         found.flow, found.found = flow, {}
@@ -659,6 +662,42 @@ def took(found, picked):
             hit.session.found.setdefault(hit.label, hit)
 
 
+def arrived(marks, end):
+    """When the packet came that brought the byte before this offset, by laid()'s marks."""
+    at = bisect.bisect_left(marks, (end,))
+    return marks[min(at, len(marks) - 1)][1] if marks else 0.0
+
+
+def renamed(session):
+    """The secrets a session of a TLS 1.3 flow's first keys found that are newer than the first traffic secret they were
+    named, named again by the least number of updates they can have come after, and kept apart, as Wireshark would try
+    them from the start: a KeyUpdate sent padded shows by no size, so among the first records a newer secret opens one at
+    sequence number 0 as the first does. The first secret of a client opens its second record, the one after its
+    Finished, and that of a server comes before every record the server sent after the client's Finished arrived, since
+    the client sends that only once it has the server's whole handshake. A client that sent early data has records
+    before its Finished, which no order tells apart, and is left as it is."""
+    if session.version != 0x0304 or session.quic or session.epochs or session.early or not getattr(session, "sides", None):
+        return []
+    (client, client_marks), (server, server_marks) = session.sides
+    sent, _ = tlsrecords.updates(client, session.suite)
+    got, _ = tlsrecords.updates(server, session.suite)
+    finished = arrived(client_marks, sent[0][0] + 1) if sent else None
+    out = []
+    for hit in list(session.found.values()):
+        if hit.label == "CLIENT_TRAFFIC_SECRET_0":
+            later = hit.index > 1
+        elif hit.label == "SERVER_TRAFFIC_SECRET_0" and finished is not None:
+            later = any(arrived(server_marks, at + len(record)) > finished for at, record in got[: hit.index])
+        else:
+            continue
+        if later:
+            del session.found[hit.label]
+            hit.label, hit.later = f"{hit.label.split('_')[0]}_TRAFFIC_SECRET_1", True
+            session.found[hit.label] = hit
+            out.append(hit)
+    return out
+
+
 def socket_of(live, flow):
     """The entry of the socket a flow went through among those of the guest: by its two ends, or, as a UDP socket is
     often bound to every address, by its port alone. flow is a Flow of follow or a flow of the capture."""
@@ -778,8 +817,10 @@ def run(capture, args, flows, chosen):
             except LookupError as e:
                 print(f"guest-net: {source}: {e}", file=sys.stderr)
         late.found.update(newer.found)
-    lines = [hit.line for s in picked if not s.epochs for hit in s.found.values()]
-    later = [hit.line for s in picked if s.epochs for hit in s.found.values()]
+    for s in picked:
+        renamed(s)
+    lines = [hit.line for s in picked for hit in s.found.values() if not (s.epochs or hit.later)]
+    later = [hit.line for s in picked for hit in s.found.values() if s.epochs or hit.later]
     for at in range(0, len(lines), 4096):
         tell({"do": "note", "kind": "keys", "lines": lines[at: at + 4096]})
     # Wireshark takes only the first traffic secrets, so the newer ones go in a log of their own, which guest-net opens itself.
