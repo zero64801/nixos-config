@@ -187,6 +187,9 @@ echo_server, echo_port = server("-rev")
 echo_relay = Relay(echo_port)
 padded = updated(b"k", b"k", via=echo_relay, options=["-record_padding", "64"], lines=[b"line %d" % n for n in range(10)],
                  last=b"after the updates\n")
+# Records padded past a short one's size, and more of them after the update than the last few the second pass tries.
+far = updated(b"k", *[b"after %d" % n for n in range(6)], via=echo_relay, options=["-record_padding", "512"], lines=[b"line %d" % n for n in range(10)],
+              last=b"the last line\n")
 echo_server.kill()
 # Both sides pad their records and update their keys right after the handshake, the server when the client asks it to.
 padding_server, padding_port = server("-record_padding", "64")
@@ -332,3 +335,19 @@ for secrets, named in ((newest, {"CLIENT_TRAFFIC_SECRET_1", "SERVER_TRAFFIC_SECR
     assert set(session.found) == named and {hit.secret for hit in session.found.values()} == set(secrets.values()), sorted(session.found)
     assert all(hit.later for hit in renamed) and len(renamed) == (2 if secrets is newest else 0), [hit.label for hit in renamed]
 print("newer secrets a session of the first keys names first, after KeyUpdates sent padded right after the handshake, are named again")
+
+# A KeyUpdate padded to 512 bytes, with seven records after it: the second pass misses its start, --wide finds it.
+client_bytes, server_bytes, logged = far
+first = tlsrecords.session(client_bytes, server_bytes)
+secret = scanner.next13(first.suite, logged["CLIENT_TRAFFIC_SECRET_0"])
+hidden = bytearray(os.urandom(1 << 16))
+hidden[8192: 8192 + 32] = secret
+for wide, wanted in ((False, False), (True, True)):
+    newer = tlsrecords.late(first, client_bytes, server_bytes, broad=True, wide=wide)
+    hits = scanner.scan(hidden, len(hidden), 0, [newer], step=8, threads=threads)
+    assert bool(hits) == wanted and all(hit.secret == secret for hit in hits), (wide, [(h.label, h.secret == secret) for h in hits])
+    if wanted:
+        opened = [scanner.open13(first.suite, secret, 0, struct.pack(">BHH", kind, version, len(body)) + body)
+                  for direction, kind, version, body in newer.records if direction == 0]
+        assert any(plain and b"after 0" in plain for plain in opened), "the start --wide found did not open"
+print("after a KeyUpdate padded past a short record's size and followed by many records, --wide finds the newest secret")

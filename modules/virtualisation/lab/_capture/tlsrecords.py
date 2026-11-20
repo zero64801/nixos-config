@@ -155,11 +155,12 @@ def updates(data, suite):
 SMALL, TAIL, LATE = 256, 4, 15
 
 
-def starts(found, data, normal, broad=False):
+def starts(found, data, normal, broad=False, wide=False):
     """Where the newest secret of one direction of TLS 1.3 may begin, as (record, how many updates came before it), newest
     first and LATE at most, past the first normal records, which the session of the first keys has. The record after one
     the size of a KeyUpdate is surely such a start, with the count exact. With broad also the record after each short
-    one and the last records, for KeyUpdates sent padded, with the count a least."""
+    one and the last records, for KeyUpdates sent padded, with the count a least. With wide every one of the last records
+    too, for KeyUpdates padded more than a short record is long."""
     kept, _ = updates(data, found.suite)
     size = update_size(found.suite)
     before, count = [], 0
@@ -180,12 +181,12 @@ def starts(found, data, normal, broad=False):
         for index in range(len(kept) - 1, 0, -1):
             if len(kept[index - 1][1]) - 5 <= SMALL:
                 take(index, before[index] + 1)
-        for index in range(len(kept) - 1, max(len(kept) - 1 - TAIL, 0), -1):
+        for index in range(len(kept) - 1, max(len(kept) - 1 - (LATE if wide else TAIL), 0), -1):
             take(index, before[index] + 1)
     return out
 
 
-def late(found, client, server, broad=False):
+def late(found, client, server, broad=False, wide=False):
     """A session of the newest keys of a TLS 1.3 connection that updated its keys, whose secrets are the only ones its
     program still holds: per direction, the records its newest secret may begin at, each at sequence number 0. None when
     there is no such record."""
@@ -195,7 +196,7 @@ def late(found, client, server, broad=False):
     newer.client_random, newer.version, newer.suite, newer.name, newer.epochs = found.client_random, 0x0304, found.suite, found.name, {0: [], 1: []}
     for direction, data in ((0, client), (1, server)):
         normal = sum(1 for side, *_ in found.records if side == direction)
-        for record, updates_before in starts(found, data, normal, broad):
+        for record, updates_before in starts(found, data, normal, broad, wide):
             newer.records.append((direction, APPLICATION_DATA, struct.unpack_from(">H", record, 1)[0], record[5:]))
             newer.epochs[direction].append(updates_before)
     return newer if newer.records else None

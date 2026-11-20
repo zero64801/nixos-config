@@ -245,6 +245,7 @@ Deleting that folder removes it.
 - A program with its own crypto over plain TCP or UDP stays unreadable: `keys scan` opens TLS and QUIC only.
 - `guest-net http` reads HTTP/3 with the traffic secrets alone, while tshark's own reading of it (`packets`, `tshark`, an export in Wireshark) needs the handshake secrets too.
 - A TLS 1.3 connection that updated its keys holds only the newer ones. `keys scan` finds them, also after KeyUpdates sent padded, and guest-net reads the flow from the last update on, not before: `stream --decrypted`, `decode --decrypted`, and `http`, whose requests from there are named k. `--follow` catches the first ones before any update.
+  A TLS 1.3 flow still `not found` while its program runs may pad its KeyUpdates to more than 256 bytes: `keys scan --wide --flow ID` tries after each of its last records too.
 - A QUIC connection after a key update works the same way, though no packet shows the update: `keys scan` tries a flow's last packets once its first secrets are not found, and `http` reads its HTTP/3 from the update on. Headers taken from QPACK's table before the update show as `?`, often the host name, so go by the flow's name in `guest-net flows`.
 
 ## Running something that came out of the guest

@@ -246,7 +246,7 @@ def updated(capture):
 def newer_sessions(capture, args, picked, broad=False):
     """For the TLS 1.3 flows that updated their keys, a session of their newest keys each, which is all a program holds once
     it updated them: the records the newest secret of each direction may begin at. Without broad only flows with a record
-    the size of a KeyUpdate, with broad every one given, for KeyUpdates sent padded."""
+    the size of a KeyUpdate, with broad every one given, for KeyUpdates sent padded, and with --wide at more records."""
     latest = {s.flow["id"][1:]: s for s in picked if s.version == 0x0304 and not s.quic}
     if not latest:
         return []
@@ -259,7 +259,7 @@ def newer_sessions(capture, args, picked, broad=False):
     have, out = updated(capture), []
     for stream, ((guest, _), (other, _)) in whole(capture, streams).items():
         s = latest[stream]
-        newer = tlsrecords.late(s, *((guest, other) if s.guest_is_client else (other, guest)), broad=broad)
+        newer = tlsrecords.late(s, *((guest, other) if s.guest_is_client else (other, guest)), broad=broad, wide=broad and getattr(args, "wide", False))
         sides = {("CLIENT", "SERVER")[direction] for direction, *_ in newer.records} if newer else set()
         if newer is None or (not args.again and sides <= roles(have.get(newer.client_random.hex(), {}))):
             continue

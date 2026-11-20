@@ -1301,6 +1301,8 @@ def build(parser):
     sub.add_argument("--around", type=int, default=65536, help="for scan: bytes searched each side of a client random, 64 KiB by default")
     sub.add_argument("--max-memory", type=int, default=4096, metavar="MIB", help="for scan: memory read of a process at most, 4096 MiB by default")
     sub.add_argument("--again", action="store_true", help="for scan: also flows the capture has keys for")
+    sub.add_argument("--wide", action="store_true", help="for scan: a TLS 1.3 flow whose first secrets are gone has its newest looked for "
+                                                          "after each of its last records, for KeyUpdates padded more than to 256 bytes")
     sub.add_argument("--follow", action="store_true", help="for scan: copy the memory of each new TLS flow's program as it begins, "
                                                             "which catches programs that close their connections at once")
     sub.add_argument("--pause", action="store_true", help="for scan --follow: hold the whole guest still while copying, through the "
