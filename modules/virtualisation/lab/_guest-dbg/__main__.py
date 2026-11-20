@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 
+import logs
 import mi
 from windows import Windows
 
@@ -60,7 +61,13 @@ def parse_arguments(words):
     parser.add_argument("--do", action="append", default=[], metavar="COMMAND", help="a gdb command at each stop, as x/8gx $rsp or set $rax = 0")
     parser.add_argument("--on-return", action="append", default=[], metavar="COMMAND",
                         help="a gdb command when the function a --break stopped in returns, which takes one debug register")
-    parser.add_argument("--hits", type=int, default=1, help="stops in the process to wait for, 1 by default")
+    parser.add_argument("--log", action="append", default=[], metavar="PLACE,BUFFER,LENGTH",
+                        help="write a buffer of the process to ./out at each stop at the place and go on, or a preset: "
+                             + ", ".join(sorted(logs.PRESETS)) + " (openssl=MODULE). See logs.py for the values")
+    parser.add_argument("--out", metavar="NAME", help="with --log: the folder in ./out for the buffers, a new one by default")
+    parser.add_argument("--max-bytes", type=int, default=1 << 20, help="with --log: the most of one buffer written, 1 MiB by default")
+    parser.add_argument("--hits", type=int, help="stops in the process to wait for, 1 by default, and with --log buffers to write, "
+                                                 "as many as come before the time runs out by default")
     parser.add_argument("--timeout", type=float, default=60, help="seconds to wait for them, 60 by default")
     parser.add_argument("--busy", type=int, default=20000, help="stops in other processes after which it gives up, 20000 by default")
     return parser.parse_args(words)
@@ -82,8 +89,18 @@ class Debugger:
         return {n: by_number.get(self.index.get(n)) for n in names}
 
     def word(self, address):
-        values, _ = self.gdb.run(f"-data-read-memory-bytes {address:#x} 8")
-        return int.from_bytes(bytes.fromhex(values["memory"][0]["contents"]), "little")
+        return int.from_bytes(self.read(address, 8), "little")
+
+    def read(self, address, length):
+        out = bytearray()
+        while len(out) < length:
+            size = min(length - len(out), 1 << 16)
+            values, _ = self.gdb.run(f"-data-read-memory-bytes {address + len(out):#x} {size}")
+            piece = bytes.fromhex(values["memory"][0]["contents"])
+            if not piece:
+                break
+            out += piece
+        return bytes(out)
 
     def where(self, address):
         name = self.guest.name(self.pid, address) if self.guest else None
@@ -106,9 +123,16 @@ class Debugger:
 def main():
     program, library = sys.argv[1:3]
     args = parse_arguments(sys.argv[3:])
-    used = len(args.breaks) + len(args.watch) + len(args.access) + (1 if args.on_return else 0)
+    try:
+        specs = logs.expand(args.log)
+    except ValueError as e:
+        fail(str(e))
+    if args.hits is None:
+        args.hits = 0 if specs else 1
+    returns = bool(args.on_return) or any(spec.at_return for spec in specs)
+    used = len(args.breaks) + len(args.watch) + len(args.access) + len(specs) + (1 if returns else 0)
     if not used:
-        fail("there is nothing to stop at: give --break, --watch or --access")
+        fail("there is nothing to stop at: give --break, --watch, --access or --log")
     if used > 4:
         fail(f"that takes {used} debug registers and a guest has four")
     if args.on_return and not args.breaks:
@@ -117,7 +141,14 @@ def main():
     if not target:
         fail("this runs in a session that has QEMU's debug stub open, as vm-lab opens it")
 
-    places = [("break", spec, 1) for spec in args.breaks]
+    places = [("break", spec, 1) for spec in args.breaks] + [("log", spec.place, 1) for spec in specs]
+    by_place = {spec.place: spec for spec in specs}
+    writer = None
+    if specs:
+        try:
+            writer = logs.Writer(args.out or time.strftime("dbg-%Y%m%d-%H%M%S"))
+        except (LookupError, OSError) as e:
+            fail(str(e))
     for kind, specs in (("watch", args.watch), ("access", args.access)):
         for spec in specs:
             head, _, size = spec.rpartition(":") if re.search(r":\d+$", spec) else (spec, "", "8")
@@ -154,7 +185,7 @@ def main():
         fail(str(e))
     print(f"guest-dbg: {label}", file=sys.stderr)
     for kind, spec, size, address in resolved:
-        print(f"guest-dbg: {kind} {spec} at {address:#x}" + (f", {size} bytes" if kind != "break" else ""), file=sys.stderr)
+        print(f"guest-dbg: {kind} {spec} at {address:#x}" + (f", {size} bytes" if kind not in ("break", "log") else ""), file=sys.stderr)
 
     def stop_now(*_):
         raise KeyboardInterrupt
@@ -162,7 +193,17 @@ def main():
     signal.signal(signal.SIGTERM, stop_now)
     gdb = mi.Gdb(program)
     debugger = Debugger(gdb, guest, pid, roots)
-    hits, foreign, pending, ended = 0, 0, None, "timeout"
+    hits, foreign, pending, ended, missed = 0, 0, None, "timeout", 0
+
+    def record(spec, reader, thread, where):
+        try:
+            data, note = reader.buffer(spec, args.max_bytes)
+        except (LookupError, mi.Failed, ValueError) as e:
+            data, note = b"", f"not read: {e}"
+        name = writer.write(spec.label, thread, where, data, note)
+        print(f"log {writer.count}: {spec.label} {len(data)} B, cpu {thread}, {name}{'  (' + note + ')' if note else ''}  "
+              f"{STEERING.sub('', logs.preview(data))}")
+        sys.stdout.flush()
     elsewhere = collections.Counter()
     try:
         for setting in ("mi-async on", "pagination off", "confirm off", "can-use-hw-watchpoints 1"):
@@ -176,7 +217,7 @@ def main():
 
         numbers = {}
         for kind, spec, size, address in resolved:
-            if kind == "break":
+            if kind in ("break", "log"):
                 values, _ = gdb.run(f"-break-insert -h *{address:#x}")
                 numbers[values["bkpt"]["number"]] = (kind, spec)
             else:
@@ -210,21 +251,43 @@ def main():
                 if regs["rsp"] != pending[1]:
                     debugger.go()
                     continue
-                print(f"returned to {debugger.where(regs['rip'])}, from the stop at {pending[2]}")
-                debugger.show(regs)
-                debugger.commands(args.on_return)
+                if pending[3]:
+                    spec, entry, thread = pending[3]
+                    hits += 1
+                    record(spec, logs.Reader(debugger, entry, regs), thread, pending[2])
+                else:
+                    print(f"returned to {debugger.where(regs['rip'])}, from the stop at {pending[2]}")
+                    debugger.show(regs)
+                    debugger.commands(args.on_return)
                 gdb.run(f"-break-delete {number}")
                 pending = None
-                if hits >= args.hits:
+                if args.hits and hits >= args.hits:
                     ended = "done"
                     break
                 debugger.go()
                 continue
-            if hits >= args.hits:
+            if args.hits and hits >= args.hits:
+                debugger.go()
+                continue
+            kind, spec = numbers[number]
+            if kind == "log":
+                wanted = by_place[spec]
+                if not wanted.at_return:
+                    hits += 1
+                    record(wanted, logs.Reader(debugger, regs, regs), stop.get("thread-id", "?"), debugger.where(regs["rip"]))
+                elif pending is None:
+                    back = debugger.word(regs["rsp"])
+                    values, _ = gdb.run(f"-break-insert -h *{back:#x}")
+                    pending = (values["bkpt"]["number"], regs["rsp"] + 8, debugger.where(regs["rip"]), (wanted, regs, stop.get("thread-id", "?")))
+                else:
+                    missed += 1
+                debugger.commands(args.do)
+                if args.hits and hits >= args.hits and pending is None:
+                    ended = "done"
+                    break
                 debugger.go()
                 continue
             hits += 1
-            kind, spec = numbers[number]
             change = stop.get("value", {})
             values = ", ".join(f"{k} {v}" for k, v in change.items()) if isinstance(change, dict) else ""
             print(f"hit {hits}: {kind} {spec}, at {debugger.where(regs['rip'])}, thread {stop.get('thread-id', '?')}" + (f", {values}" if values else ""))
@@ -233,8 +296,8 @@ def main():
             if args.on_return and kind == "break" and pending is None:
                 back = debugger.word(regs["rsp"])
                 values, _ = gdb.run(f"-break-insert -h *{back:#x}")
-                pending = (values["bkpt"]["number"], regs["rsp"] + 8, debugger.where(regs["rip"]))
-            if hits >= args.hits:
+                pending = (values["bkpt"]["number"], regs["rsp"] + 8, debugger.where(regs["rip"]), None)
+            if args.hits and hits >= args.hits:
                 for done in numbers:
                     gdb.run(f"-break-delete {done}")
                 numbers = {}
@@ -258,7 +321,12 @@ def main():
             pass
         gdb.close()
 
-    print(f"guest-dbg: {hits} of {args.hits} stops in the process, {foreign} elsewhere let go, and the guest runs on", file=sys.stderr)
+    if writer:
+        print(f"guest-dbg: {writer.count} buffers in {writer.folder}" + (f", {missed} returns missed while another was waited for" if missed else ""),
+              file=sys.stderr)
+        if ended == "timeout":
+            ended = "done"
+    print(f"guest-dbg: {hits} of {args.hits or 'any number of'} stops in the process, {foreign} elsewhere let go, and the guest runs on", file=sys.stderr)
     if hits < args.hits and elsewhere and roots:
         owners = guest.owners() if guest else {}
         print("guest-dbg: the process has the page table roots " + ", ".join(f"{r:#x}" for r in sorted(roots))

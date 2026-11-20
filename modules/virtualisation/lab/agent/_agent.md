@@ -58,6 +58,7 @@ A tool's own trouble is one line that starts with its name and exit status 1.
 | `$VM_LAB_TOOLS/lib/memprocfs/vmm.so` | The MemProcFS library, much faster than the files. |
 | `guest-ps` | The processes of a Windows guest read from its memory, with a note on any that the guest itself does not list. |
 | `guest-dbg PROCESS --break PLACE` | Stops one process at a place, from outside, so the guest sees no debugger. `--watch` and `--access` stop on a write or any access, `--do` and `--on-return` run gdb commands there. |
+| `guest-dbg PROCESS --log PRESET` | Writes the buffers a process hands to a function, or gets back from it, to `./out/NAME/` with an index, and lets it go on: what it sends and receives, or what it encrypts and decrypts, before and after its own crypto. Presets: `winsock` (`send`, `recv`), `wsasend`, `wsarecv`, `bcrypt` (CNG, which every .NET program on Windows uses, keys included), `sspi` (Windows' TLS), `winhttp`, `openssl=MODULE`. `--log PLACE,BUFFER,LENGTH` for any other function. |
 | `guest-gdb` | gdb on QEMU's debug stub. The whole guest stops while it is attached, so ask the user first. |
 | `radare2`, `gdb` | Static work on dumped files. |
 | `ilspycmd` | Decompiles a .NET assembly pulled or dumped from the guest to C#, inside `lab-box`, which sees the folder it starts in and `./out`: `ilspycmd FILE.dll` for all of it, `-t Namespace.Type` for one type, `-l c` to list classes, `-p -o out/NAME` for a project to read. |
@@ -72,6 +73,9 @@ A program that guards itself against debuggers is worked on from outside:
   It still stops the whole guest for a moment at each stop, and a program that measures time closely may notice that.
   A place that every process runs through, as a function of `ntdll.dll`, makes the guest slow while it is set.
 - A place is `0xADDRESS`, `MODULE`, `MODULE!NAME`, each with `+OFFSET`, and `nt` is the kernel.
+- `--log`'s values are registers, `argN` in Windows' x64 calling convention, `ret`, or `*X` to read memory, with `:4` or `:8` and `@return` for what the function gives back, as `ws2_32!recv,arg2,ret:4@return`.
+  A function logged at its return takes one more debug register while it runs, and a second call that comes meanwhile loses its return, which the end says.
+  Overlapped `WSARecv` fills its buffer after it returned, so its return has nothing yet.
   `--on-return 'p/x $rax'` shows what a function gave back, and `--do 'set $rax = 0'` changes it.
 
 ### Screen and input

@@ -40,6 +40,30 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert "hit 1: watch" in out and re.search(r"old \d+, new \d+", out) and "watched=0" in out, out
           assert "takes 5 debug registers" in out and "many=1" in out, out
           assert "alive=0" in out, out
+
+      with subtest("guest-dbg --log writes what a function of the process was given, and at its return what it gave back"):
+          machine.succeed("install -d -o alice /tmp/work/out")
+          out = machine.succeed(session("--gdb --control", "; ".join([
+              "symbol() { guest-exec --shell \"grep -E ' [TtDdBb] $1\\$' /proc/kallsyms | cut -d' ' -f1\" 2>/dev/null | head -n 1; }",
+              "umask=0x$(symbol __x64_sys_umask); write=0x$(symbol vfs_write); read=0x$(symbol vfs_read); echo write=$write read=$read",
+              "guest-exec --shell 'printf hello > /tmp/word' > /dev/null",
+              "job=$(guest-exec --job --shell 'while :; do umask 022; echo secret-line > /dev/null; read -n 5 x < /tmp/word; sleep 0.2; done' | cut -d' ' -f2)",
+              "root=$(guest-dbg - --break $umask --timeout 30 2>/dev/null | grep -o 'cr3=0x[0-9a-f]*' | head -n 1 | cut -d= -f2)",
+              "cd /tmp/work",
+              "guest-dbg cr3=$root --log $write,rsi,rdx --hits 2 --out writes --timeout 30 2>&1; echo written=$?",
+              "guest-dbg cr3=$root --log $read,rsi,ret@return --hits 10 --out reads --timeout 30 2>&1; echo was_read=$?",
+              "echo == first; cat out/writes/00001-*.bin",
+              "echo == reads; cat out/reads/*.bin; echo",
+              "echo == index; cat out/writes/index.jsonl",
+              "guest-job stop $job > /dev/null; guest-exec true 2>&1; echo alive=$?",
+          ])))
+          print(out)
+          assert "written=0" in out and "was_read=0" in out and "alive=0" in out, out
+          assert "out/writes" in out and re.search(r"log 2: 0x[0-9a-f]+ 12 B, cpu \S+, 00002-0x[0-9a-f]+\.bin  secret-line", out), out
+          assert out.split("== first")[1].split("== reads")[0].strip() == "secret-line", "what echo wrote was not the buffer written"
+          # Ten bytes of a shell that reads the five of hello over and over have the word whole among them.
+          assert "hello" in out.split("== reads")[1].split("== index")[0], "what read gave back was not the buffer written at its return"
+          assert '"length": 12' in out.split("== index")[1], out
     '';
   }
 )
