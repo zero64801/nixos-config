@@ -41,7 +41,7 @@ A capture goes to `~/.local/state/vm-inspect/captures/DOMAIN/DATE-TIME/`, writte
 - `usb.pcapng`, in the format of Wireshark's USB captures on Linux.
 - `capture.json`, what was recorded, the devices with what the kernel says of them, the counts, what the kernel dropped and why recording stopped.
 - `notes.jsonl`, the moments `guest-mark LABEL` marked.
-- `owners.jsonl`, `processes.jsonl` and `keys.log`, which programs connections belong to, which program started which, and TLS secrets, as tools find them.
+- `owners.jsonl`, `processes.jsonl`, `keys.log` and `updated.log`, which programs connections belong to, which program started which, TLS secrets, and those of TLS 1.3 after key updates, as tools find them.
 
 Tools add to a capture only through the session's control socket, which takes a mark, lines of a TLS key log and plain fields about connections and processes, and nothing else.
 `$VM_INSPECT_CAPTURE` names the folder, in a program that joins the session too.

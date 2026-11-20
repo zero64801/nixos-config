@@ -16,6 +16,8 @@ import time
 STEERING = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 KEYLOG = re.compile(r"(?:CLIENT_RANDOM|RSA|CLIENT_EARLY_TRAFFIC_SECRET|CLIENT_HANDSHAKE_TRAFFIC_SECRET|SERVER_HANDSHAKE_TRAFFIC_SECRET|"
                     r"CLIENT_TRAFFIC_SECRET_0|SERVER_TRAFFIC_SECRET_0|EARLY_EXPORTER_SECRET|EXPORTER_SECRET) [0-9a-fA-F]{16,128} [0-9a-fA-F]{32,256}")
+# The traffic secrets of TLS 1.3 after key updates, which no key log of Wireshark takes.
+UPDATED = re.compile(r"(?:CLIENT|SERVER)_TRAFFIC_SECRET_[1-9][0-9]{0,5} [0-9a-fA-F]{64} [0-9a-fA-F]{64,96}")
 
 
 class Settings:

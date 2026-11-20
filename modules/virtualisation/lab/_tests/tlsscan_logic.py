@@ -8,6 +8,7 @@ usage: tlsscan_logic.py CAPTURE_CODE LIBTLSSCAN OPENSSL GNUTLS_FOLDER"""
 import os
 import random
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -146,6 +147,35 @@ for via, version, suite, options in CASES:
         assert found.etm == ("%NO_ETM" not in options[0]), (options, found.etm)
     sessions.append(found)
     logs.append(log)
+
+
+def updated(*commands):
+    """One connection of s_client that updates its keys with the commands given before it asks for a page, which it takes
+    only without -quiet, and keeps its input open until the answer has come."""
+    if os.path.exists("keys.log"):
+        os.unlink("keys.log")
+    before = len(relay.kept)
+    client = subprocess.Popen([openssl, "s_client", "-connect", f"127.0.0.1:{relay.port}", "-keylogfile", "keys.log", "-tls1_3",
+                               "-ciphersuites", "TLS_AES_128_GCM_SHA256"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.5)
+    for command in commands:
+        client.stdin.write(command + b"\n")
+        client.stdin.flush()
+        time.sleep(0.3)
+    client.stdin.write(b"GET / HTTP/1.0\r\n\r\n")
+    client.stdin.flush()
+    time.sleep(1)
+    client.stdin.close()
+    client.wait(10)
+    assert relay.done[before].wait(10), commands
+    client_bytes, server_bytes = (bytes(side) for side in relay.kept[before])
+    with open("keys.log") as f:
+        logged = {line.split()[0]: bytes.fromhex(line.split()[2]) for line in f if line.strip() and not line.startswith("#")}
+    return client_bytes, server_bytes, logged
+
+
+both = updated(b"K")
+twice = updated(b"k", b"k")
 plain_server.kill()
 retry_server.kill()
 old_server.kill()
@@ -216,3 +246,29 @@ broken = tlsrecords.Session()
 broken.__dict__.update(sessions[0].__dict__, records=[(d, k, v, body[:-1] + bytes([body[-1] ^ 1])) for d, k, v, body in sessions[0].records])
 assert scanner.scan(memory, len(memory), base, [broken], step=8, threads=threads) == [], "a damaged record was opened"
 print("tlsscan finds OpenSSL's secrets and nothing else")
+
+# After key updates a program holds only its newest secrets, which open the records after the last update, at sequence 0.
+for (client_bytes, server_bytes, logged), wanted in ((both, {0: 1, 1: 1}), (twice, {0: 2, 1: 0})):
+    first = tlsrecords.session(client_bytes, server_bytes)
+    newer = tlsrecords.late(first, client_bytes, server_bytes)
+    assert newer and newer.epochs == wanted, (wanted, newer and newer.epochs)
+    secrets = {}
+    for role, direction in (("CLIENT", 0), ("SERVER", 1)):
+        secret = logged[f"{role}_TRAFFIC_SECRET_0"]
+        for _ in range(wanted[direction]):
+            secret = scanner.next13(first.suite, secret)
+        if wanted[direction]:
+            secrets[f"{role}_TRAFFIC_SECRET_{wanted[direction]}"] = secret
+    hidden = bytearray(os.urandom(1 << 16))
+    for n, secret in enumerate(secrets.values()):
+        hidden[4096 * (n + 1): 4096 * (n + 1) + 32] = secret
+    hits = scanner.scan(hidden, len(hidden), 0, [newer], step=8, threads=threads)
+    assert {hit.label: hit.secret for hit in hits} == secrets, ({hit.label for hit in hits}, set(secrets))
+    # The record after an update is at sequence number 0 too, and a session of the first keys must not take the newer secret for its own.
+    assert scanner.scan(hidden, len(hidden), 0, [first], step=8, threads=threads) == [], "a newer secret was named as a first one"
+    for direction, kind, version, body in newer.records:
+        role = "CLIENT" if direction == 0 else "SERVER"
+        plain = scanner.open13(first.suite, secrets[f"{role}_TRAFFIC_SECRET_{wanted[direction]}"], 0, struct.pack(">BHH", kind, version, len(body)) + body)
+        assert plain and plain.rstrip(b"\x00").endswith(b"\x17"), (role, plain)
+        assert (b"GET / HTTP/1.0" if direction == 0 else b"HTTP/1.0 200 ok") in plain, (role, plain[:60])
+print("after key updates the newest secrets are found and named, and open the records after the last update")

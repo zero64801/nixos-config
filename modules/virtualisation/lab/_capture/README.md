@@ -115,6 +115,11 @@ The idea is that of X-Ray-TLS (Moriconi et al., 2024) and of DRAKVUF's tlsmon, h
   With that secret tshark opens the early data too, and `http` reads the requests in it.
 - `--physical` searches the guest's whole RAM instead of one program's memory, around each client random, without the agent, and is what `--follow` takes in a guest that is not Windows, since the agent cannot answer while the guest is held.
   `--deep` searches all of it, for secrets kept apart from the client random, as OpenSSL's of TLS 1.2 are.
+- A TLS 1.3 connection that updated its keys holds only its newest secrets, since each update replaces the one before.
+  A one look scan reads such a flow whole, up to 64 MiB a side, takes the record after each side's last KeyUpdate, which is the first under its newest secret, and names a secret that opens it `CLIENT_TRAFFIC_SECRET_N` or `SERVER_TRAFFIC_SECRET_N`, N being the updates before it.
+  Wireshark takes only the first secrets, so these go to the capture's `updated.log`, and `stream --decrypted` and `decode --decrypted` open the flow from that record on themselves, following any later update.
+  What came before the update stays closed, since a secret is made from the one before and never the other way.
+  `--follow` catches a connection's first secrets before any update, and then tshark follows the updates itself.
 
 It finds the secrets of OpenSSL, BoringSSL, GnuTLS, NSS, mbedTLS, Go's crypto/tls and rustls, whatever the program is written in, since it looks for the secrets and not for a library's structures.
 The libraries most programs use keep the client random beside the secrets, OpenSSL and BoringSSL among them, and its places are searched first at every offset.
@@ -149,7 +154,8 @@ What it lists is what to send from Linux for the same effect.
   A request a resumed connection sent as early data, before the handshake, needs the early data's secret as well.
   Without it the answer shows alone, as asked in early data, and so do the answers whose requests need table entries the client sent then.
 - A secret that crosses a page boundary of the program's memory is in two places of the RAM, so `--physical` cannot find it, though the program's own memory, read through MemProcFS or the page map, can.
-- A TLS 1.3 connection whose keys were updated holds the newer secrets, which open no record of the start, so `keys scan` finds none of it.
+- A KeyUpdate is found by the size of its record, which padding would change, so one sent padded is missed.
+  `http` lists only what tshark opened, so the requests of a flow opened after its key updates show in `stream` and `decode`.
 - A program with a TLS of its own that writes no key log stays encrypted, short of reading its keys with `guest-dbg` where that program keeps them.
 - Isochronous transfers, as of sound and cameras, are shown as transfers without their packets taken apart.
 
@@ -172,10 +178,10 @@ The second passes a USB keyboard of the test machine to the guest and lights its
 The third runs the reading of SChannel's keys on a made up stretch of `lsass`' memory, since there is no Windows here.
 The fourth reads what Windows' and Linux' own tools say of their connections.
 The fifth undoes the encodings of bodies, gzip, deflate, brotli and zstd, alone and chained, stops at a limit for a body made to grow without end, and lays out JSON.
-The sixth runs OpenSSL's client and server in every suite `keys scan` knows, and GnuTLS's in RC4 and 3DES, which OpenSSL no longer has, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else.
+The sixth runs OpenSSL's client and server in every suite `keys scan` knows, and GnuTLS's in RC4 and 3DES, which OpenSSL no longer has, hides the secrets of the client's own key log in made up memory, and has the search find each of them where it was put and nothing else, and has OpenSSL update its keys once both ways and twice one way, whose newest secrets have to be found and open the records after the updates.
 The seventh has clients of OpenSSL, GnuTLS, NSS, mbedTLS, Go and rustls each connect with TLS 1.3 and 1.2 and wait, searches their live memory as `keys scan` searches a program of a guest, and checks what it finds against each client's own key log.
 The eighth runs aioquic's client and server in every suite and both versions of QUIC, and curl's HTTP/3 on ngtcp2, reads the hellos from the Initial packets alone, also of a client that sends a token in them, splits datagrams sent in one batch, has a client come back with a ticket and send early data, and has the search find each secret where it was put, that of the early data among them.
-The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found, then has `trace` start a shell that runs curl and show curl's flow under the shell.
+The ninth has a guest hold two connections of OpenSSL open and connect with curl while the scan follows, and every secret found has to be one the client wrote, and reads curl's request of HTTP/3 and its answer with the secrets found, then has `trace` start a shell that runs curl and show curl's flow under the shell, and holds a connection that updated its keys both ways, whose newest secrets have to be found and the flow read from the update on.
 The tenth has curl ask aioquic's server several things over one connection of HTTP/3, so that its headers use QPACK's table, and reads them with the traffic secrets alone, then has `h3.py` wait for table instructions that come late, put pieces together that come out of order or twice, read answers whose requests went as early data, and live through what a hostile guest sends.
 The eleventh reads a WebSocket of HTTP/1 through tshark, has a decoder read a flow both ways and pass on its failure, with permessage-deflate both ways, a server that keeps its window between messages, a fragmented message with a ping between its parts, binary data and a close, then one of HTTP/3 from its stream's bytes, and frames that claim more than there is.
 The first also exports its requests as HAR, and the tenth those of HTTP/3.

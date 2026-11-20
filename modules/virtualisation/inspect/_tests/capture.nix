@@ -120,6 +120,7 @@ import ./fixture.nix { inherit host; } {
                 "from session import ask, control_socket, Refused\n"
                 "try:\n    print(ask(control_socket(), json.loads(sys.argv[1]))[0])\nexcept Refused as e:\n    print(\"refused:\", e)' ")
         good_key = "CLIENT_RANDOM " + "ab" * 32 + " " + "cd" * 48
+        good_update = "SERVER_TRAFFIC_SECRET_2 " + "ab" * 32 + " " + "ef" * 32
         out = recorded("--net", "; ".join([
             note + shlex.quote(json.dumps({"do": "note", "kind": "keys", "lines": [good_key]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "keys", "lines": ["rm -rf / " + "ab" * 32]})),
@@ -129,10 +130,13 @@ import ./fixture.nix { inherit host; } {
             note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "ppid": 7, "process": "child"}]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "ppid": -1, "process": "child"}]})),
             note + shlex.quote(json.dumps({"do": "note", "kind": "processes", "entries": [{"pid": 9, "proto": "tcp"}]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "updated", "lines": [good_update]})),
+            note + shlex.quote(json.dumps({"do": "note", "kind": "updated", "lines": [good_key]})),
         ]))
         print(out)
         folder = capture_of(out)
-        assert out.count("refused:") == 5 and out.count("'folder':") == 3, out
+        assert out.count("refused:") == 6 and out.count("'folder':") == 4, out
+        assert machine.succeed(f"cat {folder}/updated.log").strip() == good_update
         assert machine.succeed(f"cat {folder}/keys.log").strip() == good_key
         assert '"process": "ok"' in machine.succeed(f"cat {folder}/owners.jsonl")
         assert '"ppid": 7, "process": "child"' in machine.succeed(f"cat {folder}/processes.jsonl")

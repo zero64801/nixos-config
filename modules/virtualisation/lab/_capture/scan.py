@@ -75,6 +75,10 @@ class Scanner:
         lib.tlsscan_quic_initial.restype = ctypes.c_long
         lib.tlsscan_quic_initial.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_size_t, u32, ctypes.c_char_p, ctypes.c_size_t,
                                              ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t]
+        lib.tlsscan_open13.restype = ctypes.c_long
+        lib.tlsscan_open13.argtypes = [u32, ctypes.c_char_p, u64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        lib.tlsscan_next13.restype = ctypes.c_int
+        lib.tlsscan_next13.argtypes = [u32, ctypes.c_char_p, ctypes.c_char_p]
         lib.tlsscan_find.restype = ctypes.c_size_t
         lib.tlsscan_find.argtypes = [ctypes.c_void_p, ctypes.c_size_t, u64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint,
                                      ctypes.POINTER(u64), ctypes.POINTER(u32), ctypes.c_size_t]
@@ -111,6 +115,19 @@ class Scanner:
         count = self.lib.tlsscan_quic_initial(packet, len(packet), at, version, destination, len(destination), int(from_server), out, len(packet))
         return out.raw[:count] if count >= 0 else None
 
+    def open13(self, suite, secret, seq, record):
+        """The plaintext of a record of TLS 1.3, header included, under a traffic secret at a sequence number, inner type and
+        padding still on it, or None."""
+        out = ctypes.create_string_buffer(len(record))
+        count = self.lib.tlsscan_open13(suite, secret, seq, record, len(record), out, len(record))
+        return out.raw[:count] if count >= 0 else None
+
+    def next13(self, suite, secret):
+        """The secret a key update turns this one into."""
+        out = ctypes.create_string_buffer(48)
+        count = self.lib.tlsscan_next13(suite, secret, out)
+        return out.raw[:count]
+
     def find(self, buffer, length, base, needles, threads=1, at=0):
         """The addresses where one of the 32 byte needles is, as (address, index of the needle)."""
         if not needles or length < 32:
@@ -129,6 +146,15 @@ PAGE = 4096
 WANTED = {0x0301: {"CLIENT_RANDOM"}, 0x0302: {"CLIENT_RANDOM"}, 0x0303: {"CLIENT_RANDOM"},
           0x0304: {"CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"}}
 VERSIONS = {0x0301: "1.0", 0x0302: "1.1", 0x0303: "1.2", 0x0304: "1.3"}
+# How much of each side of a TLS 1.3 flow that updated its keys is read, to reach the record after its last update.
+WHOLE = 64 << 20
+
+
+def needed(session):
+    """The labels that finish a session: those of its version, or for one of the newest keys after updates one a direction."""
+    if session.epochs:
+        return {tlsrecords.label(session, direction, 0, 23, 0) for direction, *_ in session.records}
+    return WANTED[session.version]
 
 
 def contiguous(parts):
@@ -141,6 +167,71 @@ def contiguous(parts):
             data += payload[expected - seq:]
             expected = seq + len(payload)
     return bytes(data)
+
+
+def laid(parts):
+    """The bytes from the first sequence number on, as far as nothing is missing, with where each packet's bytes end in them
+    and when it came."""
+    data, marks, expected = bytearray(), [], 1
+    for seq, payload, when in sorted(parts, key=lambda part: part[0]):
+        if seq > expected:
+            break
+        if seq + len(payload) > expected:
+            data += payload[expected - seq:]
+            expected = seq + len(payload)
+            marks.append((len(data), when))
+    return bytes(data), marks
+
+
+def whole(capture, streams, limit=WHOLE):
+    """What each side of these TCP streams sent, up to the limit, as {stream: ((the guest's bytes, marks), (the other side's, marks))}."""
+    pieces = {}
+    if not streams:
+        return {}
+    display = f"tcp.len > 0 && tcp.seq < {limit} && tcp.stream in {{{', '.join(sorted(streams, key=int))}}}"
+    for packet in capture.ek(NET, ["tcp.stream", "frame.packet_flags_direction", "tcp.seq", "tcp.payload", "frame.time_epoch"], display):
+        try:
+            seq, payload = int(first(packet, "tcp.seq")), bytes.fromhex(first(packet, "tcp.payload").replace(":", ""))
+            when = float(first(packet, "frame.time_epoch", "0"))
+        except ValueError:
+            continue
+        side = 0 if first(packet, "frame.packet_flags_direction") == SENT else 1
+        pieces.setdefault(first(packet, "tcp.stream"), ([], []))[side].append((seq, payload, when))
+    return {stream: (laid(sides[0]), laid(sides[1])) for stream, sides in pieces.items()}
+
+
+def updated(capture):
+    """The secrets after key updates the capture has, as {client random: {label: secret}}."""
+    found = {}
+    try:
+        with open(os.path.join(capture.folder, "updated.log")) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 3 and shared.UPDATED.fullmatch(line.strip()):
+                    found.setdefault(parts[1].lower(), {})[parts[0]] = bytes.fromhex(parts[2])
+    except OSError:
+        pass
+    return found
+
+
+def newer_sessions(capture, args, picked):
+    """For the TLS 1.3 flows that updated their keys, a session of their newest keys each, which is all a program holds once
+    it updated them: the first record under the newest secret of each direction that updated."""
+    latest = {s.flow["id"][1:]: s for s in picked if s.version == 0x0304 and not s.quic}
+    if not latest:
+        return []
+    sizes = sorted({tlsrecords.update_size(s.suite) for s in latest.values()})
+    display = f"tls.record.length in {{{', '.join(map(str, sizes))}}} && tcp.stream in {{{', '.join(sorted(latest, key=int))}}}"
+    streams = {first(p, "tcp.stream") for p in capture.ek(NET, ["tcp.stream"], display)}
+    have, out = updated(capture), []
+    for stream, ((guest, _), (other, _)) in whole(capture, streams).items():
+        s = latest[stream]
+        newer = tlsrecords.late(s, *((guest, other) if s.guest_is_client else (other, guest)))
+        if newer is None or (not args.again and needed(newer) <= set(have.get(newer.client_random.hex(), {}))):
+            continue
+        newer.flow, newer.found, newer.guest_is_client = s.flow, {}, s.guest_is_client
+        out.append(newer)
+    return out
 
 
 def openings(capture, streams):
@@ -193,7 +284,8 @@ def sessions(capture, args, flows):
         if not args.again and WANTED[found.version] <= have.get(found.client_random.hex(), set()):
             continue
         picked.append(found)
-    return picked + quic_sessions(capture, args, flows, have)
+    # A flow whose first keys are known needs no newer ones, since tshark follows its updates from those.
+    return picked + newer_sessions(capture, args, picked) + quic_sessions(capture, args, flows, have)
 
 
 # The packets of a QUIC flow's first seconds hold its handshake and its first packets under the traffic secrets.
@@ -452,7 +544,7 @@ def search(scanner, source, picked, args):
             low, high = max(start, spot - args.around), min(start + length, spot + 32 + args.around)
             found += scanner.scan(buffer, high - low, low, [picked[which]], step=1, threads=threads(), at=low - start)
     took(found, picked)
-    left = [s for s in picked if not WANTED[s.version] <= set(s.found)]
+    left = [s for s in picked if not needed(s) <= set(s.found)]
     print(f"guest-net: {places} places of the client randoms, {sum(1 for s in picked if s not in left)} flows found around them "
           f"in {time.monotonic() - started:.1f} s", file=sys.stderr)
     if left and (args.deep or not isinstance(source, Physical)):
@@ -460,7 +552,7 @@ def search(scanner, source, picked, args):
         for start, buffer, length in regions:
             found += scanner.scan(buffer, length, start, left, step=step, threads=threads())
             took(found, left)
-            left = [s for s in left if not WANTED[s.version] <= set(s.found)]
+            left = [s for s in left if not needed(s) <= set(s.found)]
             if not left:
                 break
         print(f"guest-net: the rest at step {step}: {scanner.tested} candidates in {time.monotonic() - started:.1f} s", file=sys.stderr)
@@ -564,17 +656,22 @@ def run(capture, args, flows, chosen):
             search(scanner, source, group, args)
         except LookupError as e:
             print(f"guest-net: {source}: {e}", file=sys.stderr)
-    lines = [hit.line for s in picked for hit in s.found.values()]
+    lines = [hit.line for s in picked if not s.epochs for hit in s.found.values()]
+    later = [hit.line for s in picked if s.epochs for hit in s.found.values()]
     for at in range(0, len(lines), 4096):
         tell({"do": "note", "kind": "keys", "lines": lines[at: at + 4096]})
+    # Wireshark takes only the first traffic secrets, so the newer ones go in a log of their own, which guest-net opens itself.
+    for at in range(0, len(later), 4096):
+        tell({"do": "note", "kind": "updated", "lines": later[at: at + 4096]})
     for s in picked:
         names = plain(",".join(s.flow["names"]) or s.flow["remote"], 60)
+        kind = ("QUIC" if s.quic else "TLS " + VERSIONS[s.version]) + (" after key updates" if s.epochs else "")
         if s.found:
             where = ", ".join(f"{label} at {hit.address:#x}" for label, hit in sorted(s.found.items()))
-            print(f"{s.flow['id']:<6} {names}  {'QUIC' if s.quic else 'TLS ' + VERSIONS[s.version]}  {where}")
+            print(f"{s.flow['id']:<6} {names}  {kind}  {where}")
         else:
-            print(f"{s.flow['id']:<6} {names}  {'QUIC' if s.quic else 'TLS ' + VERSIONS[s.version]}  not found")
-    print(f"{len(lines)} secrets added to the capture", file=sys.stderr)
+            print(f"{s.flow['id']:<6} {names}  {kind}  not found")
+    print(f"{len(lines) + len(later)} secrets added to the capture", file=sys.stderr)
 
 
 def load(name):

@@ -845,6 +845,45 @@ size_t tlsscan_scan(const uint8_t *memory, size_t length, uint64_t base, size_t 
  * anyone on the path knows, to read the hellos in it. at is where its packet number starts. Returns the length of the
  * plaintext written to out, or -1.
  */
+/* One record of TLS 1.3, its header and the rest, opened with a traffic secret at a sequence number: the records after a key
+ * update, which tshark opens only from the first secret on. The plaintext, inner type and padding still on it, goes to out. */
+long tlsscan_open13(uint32_t suite, const uint8_t *secret, uint64_t seq, const uint8_t *record, size_t length, uint8_t *out, size_t room) {
+    const suite_info *s = suite_of(0x0304, suite);
+    hmac_key k;
+    uint8_t key[32], iv[12], nonce[12];
+    long result = -1;
+    if (!s || length < 5 + tag_size(s->mode) + 1 || length > 5 + LARGEST)
+        return -1;
+    hmac_setup(&k, s->prf, secret, hash_size(s->prf));
+    expand_label(&k, "key", s->keylen, key);
+    expand_label(&k, "iv", 12, iv);
+    memcpy(nonce, iv, 12);
+    for (int i = 0; i < 8; i++)
+        nonce[11 - i] ^= (uint8_t)(seq >> (8 * i));
+    crypto *c = calloc(1, sizeof *c);
+    if (!c)
+        return -1;
+    size_t plain = length - 5 - tag_size(s->mode);
+    if (plain <= room && aead_open(c, s->mode, s->keylen, key, nonce, record, 5, record + 5, length - 5)) {
+        memcpy(out, c->plain, plain);
+        result = (long)plain;
+    }
+    crypto_free(c);
+    free(c);
+    return result;
+}
+
+/* The secret a key update of TLS 1.3 turns one into (RFC 8446 7.2), and its length. */
+int tlsscan_next13(uint32_t suite, const uint8_t *secret, uint8_t *out) {
+    const suite_info *s = suite_of(0x0304, suite);
+    hmac_key k;
+    if (!s)
+        return 0;
+    hmac_setup(&k, s->prf, secret, hash_size(s->prf));
+    expand_label(&k, "traffic upd", hash_size(s->prf), out);
+    return (int)hash_size(s->prf);
+}
+
 long tlsscan_quic_initial(const uint8_t *packet, size_t length, size_t at, uint32_t version, const uint8_t *dcid, size_t dcidlen,
                           int from_server, uint8_t *out, size_t room) {
     static const uint8_t salt1[20] = {0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,

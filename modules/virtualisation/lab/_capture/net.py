@@ -6,6 +6,7 @@ programs or to some hosts, as scope.py chooses them.
 """
 import argparse
 import base64
+import bisect
 import calendar
 import datetime
 import json
@@ -24,6 +25,7 @@ import owners
 import scan
 import schannel
 import scope
+import tlsrecords
 import websocket
 from capture import KEYLOG, common, fail, finished, first, plain, size, tell, timed
 from scope import Scope
@@ -890,6 +892,54 @@ def chunks(capture, flow, decrypted, keys):
             out.append((float(packet.get("timestamp", "0")), sent.get(packet["packet"], False), base64.b64decode(packet["data"])))
         except ValueError:
             continue
+    if decrypted and kind == "tcp":
+        # A direction tshark opened nothing of may be one keys scan found the keys of only after their updates.
+        sides = {from_guest for _, from_guest, _ in out}
+        out = sorted(out + [c for c in after_updates(capture, flow) if c[1] not in sides], key=lambda c: c[0])
+    return out
+
+
+def after_updates(capture, flow):
+    """What went each way in a TLS 1.3 flow from the newest key update keys scan found the secret of, opened here, since
+    tshark opens a flow only from its first secrets, which a program no longer holds once it updated them. Each later
+    update met on the way turns the secret into the next."""
+    secrets = scan.updated(capture)
+    stream = flow["id"][1:]
+    data = scan.whole(capture, {stream}) if secrets else {}
+    if stream not in data:
+        return []
+    (guest, guest_marks), (other, other_marks) = data[stream]
+    found, guest_is_client = tlsrecords.session(guest, other), True
+    if not found:
+        found, guest_is_client = tlsrecords.session(other, guest), False
+    known = secrets.get(found.client_random.hex()) if found and found.version == 0x0304 else None
+    if not known:
+        return []
+    scanner, out = scan.Scanner(shared.SETTINGS.scan), []
+    for side, marks, from_guest in ((guest, guest_marks, True), (other, other_marks, False)):
+        role = "CLIENT" if from_guest == guest_is_client else "SERVER"
+        epochs = sorted(int(label.rsplit("_", 1)[1]) for label in known if label.startswith(role + "_"))
+        if not epochs:
+            continue
+        kept, _ = tlsrecords.updates(side, found.suite)
+        seen, start = 0, None
+        for index, (_, record) in enumerate(kept):
+            seen += len(record) - 5 == tlsrecords.update_size(found.suite)
+            if seen == epochs[-1]:
+                start = index + 1
+                break
+        secret, seq = known[f"{role}_TRAFFIC_SECRET_{epochs[-1]}"], 0
+        for at, record in kept[start:] if start is not None else []:
+            plain = scanner.open13(found.suite, secret, seq, record)
+            if plain is None:
+                break
+            seq += 1
+            body = plain.rstrip(b"\x00")
+            if body[-1:] == b"\x17" and len(body) > 1:
+                when = marks[min(bisect.bisect_left(marks, (at + len(record),)), len(marks) - 1)][1]
+                out.append((when, from_guest, body[:-1]))
+            elif body[-1:] == b"\x16" and body[:1] == b"\x18":
+                secret, seq = scanner.next13(found.suite, secret), 0
     return out
 
 

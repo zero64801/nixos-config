@@ -14,7 +14,8 @@ let
       -subj /CN=tls.test -addext subjectAltName=DNS:tls.test
   '';
 
-  # Two connections that send a request and stay open, one of TLS 1.3 and one of TLS 1.2, each with its key log.
+  # Two connections that send a request and stay open, one of TLS 1.3 and one of TLS 1.2, each with its key log, and one of
+  # TLS 1.3 that updates its keys both ways before its request, which s_client does only without -quiet.
   held = pkgs.writeText "held.sh" ''
     # Otherwise the clients keep the agent's output open and guest-exec waits out its time limit.
     exec < /dev/null > /dev/null 2>&1
@@ -22,7 +23,9 @@ let
       (printf 'GET / HTTP/1.1\r\nHost: tls.test\r\n\r\n'; sleep 120) |
         openssl s_client -connect 10.9.9.1:8443 -servername tls.test -tls$version -keylogfile /tmp/held$version.log -quiet > /dev/null 2>&1 &
     done
-    sleep 3
+    (sleep 1; printf 'K\n'; sleep 1; printf 'GET /updated HTTP/1.1\r\nHost: tls.test\r\n\r\n'; sleep 120) |
+      openssl s_client -connect 10.9.9.1:8443 -servername tls.test -tls1_3 -keylogfile /tmp/heldupd.log > /dev/null 2>&1 &
+    sleep 4
   '';
 
   # A server of HTTP/3 that answers every request with a page of its own, after a second, so that the client lives long enough
@@ -133,6 +136,9 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == tls; guest-net tls",
           "echo == http3; guest-net http --host tls.test && guest-net http $(guest-net http | grep 'GET https://tls.test:8444/over' | cut -d' ' -f1)",
           "echo == keys; cat $VM_INSPECT_CAPTURE/keys.log",
+          "echo == updated; cat $VM_INSPECT_CAPTURE/updated.log; echo == upd; guest-exec --shell 'cat /tmp/heldupd.log'",
+          "echo == late; for f in $(guest-net flows | grep ':8443 ' | cut -d' ' -f1); do"
+          " guest-net stream $f --decrypted 2>&1 | grep -q 'GET /updated' && guest-net stream $f --decrypted; done; true",
       ])
       out = machine.succeed(lab(f"cd /tmp/work && vm-inspect --net --control --gdb driven -- sh -c {shlex.quote('{ ' + script + '; } 2>&1')} 2>&1"))
       print(out)
@@ -182,6 +188,12 @@ host.needs [ "modules/virtualisation/inspect" ] (
           started = section["flows of sh and what it started"]
           assert re.search(r"10\.9\.9\.50:\d+ -> 10\.9\.9\.1:9443 .* curl\[\d+\]", started), started
           assert "decrypted" in section["handshakes"], section["handshakes"]
+
+      with subtest("after a key update both ways the newest secrets are found, kept apart, and open the flow from the update on"):
+          random = next(line.split()[1] for line in section["upd"].splitlines() if line.startswith("CLIENT_TRAFFIC_SECRET_0"))
+          assert f"CLIENT_TRAFFIC_SECRET_1 {random} " in section["updated"] and f"SERVER_TRAFFIC_SECRET_1 {random} " in section["updated"], section["updated"]
+          assert re.search(r"TLS 1\.3 after key updates  CLIENT_TRAFFIC_SECRET_1 at 0x[0-9a-f]+, SERVER_TRAFFIC_SECRET_1 at", section["around"]), section["around"]
+          assert "GET /updated HTTP/1.1" in section["late"] and "404 Not Found" in section["late"], section["late"]
 
       with subtest("the flows read as decrypted"):
           assert section["tls"].count("decrypted") >= 3, section["tls"]

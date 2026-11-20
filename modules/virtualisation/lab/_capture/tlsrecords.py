@@ -22,6 +22,8 @@ class Session:
         self.etm = self.early = False
         self.name, self.quic = "", 0
         self.records = []
+        # For a session of the newest keys after key updates: how many updates each direction made.
+        self.epochs = None
 
     def __repr__(self):
         return f"Session(TLS {self.version:#06x} suite {self.suite:#06x}, {len(self.records)} records)"
@@ -119,8 +121,60 @@ def session(client, server):
     found.early = EARLY_DATA in hello[1]
     found.name = server_name(hello[1])
     for direction, stream in ((0, sent), (1, got)):
-        found.records += [(direction, kind, version, body) for kind, version, body in encrypted(stream, found.version)]
+        kept = encrypted(stream, found.version)
+        if found.version == 0x0304:
+            # What follows a KeyUpdate is under a newer secret, which opens the next record at sequence number 0 too and must
+            # not be taken for the first.
+            cut = next((n for n, (_, _, body) in enumerate(kept) if len(body) == update_size(found.suite)), None)
+            kept = kept if cut is None else kept[: cut + 1]
+        found.records += [(direction, kind, version, body) for kind, version, body in kept]
     return found
+
+
+def update_size(suite):
+    """How long a record that carries a KeyUpdate is when not padded: the message of 5 bytes, the inner type and the tag."""
+    return 6 + (8 if suite == 0x1305 else 16)
+
+
+def updates(data, suite):
+    """The encrypted records of one direction of TLS 1.3 with where each begins, (offset, record), and how many of them are
+    the size of a KeyUpdate, which only that message is, unpadded, once the handshake is done."""
+    found, at, count = [], 0, 0
+    while at + 5 <= len(data):
+        kind, length = data[at], struct.unpack_from(">H", data, at + 3)[0]
+        if kind not in (20, 21, 22, 23, 24) or data[at + 1] != 3 or length > LARGEST or at + 5 + length > len(data):
+            break
+        if kind == APPLICATION_DATA:
+            found.append((at, data[at: at + 5 + length]))
+            count += length == update_size(suite)
+        at += 5 + length
+    return found, count
+
+
+def newest(found, data):
+    """The record of one direction of TLS 1.3 that follows its last KeyUpdate, the first under its newest secret, with the
+    number of updates before it, or None when it made none or nothing followed."""
+    kept, count = updates(data, found.suite)
+    last = max((n for n, (_, record) in enumerate(kept) if len(record) - 5 == update_size(found.suite)), default=None)
+    if last is None or last + 1 >= len(kept):
+        return None
+    return kept[last + 1][1], count
+
+
+def late(found, client, server):
+    """A session of the newest keys of a TLS 1.3 connection that updated its keys, whose secrets are the only ones its
+    program still holds: per direction, the first record under the newest secret, at sequence number 0. None when neither
+    side updated."""
+    if found.version != 0x0304 or found.quic:
+        return None
+    newer = Session()
+    newer.client_random, newer.version, newer.suite, newer.name, newer.epochs = found.client_random, 0x0304, found.suite, found.name, {0: 0, 1: 0}
+    for direction, data in ((0, client), (1, server)):
+        first = newest(found, data)
+        if first:
+            record, newer.epochs[direction] = first
+            newer.records.append((direction, APPLICATION_DATA, struct.unpack_from(">H", record, 1)[0], record[5:]))
+    return newer if newer.records else None
 
 
 def encrypted(stream, version):
@@ -136,7 +190,9 @@ def encrypted(stream, version):
 
 def label(found, direction, index, inner, first):
     """The key log label of a secret that opened the record at this index of this direction at sequence number 0, or for
-    QUIC the packet of this kind."""
+    QUIC the packet of this kind. A session of the newest keys names them by how many updates came before."""
+    if found.epochs:
+        return f"{'SERVER' if direction == 1 else 'CLIENT'}_TRAFFIC_SECRET_{found.epochs[direction]}"
     if found.quic:
         side = "SERVER" if direction == 1 else "CLIENT"
         if inner == EARLY_PACKET:
