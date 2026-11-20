@@ -140,7 +140,7 @@ def parse_size(text):
 
 
 def run(cmd, **kw):
-    p = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    p = subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
     if p.returncode != 0:
         die("%s failed: %s" % (cmd[0], safe(p.stderr.strip())))
     return p.stdout
@@ -170,7 +170,7 @@ def pager(text):
         print(text)
         return
     # less runs as root here, so its shell, editor and log commands are disabled.
-    subprocess.run(["less", "-FRX"], input=text, text=True, env={**os.environ, "LESSSECURE": "1"})
+    subprocess.run(["less", "-FRX"], input=text, text=True, env={**os.environ, "LESSSECURE": "1"}, check=False)
 
 
 def parse_selection(text, count):
@@ -228,7 +228,7 @@ def guest_config(spec):
 
 
 def domstate(dom):
-    p = subprocess.run(["virsh", "domstate", dom], capture_output=True, text=True)
+    p = subprocess.run(["virsh", "domstate", dom], capture_output=True, text=True, check=False)
     return p.stdout.strip() if p.returncode == 0 else None
 
 
@@ -412,7 +412,7 @@ def disk_size(disk):
         return parse_size(disk.spec["size"])
     tdev, base = system_disk(disk)
     # The live image is what the guest sees, so a resized snapshot layer counts. A domain not defined yet falls back to its definition.
-    p = subprocess.run(["virsh", "domblklist", disk.dom, "--details", "--inactive"], capture_output=True, text=True)
+    p = subprocess.run(["virsh", "domblklist", disk.dom, "--details", "--inactive"], capture_output=True, text=True, check=False)
     for line in p.stdout.splitlines()[2:] if p.returncode == 0 else []:
         parts = line.split(None, 3)
         if len(parts) == 4 and parts[2] == tdev and os.path.exists(parts[3].strip()):
@@ -431,7 +431,7 @@ def to_bytes(text, current):
 
 
 def revert_base(dom, tdev):
-    p = subprocess.run(["virsh", "snapshot-current", "--name", dom], capture_output=True, text=True)
+    p = subprocess.run(["virsh", "snapshot-current", "--name", dom], capture_output=True, text=True, check=False)
     name = p.stdout.strip() if p.returncode == 0 else ""
     if not name:
         die("%s has no current snapshot to revert to" % dom)
@@ -3404,7 +3404,7 @@ def cmd_migrate(cfg, args):
             return ABORTED
         rotate(disk, True)
         print("%s: kept the data disk as rev0" % dom)
-    if subprocess.run(["nixvirt-snapshot", "revert", "-y", "--no-data", dom, snap]).returncode != 0:
+    if subprocess.run(["nixvirt-snapshot", "revert", "-y", "--no-data", dom, snap], check=False).returncode != 0:
         die("the revert failed; the data disk is kept, and the backup is in %s" % bdir)
     with locked(dom):
         do_link(cfg, disk)

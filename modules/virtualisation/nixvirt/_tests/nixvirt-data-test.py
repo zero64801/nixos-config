@@ -89,7 +89,7 @@ with open(CFG, "w") as f:
 
 
 def nv(*args, answers="", cfg=CFG):
-    p = subprocess.run([sys.executable, TOOL, cfg] + list(args), input=answers, capture_output=True, text=True)
+    p = subprocess.run([sys.executable, TOOL, cfg] + list(args), input=answers, capture_output=True, text=True, check=False)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -268,7 +268,7 @@ def dropped(dom, keys, env):
 
 
 def vsize(path):
-    return json.loads(subprocess.run(["qemu-img", "info", "--output=json", "-U", path], capture_output=True, text=True).stdout)["virtual-size"]
+    return json.loads(subprocess.run(["qemu-img", "info", "--output=json", "-U", path], capture_output=True, text=True, check=True).stdout)["virtual-size"]
 
 
 if PART == "windows":
@@ -779,7 +779,7 @@ if PART == "windows":
     check(not got["run"] and not got["other"], "left out changes and everything outside the carried paths revert", repr(got))
     check(got["lnk"] == junction("C:\\Windows") and got["acl"] == mounted(S, "/dev/sda2", lambda g: g.lgetxattr("/Users/alice/Documents/notes/a.txt", "system.ntfs_acl")),
           "junctions and permissions are carried", repr(got))
-    check(json.loads(subprocess.run(["qemu-img", "info", "--output=json", NEW], capture_output=True, text=True).stdout)["backing-filename"] == BASE,
+    check(json.loads(subprocess.run(["qemu-img", "info", "--output=json", NEW], capture_output=True, text=True, check=True).stdout)["backing-filename"] == BASE,
           "the fresh layer sits on the revert target", NEW)
 
 
@@ -820,7 +820,7 @@ if PART == "resize":
     def windows_boot():
         # Windows clears the check flag ntfsresize sets when it boots, and the test stands in for that boot.
         for img, part in ((W + "/r.qcow2", "/dev/sda2"), (IMG, "/dev/sda1")):
-            guest(img, lambda g: g.debug("sh", ["ntfsfix -d %s" % part]))
+            guest(img, lambda g, part=part: g.debug("sh", ["ntfsfix -d %s" % part]))
 
 
     for step, total, what in (("+32M", 288, "a grow smaller than the recovery partition moves it up in chunks"),
