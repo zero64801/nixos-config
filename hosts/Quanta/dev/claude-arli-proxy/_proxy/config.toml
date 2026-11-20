@@ -1,0 +1,143 @@
+# claude-arli-proxy settings. Changes apply after a rebuild.
+# The Nix module adds listen_host, listen_port and the API key file.
+
+# Model IDs that start with this prefix go to ArliAI. Everything else goes to Anthropic.
+model_prefix = "arli/"
+
+# ArliAI Max plan: 6 requests at once.
+max_parallel = 2
+
+# ArliAI models cannot search the web. While one is active, Claude Code's
+# WebSearch requests are answered by this Claude model on your subscription.
+# Set it to "" to send them to the ArliAI model without the search tool.
+server_tool_model = "claude-haiku-5-5"
+
+# ArliAI model that answers requests for Claude models while Claude Code is not
+# logged in to claude.ai, such as background session titles or the default model.
+# Set it to "" to answer them with an error instead. Without a login, web search
+# goes to the ArliAI model without the search tool.
+no_login_model = "GLM-4.7"
+
+# Seconds of silence before a keepalive ping, and seconds to wait for ArliAI
+# to accept a request before the reply starts with pings instead.
+ping_interval = 10
+commit_after = 15
+
+log_level = "INFO"
+
+# Options for every ArliAI model. A [models."<name>"] table overrides them.
+[defaults]
+# Where the ArliAI API key comes from. The proxy reads api_key_file first and
+# uses api_key_env only when the file is missing or holds no key. Edits to the
+# file apply to the next request. A model can name its own file or variable to
+# use a different key, for example one with ArliAI parameter overrides.
+api_key_env = "ARLIAI_API_KEY"
+
+# Earlier reasoning sent back to the model: "current_turn" (since your last
+# message, which DeepSeek and GLM need during tool use), "all", or "none".
+reasoning_history = "current_turn"
+
+# "auto" follows Claude Code's /effort level and thinking setting. "omit" sends
+# nothing. A fixed value is one of "none", "low", "medium", "high", "xhigh", "max".
+reasoning_effort = "auto"
+
+# Split <think>...</think> out of a reply when ArliAI leaves the reasoning inline.
+think_tags = true
+
+# Sampling parameters sent with every request. Any parameter from
+# https://www.arliai.com/docs/api works here, such as temperature, top_p,
+# top_k, min_p, repetition_penalty, presence_penalty or frequency_penalty.
+# A model's own params table wins over these.
+[defaults.params]
+
+# Per model settings. The name in quotes is the ArliAI model name, which you
+# pick in Claude Code as arli/<name>. Every option above can be set here, plus:
+#   vision = false              images become a placeholder (default: ArliAI's model list decides)
+#   max_output_tokens = 16000   cap on reply length
+#   system_prepend = "..."      text before Claude Code's system prompt
+#   system_append = "..."       text after Claude Code's system prompt
+#   system_replace = "..."      used instead of Claude Code's system prompt
+#   system_prepend_file = "x.md"  reads the file in place of system_prepend
+#   system_append_file = "x.md"   reads the file in place of system_append
+#   system_replace_file = "x.md"  reads the file in place of system_replace
+#   upstream = "GLM-4.7"        real model name, so [models.glm] can serve arli/glm
+#
+# The *_file options take a path (absolute, or relative to the prompt folder the
+# Nix module names, which stays out of the repo) to a text or .md file. The file is re-read when it changes, so edits apply to the
+# next request. A _file option wins over its inline twin. Put one under
+# [defaults] to apply it to every ArliAI model, or under one model's table.
+#
+# Example, same system prompt file for every ArliAI model:
+#   [defaults]
+#   system_append_file = "systemprompt.md"
+#
+# Example, per model:
+#   [models."GLM-4.7"]
+#   system_append = "Keep answers short."
+#
+#   [models."GLM-4.7".params]
+#   temperature = 0.8
+#   top_p = 0.95
+
+# Samplers per model. Every line is optional: a commented or missing line
+# leaves that sampler to ArliAI's default for the model. Remove the # to use it.
+# Parameter overrides saved on the ArliAI API key itself win over these.
+
+[models."DeepSeek-V4.1-Flash-1017"]
+system_append_file = "deepseek-4-1.md"
+
+[models."DeepSeek-V4.1-Flash-1017".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."GLM-4.6-Derestricted-v5".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."GLM-4.7".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."MiMo-V2.6-Flash-MOPD".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."Qwen3.8-Flash-Next".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."Gemma-4-31B-it".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."Qwen3.5-27B-Derestricted".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05
+
+[models."Qwen3.8-27B".params]
+# temperature = 0.7
+# top_p = 0.95
+# top_k = 40
+# min_p = 0.05
+# repetition_penalty = 1.05

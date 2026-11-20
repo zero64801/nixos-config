@@ -70,6 +70,11 @@ in
         port = 2082;
         controlPort = 2083;
       };
+      claudeArliProxy = {
+        enable = true;
+        keyFile = "/mnt/vault/secrets/arliai/api-key";
+        promptDir = "/mnt/vault/secrets/arliai/sysprompts";
+      };
       fish.enable = true;
       git = {
         enable = true;

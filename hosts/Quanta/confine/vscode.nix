@@ -5,6 +5,27 @@ let
   vinegar = "/home/dx/.var/app/org.vinegarhq.Vinegar/data/vinegar";
   proxySwitch = config.my.apps.proxySwitch.switches.claude or null;
   proxySwitchUrl = "http://127.0.0.1:${toString proxySwitch.port}";
+  arliProxy = config.my.apps.claudeArliProxy;
+
+  withArliLogin =
+    package:
+    if !arliProxy.enable then
+      package
+    else
+      pkgs.symlinkJoin {
+        inherit (package) pname version meta;
+        paths = [ package ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          for bin in $out/bin/*; do
+            wrapProgram "$bin" --run ${lib.escapeShellArg ''
+              if [ -z "''${ANTHROPIC_AUTH_TOKEN-}''${ANTHROPIC_API_KEY-}''${CLAUDE_CODE_OAUTH_TOKEN-}" ] \
+                && ! ${lib.getExe pkgs.gnugrep} -qs '"claudeAiOauth"' "''${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"; then
+                export ANTHROPIC_AUTH_TOKEN=${arliProxy.noLoginToken}
+              fi''}
+          done
+        '';
+      };
 
   workspace = {
     profile = [ "gpu" ];
@@ -15,10 +36,12 @@ let
     home = "ephemeral";
     runtimeDir = "shared";
     network = "isolated";
-    networkPorts.toHost = lib.optionals (proxySwitch != null) [
-      proxySwitch.port
-      proxySwitch.controlPort
-    ];
+    networkPorts.toHost =
+      lib.optional arliProxy.enable arliProxy.port
+      ++ lib.optionals (proxySwitch != null) [
+        proxySwitch.port
+        proxySwitch.controlPort
+      ];
 
     seccomp = {
       nesting = true;
@@ -113,7 +136,7 @@ in
           ]
           ++ lib.optional studio.enable "xdg-run/${dirOf studio.socket}";
       };
-      package = pkgs.vscode;
+      package = withArliLogin pkgs.vscode;
       appId = "com.visualstudio.code";
       waylandAppId = "code";
       binaries = [ "code" ];
@@ -127,7 +150,7 @@ in
     };
 
     claude-code = workspace // {
-      package = pkgs.claude-code;
+      package = withArliLogin pkgs.claude-code;
       appId = "com.anthropic.ClaudeCode";
       binaries = [ "claude" ];
       linger = false;
