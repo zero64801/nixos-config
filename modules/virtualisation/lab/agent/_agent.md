@@ -87,6 +87,8 @@ A program that guards itself against debuggers is worked on from outside:
   Following the JIT takes two debug registers, so it is one method at a time.
   Its arguments are those of Windows' x64 convention, an instance method's object being `arg1`, as `dotnet:Lab.Client::Send,clrbytes:arg2,-` or `clrstring:ret@return` for what it returns.
   .NET Framework's own assemblies are precompiled, which the JIT never sees, so log those through the presets, as `bcrypt`.
+- `--log jit` writes every IL body the JIT is handed, with the method's handle and the method's name where its IL is in an assembly the process loaded, also from a held start, as a trace of what .NET code runs.
+  A protector that decrypts methods in a hook of the JIT (ConfuserEx and its kind) hands the JIT the decrypted IL, which this writes though the file has none of it, unnamed since it is in no assembly: match its bodies to the decompiled methods by their size, their calls and their strings.
 
 ### Screen and input
 

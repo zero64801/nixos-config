@@ -7,6 +7,9 @@ compileMethod is the first entry of the JIT object's table of virtual functions,
 calls for the JIT, loads that table or that object with a lea of an address in the JIT's own image, in .NET Framework
 4.8 and in .NET 8 and 10 alike. No symbols are needed, which .NET Framework's JIT has none of on Microsoft's server.
 
+Without a place, the watch only finds compileMethod, for --log jit, which writes every IL body the JIT is handed, and
+names the method whose IL that is in a loaded assembly.
+
 A program held before its first instruction, as guest-exec --job --suspended starts one, has no JIT yet, and nothing but
 ntdll, so guest-dbg first stops where ntdll's LdrLoadDll loads a DLL, until it is the JIT. Windows brings a DLL's pages
 into memory only as they are used, so the JIT's code may not be there to read yet, and then guest-dbg also stops where
@@ -176,8 +179,21 @@ class Image:
                 address = self.address(found.Rva)
                 il = body(self.read, address) if address else None
                 if il is not None:
-                    label = f"{self.assembly}!{'.'.join(p for p in path[:2] if p)}{''.join('+' + p for p in path[2:])}::{place.method}"
-                    out.append(Body(label, il[0], il[1], self.precompiled))
+                    out.append(Body(self.label(path, place.method), il[0], il[1], self.precompiled))
+        return out
+
+    def label(self, path, method):
+        return f"{self.assembly}!{'.'.join(p for p in path[:2] if p)}{''.join('+' + p for p in path[2:])}::{method}"
+
+    def names(self):
+        """{where each method's body begins: its name} of the methods of the assembly that have IL."""
+        out = {}
+        for path, row in self.types():
+            for method in row.MethodList or []:
+                found = method.row
+                address = self.address(found.Rva) if found and found.Rva else None
+                if address:
+                    out[address] = self.label(path, str(found.Name))
         return out
 
 
@@ -336,6 +352,7 @@ class Watch:
         self.debugger, self.guest, self.pid, self.place = debugger, guest, pid, place
         self.bodies, self.scopes, self.roles, self.pending, self.seen = [], set(), {}, None, {}
         self.jit = self.entry = self.at = None
+        self.names, self.named, self.handed = {}, set(), False
 
     def look(self):
         """The method's IL bodies in what the process has loaded so far."""
@@ -359,17 +376,42 @@ class Watch:
             del self.roles[number]
 
     def arm(self):
-        """Stops where compileMethod begins, or where LdrLoadDll does until the JIT is loaded. Says which."""
+        """Stops where compileMethod begins, or where LdrLoadDll does until the JIT is loaded. Gives what stop() gives."""
         try:
             _, base, _, _ = self.guest.module(self.pid, JIT)
         except LookupError:
             self.insert(self.loader(), "load")
-            return "the JIT is not loaded yet, so this waits for LdrLoadDll to load it"
+            return [], "the JIT is not loaded yet, so this waits for LdrLoadDll to load it"
         self.at, _, _ = compile_method(lambda address, length: self.guest.read(self.pid, address, length), base)
         if self.at is None:
             raise LookupError(f"{JIT} at {base:#x} has no getJit that leads to its compileMethod")
-        self.insert(self.at, "compile")
-        return f"compileMethod of {JIT} at {self.at:#x}"
+        if self.place:
+            self.insert(self.at, "compile")
+        return self.hand(), f"compileMethod of {JIT} at {self.at:#x}"
+
+    def hand(self):
+        """compileMethod, once it is known, as the code of --log jit, which has no place of its own."""
+        if self.place or not self.at or self.handed:
+            return []
+        self.handed = True
+        return [self.at]
+
+    def name(self, il, scope):
+        """The name of the method whose IL begins at il, in the assemblies the process has loaded, after a header of one byte or
+        of twelve. A module the JIT has not compiled for before has the process looked at again. None for IL that is in no
+        assembly, as a protector that decrypts methods hands it."""
+        if scope not in self.scopes:
+            self.scopes.add(scope)
+            self.guest.refresh(self.pid)
+            assemblies(self.guest, self.pid, self.seen)
+        for base, image in self.seen.items():
+            if image and base not in self.named:
+                self.named.add(base)
+                try:
+                    self.names.update(image.names())
+                except BROKEN:
+                    continue
+        return self.names.get(il - 1) or self.names.get(il - 12)
 
     def loader(self):
         """Where ntdll has LdrLoadDll, which is the same in every process, so another's tells when this one is too new
@@ -395,7 +437,8 @@ class Watch:
         if self.at:
             for role in ("load", "getjit", "access"):
                 self.remove(role)
-            self.insert(self.at, "compile")
+            if self.place:
+                self.insert(self.at, "compile")
             return f"{JIT} at {self.jit:#x} has its compileMethod at {self.at:#x}"
         self.remove("load")
         if wanted is not None:
@@ -430,15 +473,17 @@ class Watch:
         returned, and a line to say, if any."""
         role = self.roles.get(number)
         if role == "getjit":
-            return [], self.resolve(regs["rip"])
+            said = self.resolve(regs["rip"])
+            return self.hand(), said
         if role == "access":
             said = self.resolve()
             # The read may have been the call's own, which leaves the processor at compileMethod's first instruction.
-            if self.at and regs["rip"] == self.at and self.pending is None:
+            if self.place and self.at and regs["rip"] == self.at and self.pending is None:
                 self.compiled(regs)
-            return [], said
+            return self.hand(), said
         if role == "load" and self.jit:
-            return [], self.resolve()
+            said = self.resolve()
+            return self.hand(), said
         if role == "load" and self.pending is None:
             raw = self.debugger.peek(regs["r8"], UNICODE_STRING.size) if regs.get("r8") else b""
             length, characters = UNICODE_STRING.unpack(raw) if len(raw) == UNICODE_STRING.size else (0, 0)
@@ -456,7 +501,8 @@ class Watch:
         self.pending = None
         if kind == "load":
             self.jit = self.debugger.word(rest[0]) if not regs["rax"] & 0xFFFFFFFF else None
-            return [], self.resolve() if self.jit else None
+            said = self.resolve() if self.jit else None
+            return self.hand(), said
         if regs["rax"] & 0xFFFFFFFF:
             return [], f"the JIT failed to compile {self.place.text}"
         code = self.debugger.word(rest[0])

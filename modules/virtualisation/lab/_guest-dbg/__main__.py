@@ -9,6 +9,7 @@ import collections
 import os
 import re
 import signal
+import struct
 import sys
 import time
 
@@ -142,9 +143,9 @@ def main():
         args.hits = 0 if specs else 1
     returns = bool(args.on_return) or any(spec.at_return for spec in specs)
     managed = [("break", spec) for spec in args.breaks if spec.startswith(dotnet.PREFIX)] + \
-        [("log", spec.place) for spec in specs if spec.place.startswith(dotnet.PREFIX)]
+        [("log", spec.place) for spec in specs if spec.place.startswith(dotnet.PREFIX) or spec.place == "jit"]
     if len(managed) > 1:
-        fail("one method of .NET at a time, since following the JIT takes two of the four debug registers")
+        fail("one method of .NET or --log jit at a time, since following the JIT takes two of the four debug registers")
     used = len(args.breaks) + len(args.watch) + len(args.access) + len(specs) + (1 if returns else 0) + (2 if managed else 0)
     if not used:
         fail("there is nothing to stop at: give --break, --watch, --access or --log")
@@ -194,7 +195,7 @@ def main():
             label = "every process"
         resolved = []
         for kind, spec, size in places:
-            if spec.startswith(dotnet.PREFIX):
+            if (kind, spec) in managed:
                 continue
             address = place(spec, pid, guest)
             if address % size:
@@ -206,16 +207,18 @@ def main():
     for kind, spec, size, address in resolved:
         print(f"guest-dbg: {kind} {spec} at {address:#x}" + (f", {size} bytes" if kind not in ("break", "log") else ""), file=sys.stderr)
     watch = None
-    if managed:
+    if managed == [("log", "jit")]:
+        watch, bodies = dotnet.Watch(None, guest, pid, None), None
+    elif managed:
         try:
             watch = dotnet.Watch(None, guest, pid, dotnet.Place(managed[0][1]))
             bodies = watch.look()
         except (ValueError, LookupError) as e:
             fail(str(e))
-        for found in bodies:
+        for found in bodies or []:
             print(f"guest-dbg: {managed[0][0]} {found.label}, its IL at {found.address:#x}, {len(found.il)} bytes"
                   + (", precompiled as ReadyToRun, which the JIT compiles again only once it is hot" if found.precompiled else ""), file=sys.stderr)
-        if not bodies:
+        if bodies == []:
             print(f"guest-dbg: no assembly the process has loaded has {managed[0][1][len(dotnet.PREFIX):]} yet, so this waits for one that does",
                   file=sys.stderr)
 
@@ -230,12 +233,18 @@ def main():
     hits, foreign, pending, ended, missed = 0, 0, None, "timeout", 0
 
     def record(spec, reader, thread, where):
+        extra, label = {}, spec.label
         try:
             data, note = reader.buffer(spec, args.max_bytes)
-        except (LookupError, mi.Failed, ValueError) as e:
+            if spec.buffer.startswith("corinfo:"):
+                method, module, il, _ = reader.method(spec)
+                named = watch.name(il, module) if watch else None
+                extra = {"method": f"{method:#x}", "module": f"{module:#x}", **({"name": named} if named else {})}
+                label = f"{label} {named}" if named else label
+        except (LookupError, mi.Failed, ValueError, struct.error) as e:
             data, note = b"", f"not read: {e}"
-        name = writer.write(spec.label, thread, where, data, note)
-        print(f"log {writer.count}: {spec.label} {len(data)} B, cpu {thread}, {name}{'  (' + note + ')' if note else ''}  "
+        name = writer.write(label, thread, where, data, note, extra)
+        print(f"log {writer.count}: {label} {len(data)} B, cpu {thread}, {name}{'  (' + note + ')' if note else ''}  "
               f"{STEERING.sub('', logs.preview(data))}")
         sys.stdout.flush()
     elsewhere = collections.Counter()
@@ -262,11 +271,27 @@ def main():
         for entry in table["BreakpointTable"]["body"]:
             if entry["type"] not in OURS:
                 fail(f"gdb would make {numbers.get(entry['number'], ('', '?'))[1]} a {entry['type']}, which steps through every instruction of the guest")
+        def placed(codes, rip=None):
+            """Sets the managed place's stop at each new code, its older code's taken away. Gives the stop's number when the
+            processor is at that code already, as at compileMethod's first call for --log jit."""
+            now = None
+            for code in codes:
+                # The newest code of a method is the one its callers go to, once the runtime has switched them over.
+                for old in [n for n, place in numbers.items() if place == managed[0]]:
+                    gdb.run(f"-break-delete {old}")
+                    del numbers[old]
+                values, _ = gdb.run(f"-break-insert -h *{code:#x}")
+                numbers[values["bkpt"]["number"]] = managed[0]
+                now = values["bkpt"]["number"] if code == rip else now
+            return now
+
         if watch:
             try:
-                print(f"guest-dbg: {watch.arm()}", file=sys.stderr)
+                codes, said = watch.arm()
             except LookupError as e:
                 fail(str(e))
+            print(f"guest-dbg: {said}", file=sys.stderr)
+            placed(codes)
 
         deadline = time.monotonic() + args.timeout
         debugger.go()
@@ -291,15 +316,10 @@ def main():
                 codes, said = watch.stop(number, regs)
                 if said:
                     print(f"guest-dbg: {said}", file=sys.stderr)
-                for code in codes:
-                    # The newest code of a method is the one its callers go to, once the runtime has switched them over.
-                    for old in [n for n, (_, s) in numbers.items() if s == managed[0][1]]:
-                        gdb.run(f"-break-delete {old}")
-                        del numbers[old]
-                    values, _ = gdb.run(f"-break-insert -h *{code:#x}")
-                    numbers[values["bkpt"]["number"]] = managed[0]
-                debugger.go()
-                continue
+                number = placed(codes, regs["rip"])
+                if number is None:
+                    debugger.go()
+                    continue
             if pending and number == pending[0]:
                 if regs["rsp"] != pending[1]:
                     debugger.go()

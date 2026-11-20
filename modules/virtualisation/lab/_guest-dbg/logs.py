@@ -7,12 +7,14 @@ A value is a register (rcx, r8, ...), argN in Windows' x64 calling convention (t
 the rest on the stack at the entry), ret for what the function returned, or a number, with * in front to read memory
 there, :4 or :8 for its size, and @return to take it when the function returns. A buffer can also be wsabuf:BUFFERS:COUNT,
 the WSABUF array of Winsock, secbuffers:DESCRIPTOR, the data buffers of an SSPI SecBufferDesc, clrstring:VALUE, a string
-of .NET, written as UTF-8, or clrbytes:VALUE, a byte array of .NET. A method of .NET takes its arguments as Windows' x64
-convention has them, an instance method its object as arg1.
+of .NET, written as UTF-8, clrbytes:VALUE, a byte array of .NET, or corinfo:VALUE, the IL of the CORINFO_METHOD_INFO the
+JIT's compileMethod takes. A method of .NET takes its arguments as Windows' x64 convention has them, an instance method its
+object as arg1.
 """
 import json
 import os
 import re
+import struct
 import time
 
 # Windows x64: the first four arguments in registers, the rest on the stack above the return address and the home space.
@@ -27,11 +29,15 @@ PRESETS = {
     "sspi": ["sspicli!EncryptMessage,secbuffers:arg3,-", "sspicli!DecryptMessage,secbuffers:arg2,-@return"],
     "winhttp": ["winhttp!WinHttpWriteData,arg2,arg3:4", "winhttp!WinHttpReadData,arg2,*arg4:4@return"],
     "openssl": ["MODULE!SSL_write,arg2,arg3:4", "MODULE!SSL_read,arg2,ret:4@return"],
+    # Every IL body the JIT of .NET is handed, which a protector that decrypts methods in a hook of the JIT hands it decrypted.
+    "jit": ["jit,corinfo:arg3,-"],
 }
 VALUE = re.compile(r"(\*)?(r[a-z0-9]+|e[a-z]{2}|arg\d+|ret|0x[0-9a-fA-F]+|\d+)(?::(4|8))?")
 DATA = 1
 # Buffers that say their own length: Winsock's, SSPI's, and .NET's objects.
-SIZED = ("wsabuf:", "secbuffers:", "clrstring:", "clrbytes:")
+SIZED = ("wsabuf:", "secbuffers:", "clrstring:", "clrbytes:", "corinfo:")
+# CORINFO_METHOD_INFO begins with the method's handle, its module's, the IL and the IL's size.
+METHOD_INFO = struct.Struct("<QQQI")
 # A .NET object on x64 begins with its type's pointer. A string's length in characters follows, then its UTF-16, and an
 # array's length is padded to eight bytes before its elements.
 STRING_LENGTH, STRING_CHARACTERS, ARRAY_LENGTH, ARRAY_ELEMENTS = 8, 12, 8, 16
@@ -45,7 +51,7 @@ class Spec:
         if len(parts) != 3:
             raise ValueError(f"{text}: a log is PLACE,BUFFER,LENGTH")
         self.place, self.buffer, self.length = (part.strip() for part in parts)
-        managed = self.buffer.removesuffix("@return").split(":", 1)[1] if self.buffer.startswith(("clrstring:", "clrbytes:")) else None
+        managed = self.buffer.removesuffix("@return").split(":", 1)[1] if self.buffer.startswith(("clrstring:", "clrbytes:", "corinfo:")) else None
         self.at_return = self.buffer.endswith("@return") or self.length.endswith("@return") or "ret" in (self.buffer, self.length.split(":")[0], managed)
         self.buffer, self.length = self.buffer.removesuffix("@return"), self.length.removesuffix("@return")
         self.label = self.place.split("!")[-1]
@@ -55,7 +61,7 @@ class Spec:
         if managed is not None and not VALUE.fullmatch(managed):
             raise ValueError(f"{text}: {managed} is not a value this reads")
         if self.length == "-" and not self.buffer.startswith(SIZED):
-            raise ValueError(f"{text}: only wsabuf, secbuffers, clrstring and clrbytes know their own length")
+            raise ValueError(f"{text}: only wsabuf, secbuffers, clrstring, clrbytes and corinfo know their own length")
 
 
 def expand(words):
@@ -119,6 +125,9 @@ class Reader:
                 entry = self.debugger.read(array + 16 * n, 16)
                 if int.from_bytes(entry[4:8], "little") & 0x0FFFFFFF == DATA:
                     pieces.append((int.from_bytes(entry[8:16], "little"), int.from_bytes(entry[0:4], "little")))
+        elif kind == "corinfo":
+            _, _, il, size = self.method(spec)
+            pieces = [(il, size)]
         elif kind in ("clrstring", "clrbytes"):
             address = self.value(spec.buffer.split(":", 1)[1])
             if not address:
@@ -151,6 +160,11 @@ class Reader:
         return bytes(data), note
 
 
+    def method(self, spec):
+        """(method handle, module handle, where the IL is, its size) of the CORINFO_METHOD_INFO a corinfo buffer names."""
+        return METHOD_INFO.unpack(self.debugger.read(self.value(spec.buffer.split(":", 1)[1]), METHOD_INFO.size))
+
+
 class Writer:
     """The buffers, each a file in ./out/NAME, with an index of them as JSON lines."""
 
@@ -162,15 +176,16 @@ class Writer:
         os.mkdir(self.folder, 0o700)
         self.count, self.started = 0, time.time()
 
-    def write(self, label, thread, where, data, note):
-        """The buffer as the next file, and a line of the index, thread being the guest's CPU that stopped, as QEMU's stub names it."""
+    def write(self, label, thread, where, data, note, extra=None):
+        """The buffer as the next file, and a line of the index, thread being the guest's CPU that stopped, as QEMU's stub names
+        it, with what else is known of the buffer."""
         self.count += 1
         name = f"{self.count:05d}-{re.sub(r'[^A-Za-z0-9_.-]', '_', label)}.bin"
         with open(os.open(os.path.join(self.folder, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
             f.write(data)
         with open(os.open(os.path.join(self.folder, "index.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as f:
             f.write(json.dumps({"n": self.count, "time": time.time(), "label": label, "cpu": thread, "at": where, "length": len(data),
-                                "file": name, **({"note": note} if note else {})}) + "\n")
+                                "file": name, **(extra or {}), **({"note": note} if note else {})}) + "\n")
         return name
 
 

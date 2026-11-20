@@ -54,6 +54,9 @@ memory = Memory({
     # A string of .NET: its type, its length in characters, its UTF-16. A byte array: its type, its length padded to eight, its bytes.
     0x9000: qwords(0x7FF8EA0A0000) + struct.pack("<I", 6) + "héllo!".encode("utf-16-le"),
     0x9100: qwords(0x7FF8EA0B0000) + struct.pack("<II", 3, 0) + bytes([1, 2, 3]),
+    # What compileMethod takes as its third argument: the method's handle, its module's, the IL and its size.
+    0x9200: qwords(0x7FF8EA001000, 0x7FF8EB000000, 0x9300) + struct.pack("<I", 4),
+    0x9300: bytes([0x02, 0x03, 0x58, 0x2A]),
 })
 entry = {"rcx": 0x10, "rdx": 0x1000, "r8": 5, "r9": 0x3800, "rsp": stack, "rax": 0, "rsi": 0x1000, "rdi": 0}
 
@@ -108,6 +111,11 @@ assert logs.Reader(memory, managed, managed).buffer(logs.Spec("dotnet:Lab.Probe:
     "a .NET string comes as UTF-8"
 assert logs.Reader(memory, managed, managed).buffer(logs.Spec("dotnet:Lab.Probe::Run,clrbytes:arg2,-"), 1 << 20) == (bytes([1, 2, 3]), "")
 assert logs.Reader(memory, managed, managed).buffer(logs.Spec("dotnet:Lab.Probe::Run,clrbytes:arg3,-"), 1 << 20) == (b"", "null")
+jit = spec("jit")
+compiling = dict(entry, r8=0x9200)
+assert jit.place == "jit" and not jit.at_return and logs.Reader(memory, compiling, compiling).buffer(jit, 1 << 20) == (bytes([0x02, 0x03, 0x58, 0x2A]), ""), \
+    "the jit preset writes the IL compileMethod is handed"
+assert logs.Reader(memory, compiling, compiling).method(jit) == (0x7FF8EA001000, 0x7FF8EB000000, 0x9300, 4)
 returned = logs.Spec("dotnet:Lab.Probe::Run,clrstring:ret,-")
 assert returned.at_return and logs.Reader(memory, entry, dict(entry, rax=0x9000)).buffer(returned, 4) == (b"h\xc3\xa9", "cut at 4 bytes"), \
     "a returned string is taken at the return, and cut by its UTF-16 bytes"
@@ -128,4 +136,8 @@ with open(os.path.join(writer.folder, name), "rb") as f:
 with open(os.path.join(writer.folder, "index.jsonl")) as f:
     line = json.loads(f.read())
 assert line["label"] == "ws2_32!send" and line["cpu"] == "3" and line["length"] == 5 and line["file"] == name == "00001-ws2_32_send.bin", line
+writer.write("jit sample!Lab.Sample::Add", "2", "clrjit.dll+0x7a730", b"\x02\x2a", "", {"method": "0x7ff8ea001000", "name": "sample!Lab.Sample::Add"})
+with open(os.path.join(writer.folder, "index.jsonl")) as f:
+    line = json.loads(f.read().splitlines()[1])
+assert line["method"] == "0x7ff8ea001000" and line["name"] == "sample!Lab.Sample::Add" and line["file"] == "00002-jit_sample_Lab.Sample__Add.bin", line
 print("guest-dbg --log reads the buffers its presets name and writes them")

@@ -240,7 +240,7 @@ process.put(FLAT, bytes(PAGE))
 held = Guest(process, ranges=[(FLAT, len(assembly))])
 debugger = Debugger(process)
 watch = dotnet.Watch(debugger, held, 1, dotnet.Place("dotnet:Lab.Sample::Add/3"))
-check(watch.look() == [] and "waits for LdrLoadDll" in watch.arm() and list(debugger.gdb.points.values()) == [("break", LOADER)],
+check(watch.look() == [] and "waits for LdrLoadDll" in watch.arm()[1] and list(debugger.gdb.points.values()) == [("break", LOADER)],
       "with no JIT loaded, the watch stops where LdrLoadDll begins")
 
 
@@ -309,3 +309,31 @@ check(stop(debugger.gdb.at("break", JIT_BASE + COMPILE), **call(JIT_BASE + COMPI
 check(stop(debugger.gdb.at("break", 0x7FF94A000100), rsp=STACK + 0x100) == ([], None) and watch.pending,
       "a return of another call of the same function, with another stack, is not the compile's")
 print("guest-dbg follows the JIT to the code of a method of .NET")
+
+# Without a place, for --log jit, the watch gives compileMethod itself as the code to stop at, once, and nothing of its own.
+loaded = Memory()
+loaded.put(JIT_BASE, jit(JIT_BASE, False))
+running = Guest(loaded, modules=[(JIT_BASE, 0x5000, "clrjit.dll")])
+everything = dotnet.Watch(Debugger(loaded), running, 1, None)
+codes, said = everything.arm()
+check(codes == [JIT_BASE + COMPILE] and not everything.debugger.gdb.points and everything.hand() == [], "with the JIT loaded, compileMethod is the code to stop at")
+fresh = Memory()
+fresh.put(JIT_BASE, whole)
+process, debugger = fresh, Debugger(fresh)
+watch = dotnet.Watch(debugger, Guest(fresh), 1, None)
+watch.arm()
+fresh.put(STACK, struct.pack("<Q", 0x7FFA00002000))
+fresh.put(NAME, struct.pack("<H6xQ", len(name), NAME + 0x100))
+fresh.put(NAME + 0x100, name)
+fresh.put(NAME + 0x300, struct.pack("<Q", JIT_BASE))
+stop(debugger.gdb.at("break", LOADER), rsp=STACK, rip=LOADER, r8=NAME, r9=NAME + 0x300)
+codes, said = stop(debugger.gdb.at("break", 0x7FFA00002000), rsp=STACK + 8)
+check(codes == [JIT_BASE + COMPILE] and set(debugger.gdb.points.values()) == set(), "from a held start, compileMethod once the JIT is loaded and readable")
+
+# The names of what the JIT compiles, by where their IL begins: after a header of one byte or of twelve.
+names = dotnet.Watch(Debugger(memory), guest, 1, None)
+for text in ("dotnet:Lab.Sample::Add/2", "dotnet:Lab.Sample::Name"):
+    for found in dotnet.find(guest, 1, dotnet.Place(text)):
+        check(names.name(found.address, 0x7FF8EB000000) == found.label, f"{text} at {found.address:#x} is named by its IL")
+check(names.name(0x50000000, 0x7FF8EB000000) is None and guest.refreshed >= 1, "IL in no assembly has no name")
+print("--log jit is given compileMethod, and names the methods it compiles")
