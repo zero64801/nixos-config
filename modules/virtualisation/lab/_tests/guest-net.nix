@@ -119,6 +119,7 @@ host.needs [ "modules/virtualisation/inspect" ] (
           "echo == packets; guest-net packets dns --max 4",
           "echo == export; guest-net export --decrypted all.pcapng",
           "echo == har; guest-net export --har all.har",
+          "echo == inside; guest-net stream $(guest-net flows | grep ':8443 ' | tail -n 1 | cut -d' ' -f1) --decrypted",
           "echo == conversations; guest-net tshark -q -z conv,tcp",
           "echo == captures; guest-net captures",
           "echo == elsewhere; VM_INSPECT_CAPTURE=/elsewhere/driven/$(basename $VM_INSPECT_CAPTURE) guest-net summary",
@@ -163,6 +164,12 @@ host.needs [ "modules/virtualisation/inspect" ] (
           assert json.loads(posted["request"]["postData"]["text"]) == {"user": "alice", "pin": 1234}, posted["request"]
           assert by_url[("GET", "https://tls.test:8443/data.json")]["response"]["content"]["text"].startswith('{"name": "site"'), entries
           assert by_url[("POST", "http://site.test:8000/form")]["request"]["postData"]["text"] == "name=alice&pin=1234", entries
+
+      with subtest("a flow followed inside TLS is that flow, though tshark numbers the streams of TLS apart from those of TCP"):
+          # The last connection to tls.test is the JSON POST of posts.sh, whose own body and answer have to be there. The server's
+          # settings of HTTP/2 may come before the client's first bytes in TLS 1.3, so the order is not asked for.
+          inside = section["inside"]
+          assert '{"user":"alice","pin":1234}' in inside and "405 Not Allowed" in inside and "-> the guest sent" in inside, inside
 
       with subtest("bodies read as meant: undone of their encoding, JSON laid out, and the requests' own with them"):
           assert "content-encoding: gzip" in section["json"] and '\n  "name": "site",' in section["json"], section["json"]

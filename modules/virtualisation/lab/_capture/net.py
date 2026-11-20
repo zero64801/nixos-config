@@ -650,25 +650,14 @@ CIPHERS = {"0x1301": "TLS_AES_128_GCM_SHA256", "0x1302": "TLS_AES_256_GCM_SHA384
 
 def stream(capture, args):
     """What went each way in one flow, as text with what is not text escaped, or as hex."""
-    kind = {"t": "tcp", "u": "udp"}.get(args.id[:1])
-    if not kind or not args.id[1:].isdigit():
+    if args.id[:1] not in ("t", "u") or not args.id[1:].isdigit():
         fail("a flow is t or u and a number, as guest-net flows names them")
-    follow = "tls" if args.decrypted else kind
-    text = capture.output(NET, ["-q", "-z", f"follow,{follow},raw,{args.id[1:]}"], args.keys)
-    lines = text.splitlines()
-    nodes = [line.split(":", 1)[1].strip() for line in lines if line.startswith("Node ")]
-    chunks, sent, got = [], b"", b""
-    for line in lines:
-        data = line.strip()
-        if not data or line.startswith(("Node ", "=", "Follow:", "Filter:")) or any(c not in "0123456789abcdef" for c in data):
-            continue
-        raw = bytes.fromhex(data)
-        # tshark indents what the second node sent, and the first node is the one that spoke first.
-        chunks.append((line.startswith("\t"), raw))
-    guest_first = flows_first_sender(capture, args)
-    total = 0
-    for second, raw in chunks:
-        from_guest = second != guest_first
+    flow = next((f for f in flows(capture, None, args.keys) if f["id"] == args.id), None)
+    if flow is None:
+        fail(f"there is no flow {args.id}, guest-net flows lists them")
+    taken = chunks(capture, flow, args.decrypted, args.keys)
+    sent, got, total = b"", b"", 0
+    for _, from_guest, raw in taken:
         if from_guest:
             sent += raw
         else:
@@ -681,18 +670,10 @@ def stream(capture, args):
     if args.save:
         saved(args.save + ".sent", sent)
         saved(args.save + ".got", got)
-    if not chunks:
+    if not taken:
         print(f"nothing went over {args.id}" + (", or the keys do not open it" if args.decrypted else ""))
-    elif nodes:
-        print(f"(between {plain(nodes[0], 60)} and {plain(nodes[-1], 60)}, {size(len(sent))} sent and {size(len(got))} got)")
-
-
-def flows_first_sender(capture, args):
-    """Whether the guest spoke first in the flow, which is how the two sides tshark follows are told apart."""
-    proto = "tcp" if args.id[0] == "t" else "udp"
-    for packet in capture.ek(NET, ["frame.packet_flags_direction"], f"{proto}.stream == {args.id[1:]} && {proto}.len > 0" if proto == "tcp" else f"udp.stream == {args.id[1:]}"):
-        return first(packet, "frame.packet_flags_direction") == SENT
-    return True
+    else:
+        print(f"(between {plain(flow['guest'], 60)} and {plain(flow['remote'], 60)}, {size(len(sent))} sent and {size(len(got))} got)")
 
 
 def escaped(data):
@@ -882,6 +863,34 @@ def summary(capture, args):
         names = sorted({name for flow in found for name in flow["names"]})
         print(f"flows    {sum(f['proto'] == 'tcp' for f in found)} tcp, {sum(f['proto'] == 'udp' for f in found)} udp")
         print(f"names    {plain(', '.join(names), 2000) or 'none'}")
+
+
+def chunks(capture, flow, decrypted, keys):
+    """What went each way in one flow, in order, as tshark follows it: (time, whether the guest sent it, bytes), from inside
+    TLS when decrypted. Which way each went comes from its frame, which the capture keeps, since in TLS 1.3 the server may
+    speak first. tshark numbers the streams of TLS apart from those of TCP, so one is followed by its two ends."""
+    kind = "tcp" if flow["proto"] == "tcp" else "udp"
+    sent = {first(packet, "frame.number"): first(packet, "frame.packet_flags_direction") == SENT
+            for packet in capture.ek(NET, ["frame.number", "frame.packet_flags_direction"], f"{kind}.stream == {flow['id'][1:]}", keys)}
+    which = f"tls,yaml,{flow['guest']},{flow['remote']}" if decrypted and kind == "tcp" else f"{kind},yaml,{flow['id'][1:]}"
+    text = capture.output(NET, ["-q", "-z", f"follow,{which}"], keys)
+    found, current = [], None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- packet:"):
+            current = {"packet": stripped.split(":", 1)[1].strip(), "data": ""}
+            found.append(current)
+        elif current is not None and stripped.startswith("timestamp:"):
+            current["timestamp"] = stripped.split(":", 1)[1].strip()
+        elif current is not None and stripped and not stripped.startswith(("data:", "peer:", "index:")):
+            current["data"] += stripped
+    out = []
+    for packet in found:
+        try:
+            out.append((float(packet.get("timestamp", "0")), sent.get(packet["packet"], False), base64.b64decode(packet["data"])))
+        except ValueError:
+            continue
+    return out
 
 
 def trace(capture, args):
